@@ -132,8 +132,9 @@ A confirmatory result requires the relevant protocol choices to be frozen before
 
 At minimum, freeze or version:
 
-- dataset split;
+- dataset split and dataset provenance;
 - model/revision;
+- dataset-exposure assessment when the claim compares models, families, scales, or training interventions;
 - extraction layers;
 - pooling / token-span rules;
 - geometry metrics;
@@ -164,6 +165,7 @@ Possible controls include:
 - alternative layers;
 - prompt/template controls;
 - model-size or family controls;
+- newly generated or otherwise exposure-resistant held-out evaluation material;
 - label permutation tests.
 
 Controls are not interchangeable. A protocol must explain what failure mode each control addresses.
@@ -196,6 +198,10 @@ A strong parameter-efficiency comparison SHOULD use the same:
 - hidden-state extraction definition where architecture permits;
 - quantization policy or an explicit quantization ablation.
 
+For every model/dataset pair used in a cross-model claim, the protocol SHOULD assess evaluation exposure through pretraining, post-training, fine-tuning, benchmark use, or other known ingestion routes. Exposure status should be recorded as `known`, `plausible`, `unlikely`, or `unknown`, together with supporting provenance where available.
+
+`unknown` does not mean `unexposed`. Differential or uncontrolled exposure is a confounder and must limit claims about scale, family generality, parameter efficiency, or geometric superiority.
+
 Training-intervention comparisons SHOULD additionally match data and optimization budgets and report all added trainable parameters.
 
 Uncontrolled differences are confounders, not footnotes.
@@ -207,6 +213,8 @@ Every empirical result artifact SHOULD be traceable to:
 - repository commit;
 - protocol ID/version;
 - dataset ID/version/hash;
+- dataset-generation provenance;
+- dataset-exposure assessment where relevant;
 - model identifier and immutable revision where available;
 - tokenizer identifier/revision;
 - environment/runtime versions;
@@ -231,6 +239,7 @@ A future machine-readable result record SHOULD contain:
 - `primary_metrics`;
 - `control_metrics`;
 - `uncertainty`;
+- `dataset_exposure_assessment` when relevant;
 - `result_status` (`supports`, `null`, `contradicts`, `inconclusive`);
 - `limitations`;
 - `provenance`.
@@ -261,7 +270,7 @@ Examples:
 - apparent geometry disappears under native-space tests after projection artefacts are removed;
 - causal premise perturbations are not distinguishable from matched surface perturbations;
 - geometric training changes geometry without improving controlled reasoning outcomes;
-- apparent small-model gains vanish under matched parameter, data, or compute accounting.
+- apparent small-model gains vanish under matched parameter, data, compute, or exposure accounting.
 
 The repository must preserve these outcomes if observed.
 
