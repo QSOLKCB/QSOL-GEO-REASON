@@ -18,11 +18,25 @@ The Lean files are a new formal evidence layer built after that immutable releas
 
 The proof environment is intentionally stationary:
 
-- Lean: `leanprover/lean4:v4.33.1`
+- Lean: `v4.33.1`
+- Lean Linux distribution: `lean-4.33.1-linux.tar.zst`
+- Lean distribution SHA-256: `890afd185370f85666025b883914ab4f4b339136f8c96167b69cfb62aecaf235`
 - mathlib release lineage: `v4.33.1`
 - exact pinned mathlib commit: `0df444a360eaa60ab8c11dca51a86af692955474`
+- checkout action: `actions/checkout@11d5960a326750d5838078e36cf38b85af677262`
+- GitHub runner family: `ubuntu-24.04`, x86_64
 
-`lakefile.lean` uses the exact mathlib commit rather than a moving tag. `lean-toolchain` pins the Lean toolchain.
+The trust-boundary workflow does **not** execute a moving `elan` bootstrap script. It downloads the exact Lean 4.33.1 Linux release archive, verifies the frozen SHA-256 before extraction, and invokes the `lean` and `lake` binaries from that verified archive directly.
+
+`lakefile.lean` pins mathlib by exact commit rather than a moving tag. `lean-toolchain` remains a repository declaration of the intended Lean version, while CI independently installs the hash-verified distribution above.
+
+## Dependency reconstruction policy
+
+The formal trust job does not use the mathlib binary cache.
+
+After `lake update` resolves the pinned source revisions, CI deletes every dependency `.lake/build` directory and verifies that no dependency `.olean` or `.ilean` artifact remains under `.lake/packages`. The subsequent `lake build --wfail` must therefore reconstruct the imported dependency declarations from the pinned source checkouts before compiling the GeoReason theorem layer.
+
+This is intentionally slower than `lake exe cache get`. The formal release treats independent reconstruction as part of the evidence boundary rather than trusting precompiled mathlib proof artifacts.
 
 ## Formal source model
 
@@ -72,19 +86,22 @@ The scaling theorem is derived by proving that the circumradius scales by `|s|` 
 
 The `lean-phase1` workflow must pass all of the following before the formalization is accepted:
 
-1. resolve the exact pinned dependencies;
-2. compile the complete `GeoReason` library with `lake build --wfail`;
-3. reject source-level `sorry`, `admit`, and explicit `axiom` declarations;
-4. execute `Lean/GeoReason/Audit.lean` against the compiled environment;
-5. require mathlib's recursive `#print sorries` audit to report the twelve targets sorry-free;
-6. collect the transitive kernel axioms of each frozen theorem with `Lean.collectAxioms`;
-7. reject every compiled axiom dependency except the explicit classical trust-base allowlist:
+1. check out the repository through a full-SHA-pinned checkout action;
+2. download the exact Lean 4.33.1 Linux archive and verify its frozen SHA-256 before execution;
+3. resolve mathlib and its dependency sources from the pinned revision graph;
+4. delete dependency build trees and reject surviving dependency `.olean` / `.ilean` artifacts;
+5. compile the dependency graph and complete `GeoReason` library with `lake build --wfail`;
+6. reject source-level `sorry`, `admit`, and explicit `axiom` declarations;
+7. execute `Lean/GeoReason/Audit.lean` against the compiled environment;
+8. require mathlib's recursive `#print sorries` audit to report the twelve targets sorry-free;
+9. collect the transitive kernel axioms of each frozen theorem with `Lean.collectAxioms`;
+10. reject every compiled axiom dependency except the explicit classical trust-base allowlist:
    - `propext`
    - `Classical.choice`
    - `Quot.sound`
-8. retain a secondary denylist check for `sorryAx` and `Lean.ofReduceBool` as diagnostic defense in depth.
+11. retain a secondary denylist check for `sorryAx` and `Lean.ofReduceBool` as diagnostic defense in depth.
 
-The compiled allowlist is the authoritative trust-boundary gate. It does not depend on how an axiom was spelled in source. An axiom introduced via `constant`, a macro, an imported project module, or another declaration mechanism is rejected if any frozen theorem depends on it and it is not one of the three allowed classical Lean axioms.
+The compiled allowlist is the authoritative theorem trust-boundary gate. It does not depend on how an axiom was spelled in source. An axiom introduced via `constant`, a macro, an imported project module, or another declaration mechanism is rejected if any frozen theorem depends on it and it is not one of the three allowed classical Lean axioms.
 
 The existing `phase1-reference` workflow remains a separate gate and must continue reproducing the immutable numerical Phase 1 evidence unchanged.
 
@@ -98,6 +115,7 @@ This Lean development proves statements in exact mathematics over real normed/in
 - JSON canonicalization;
 - SHA-256 implementations;
 - Git or GitHub provenance machinery;
+- the GitHub-hosted runner operating system and hardware;
 - the deterministic simulation noise generator;
 - serving/runtime equivalence;
 - hidden-state extraction from an LLM;
