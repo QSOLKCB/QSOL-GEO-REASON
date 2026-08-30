@@ -55,6 +55,7 @@ A later phase may prototype early, but its scientific claims must not outrun the
 - [x] Evaluate represented binary64 Menger `kappa^2` with exact dyadic-rational arithmetic so exact collinearity and genuinely near-collinear nonzero curvature remain distinguishable without an epsilon.
 - [x] Canonicalize emitted coordinates relative to each trajectory origin so representable local geometry survives large absolute coordinate offsets.
 - [x] Preserve ULP-sized canonical offsets at binary64 spacing boundaries by escalating the origin to 17-digit round-trip precision only when the ordinary evidence precision would erase a nonzero displacement.
+- [x] Verify every nonzero canonical consecutive displacement survives reconstruction, including later steps that do not involve the origin.
 - [x] Derive trajectory metrics and cross-trajectory comparisons from the exact emitted coordinate arrays so serialized points and metrics cannot describe different trajectories.
 - [x] Reject any finite-difference subtraction that overflows to a non-finite binary64 value before it can reach downstream metrics.
 - [x] Reject undefined empty finite-difference comparisons rather than encoding them as zero.
@@ -64,11 +65,11 @@ A later phase may prototype early, but its scientific claims must not outrun the
 
 **Evidence gate:** **PASS on the current frozen candidate** — numerical recovery of known synthetic properties within the preregistered tolerances in `GEO-SIM-001`, plus metadata-consistent byte-identical frozen replay across Python 3.11, 3.12, and 3.13.
 
-**Bound implementation / mathematical kernel:** `952d20bb4c3506b4ddda5db54628e5b029d0eadc`.
+**Bound implementation / mathematical kernel:** `5f45b5e69bcab890a757fffa491cf787f92a5bea`.
 
-**Bound result artifact:** `3e890ccbd349ae6e0e7be330752c340d6e74f88ee33c78ed963935b15085dad4`.
+**Bound result artifact:** `c542bce987d31350b4904122e5ec02ef026715f51a1fe21ee184a452cc67a583`.
 
-**Regression suite:** **47 tests** before the cross-version matrix.
+**Regression suite:** **48 tests** before the cross-version matrix.
 
 **Non-claim:** successful completion says nothing about real LLM reasoning.
 
