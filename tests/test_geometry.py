@@ -66,6 +66,12 @@ class GeometryTests(unittest.TestCase):
     def test_collinear_curvature_zero(self):
         self.assertEqual(menger_curvature_sequence([[0, 0], [1, 0], [2, 0]]), [0.0])
 
+    def test_diagonal_collinearity_is_exact_zero(self):
+        self.assertEqual(
+            menger_curvature_sequence([[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]]),
+            [0.0],
+        )
+
     def test_repeated_point_curvature_zero(self):
         self.assertEqual(menger_curvature_sequence([[0, 0], [0, 0], [1, 0]]), [0.0])
 
