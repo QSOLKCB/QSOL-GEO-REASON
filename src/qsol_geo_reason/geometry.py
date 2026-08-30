@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from decimal import Decimal, localcontext
 from fractions import Fraction
 from typing import Sequence
 
@@ -55,22 +56,62 @@ def _unit(vector: Sequence[float]) -> list[float] | None:
     return [x / norm for x in scaled]
 
 
-def _exactly_collinear(a: Sequence[float], b: Sequence[float]) -> bool:
-    """Test collinearity exactly for the represented binary64 vectors.
+def _fraction_vector(vector: Sequence[float]) -> list[Fraction]:
+    return [Fraction.from_float(float(x)) for x in vector]
 
-    Finite Python floats are exact dyadic rationals. Converting them to
-    ``Fraction`` lets us test all 2x2 minors without an epsilon, so exactly
-    collinear stored vectors are recognized as such while arbitrarily small
-    genuine turns remain non-collinear.
+
+def _fraction_squared_norm(vector: Sequence[Fraction]) -> Fraction:
+    return sum((x * x for x in vector), Fraction(0, 1))
+
+
+def _exact_represented_menger(
+    u: Sequence[float],
+    v: Sequence[float],
+    chord: Sequence[float],
+) -> float:
+    """Menger curvature of represented binary64 displacements.
+
+    Binary64 values are exact dyadic rationals. Compute kappa^2 exactly as
+
+        4 (||u||^2 ||v||^2 - <u,v>^2)
+        ---------------------------------
+             ||u||^2 ||v||^2 ||c||^2
+
+    and convert only the final positive square root back to binary64. This
+    preserves exact collinearity and near-collinearity without subtracting
+    rounded unit vectors. If a mathematically nonzero represented curvature
+    cannot be represented as a positive finite binary64 value, reject it
+    rather than silently emitting zero or infinity.
     """
-    if len(a) != len(b):
-        raise ValueError("vector dimension mismatch")
-    af = [Fraction.from_float(float(x)) for x in a]
-    bf = [Fraction.from_float(float(x)) for x in b]
-    pivot = next((i for i, value in enumerate(af) if value != 0), None)
-    if pivot is None:
-        return all(value == 0 for value in bf)
-    return all(af[pivot] * bf[j] == af[j] * bf[pivot] for j in range(len(af)))
+    uf = _fraction_vector(u)
+    vf = _fraction_vector(v)
+    cf = _fraction_vector(chord)
+    aa = _fraction_squared_norm(uf)
+    bb = _fraction_squared_norm(vf)
+    cc = _fraction_squared_norm(cf)
+    if aa == 0 or bb == 0 or cc == 0:
+        return 0.0
+
+    uv = sum((x * y for x, y in zip(uf, vf)), Fraction(0, 1))
+    gram = aa * bb - uv * uv
+    if gram < 0:
+        raise ValueError("exact Menger Gram determinant is negative")
+    if gram == 0:
+        return 0.0
+
+    kappa_squared = Fraction(4, 1) * gram / (aa * bb * cc)
+    with localcontext() as context:
+        context.prec = 100
+        decimal_squared = (
+            Decimal(kappa_squared.numerator) / Decimal(kappa_squared.denominator)
+        )
+        decimal_kappa = decimal_squared.sqrt()
+    kappa = float(decimal_kappa)
+    if kappa == 0.0:
+        raise ValueError("Menger curvature underflows binary64")
+    if not math.isfinite(kappa):
+        raise ValueError("Menger curvature is not finite")
+    return kappa
 
 
 def _distance(a: Sequence[float], b: Sequence[float]) -> float:
@@ -232,14 +273,12 @@ def cosine_alignment(
 def menger_curvature_sequence(points: Sequence[Sequence[float]]) -> list[float]:
     """Return Menger curvature for each consecutive triple.
 
-    For consecutive displacement vectors u and v and endpoint chord c,
-    kappa = 2 sin(theta) / ||c||. This is algebraically equivalent to
-    4A/(abc) but uses scaled unit vectors to avoid overflow in Gram products.
-
-    Exact collinearity of the represented binary64 displacement vectors is
-    tested as dyadic-rational arithmetic before the floating angle estimate.
-    Thus exactly collinear triples map to zero without a scale-dependent
-    epsilon, while non-collinear triples retain nonzero curvature.
+    The exact mathematical definition is 4A/(abc). For the represented
+    binary64 displacement vectors, this implementation evaluates the squared
+    form with exact dyadic-rational arithmetic and converts only the final
+    square root to binary64. Repeated-point and exactly collinear represented
+    triples therefore map to zero without an epsilon, while non-collinear
+    represented triples cannot be erased by unit-vector rounding.
     """
     _validate_trajectory(points)
     if len(points) < 3:
@@ -251,24 +290,5 @@ def menger_curvature_sequence(points: Sequence[Sequence[float]]) -> list[float]:
         u = _vector_between(p0, p1)
         v = _vector_between(p1, p2)
         chord = _vector_between(p0, p2)
-        a = _norm(u)
-        b = _norm(v)
-        c = _norm(chord)
-        if a == 0.0 or b == 0.0 or c == 0.0:
-            out.append(0.0)
-            continue
-        if _exactly_collinear(u, v):
-            out.append(0.0)
-            continue
-
-        uu = _unit(u)
-        vv = _unit(v)
-        assert uu is not None and vv is not None
-        dot = max(-1.0, min(1.0, math.fsum(x * y for x, y in zip(uu, vv))))
-        orthogonal_residual = [vv[j] - dot * uu[j] for j in range(len(uu))]
-        sin_theta = _norm(orthogonal_residual)
-        kappa = (2.0 * sin_theta) / c
-        if not math.isfinite(kappa):
-            raise ValueError("Menger curvature is not finite")
-        out.append(kappa)
+        out.append(_exact_represented_menger(u, v, chord))
     return out

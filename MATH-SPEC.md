@@ -126,13 +126,25 @@ Three alignment policies are defined.
 
 **`truncate`** retains the common prefix of length `min(n_X,n_Y)`.
 
-**`arclength`** treats each trajectory as a piecewise-linear curve and samples it at equally spaced fractions of its total arc length.
+**`arclength`** treats each trajectory as a piecewise-linear curve. For a pair of trajectories with sample counts `n_X` and `n_Y`, define the common resampling count
+
+\[
+m=\max(n_X,n_Y).
+\]
+
+Both trajectories are resampled to exactly `m` samples before finite differencing or comparison. If `m = 1`, the sole sample is the original point. If `m >= 2`, the samples occur at normalized arc-length fractions
+
+\[
+\frac{j}{m-1}, \qquad j=0,\ldots,m-1.
+\]
 
 For nonzero-length paths, arc-length resampling must preserve the exact first and last geometric endpoints.
 
 For exactly zero-length paths, every resampled point is the common geometric location.
 
 Small but nonzero segments are not mathematically discardable merely because other segments are much larger.
+
+The count rule above is part of the exact pair-alignment contract and must be used by the future Lean formalization unless a later release explicitly changes `GEO-MATH-005`.
 
 ## 6. Menger curvature
 
@@ -246,13 +258,18 @@ The implementation must reject these cases or represent them explicitly as unava
 
 The exact definitions above do not contain decimal rounding, binary64, JSON, SHA-256, or a numerical epsilon.
 
-The Python reference implementation uses IEEE-754 binary64 arithmetic and normalizes result floats to a fixed number of **significant decimal digits** before canonical serialization. This is a reproducibility convention only.
+The Python reference implementation uses IEEE-754 binary64 arithmetic and normalizes finite output values to a fixed number of **significant decimal digits** before canonical serialization. This is a reproducibility convention only.
+
+For trajectory coordinates, canonicalization is translation-aware: the implementation normalizes the first point and each point's displacement from the original first point, reconstructs the emitted absolute coordinates from that canonical origin plus canonical displacement, and then computes all emitted metrics and comparisons from those emitted coordinates. Therefore the machine-readable points and the machine-readable derived geometry refer to the same numerical trajectory.
 
 Normalization must be scale-aware in the following minimal sense:
 
 - it must not impose a fixed absolute floor that turns every sufficiently small nonzero value into zero;
+- a representable local displacement must not be erased merely because the trajectory has a much larger absolute coordinate offset;
 - exact negative zero may be canonicalized to positive zero;
 - non-finite outputs are rejected.
+
+The finite-precision Menger implementation may use exact dyadic-rational arithmetic on represented binary64 displacements to preserve exact collinearity and near-collinearity before converting a final finite curvature value back to binary64. This is an implementation-refinement device, not a replacement for `GEO-MATH-006`.
 
 Hash identity is evidence provenance, not a mathematical invariant.
 

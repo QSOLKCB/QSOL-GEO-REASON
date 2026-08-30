@@ -13,7 +13,7 @@ SCHEMA_VERSION = "1.0.0"
 PROTOCOL_ID = "GEO-SIM-001"
 EVIDENCE_CLASS = "SIMULATION"
 REPLICATION_STATUS = "not_attempted"
-SERIALIZATION_SIGNIFICANT_DIGITS = 13
+SERIALIZATION_SIGNIFICANT_DIGITS = 14
 
 _TRAJECTORY_KEYS = {"id", "kind", "parameters"}
 _COMPARISON_KEYS = {"id", "left", "right", "order", "align"}
@@ -285,6 +285,39 @@ def _round_nested(value: Any) -> Any:
     return value
 
 
+def _canonicalize_points(points: list[list[float]]) -> list[list[float]]:
+    """Create the exact emitted coordinate representation.
+
+    Normalize the first point and each displacement from the raw first point
+    independently to significant digits, then reconstruct absolute points from
+    that canonical origin plus canonical offsets. This preserves small local
+    displacements on top of large coordinate offsets while still removing
+    insignificant libm/runtime tail variation.
+
+    All downstream metrics and comparisons are computed from these emitted
+    points, so the serialized coordinates and serialized geometry describe the
+    same trajectory.
+    """
+    if not points:
+        raise RecipeError("generated trajectory must contain at least one point")
+    raw_origin = [float(x) for x in points[0]]
+    origin = [_round_float(x) for x in raw_origin]
+    out: list[list[float]] = []
+    for point in points:
+        if len(point) != len(raw_origin):
+            raise RecipeError("generated trajectory has inconsistent dimensions")
+        offsets = [
+            _round_float(float(point[d]) - raw_origin[d])
+            for d in range(len(raw_origin))
+        ]
+        emitted = [origin[d] + offsets[d] for d in range(len(origin))]
+        if any(not math.isfinite(value) for value in emitted):
+            raise RecipeError("canonical emitted point is not finite")
+        out.append(emitted)
+    out[0] = origin[:]
+    return out
+
+
 def run_recipe(recipe: dict[str, Any], *, implementation_revision: str) -> dict[str, Any]:
     """Execute a validated recipe and return a hash-bound SIMULATION record."""
     validate_recipe(recipe)
@@ -294,23 +327,25 @@ def run_recipe(recipe: dict[str, Any], *, implementation_revision: str) -> dict[
     trajectories: dict[str, list[list[float]]] = {}
     records = []
     for item in recipe["trajectories"]:
-        points = _generate(item, trajectories, recipe["seed"])
+        raw_points = _generate(item, trajectories, recipe["seed"])
+        points = _canonicalize_points(raw_points)
         trajectories[item["id"]] = points
+        metrics = _round_nested({
+            "path_length": path_length(points),
+            "order_1": finite_difference(points, 1),
+            "order_2": finite_difference(points, 2),
+            "menger_curvature": menger_curvature_sequence(points),
+        })
         record = {
             "id": item["id"],
             "kind": item["kind"],
             "point_count": len(points),
             "dimension": len(points[0]),
             "points": points,
-            "trajectory_sha256": sha256_json(_round_nested(points)),
-            "metrics": {
-                "path_length": path_length(points),
-                "order_1": finite_difference(points, 1),
-                "order_2": finite_difference(points, 2),
-                "menger_curvature": menger_curvature_sequence(points),
-            },
+            "trajectory_sha256": sha256_json(points),
+            "metrics": metrics,
         }
-        records.append(_round_nested(record))
+        records.append(record)
 
     comparisons = []
     for comp in recipe["comparisons"]:
@@ -332,7 +367,7 @@ def run_recipe(recipe: dict[str, Any], *, implementation_revision: str) -> dict[
             "mean_cosine_alignment": score,
         }))
 
-    payload = _round_nested({
+    payload = {
         "schema_version": SCHEMA_VERSION,
         "protocol_id": PROTOCOL_ID,
         "evidence_class": EVIDENCE_CLASS,
@@ -342,5 +377,5 @@ def run_recipe(recipe: dict[str, Any], *, implementation_revision: str) -> dict[
         "implementation_revision": implementation_revision,
         "trajectories": records,
         "comparisons": comparisons,
-    })
+    }
     return {**payload, "artifact_sha256": sha256_json(payload)}
