@@ -6,7 +6,7 @@ noncomputable section
 
 section Trajectory
 
-variable {V : Type*} [NormedAddCommGroup V] [NormedSpace ℝ V]
+variable {V : Type*} [NormedAddCommGroup V]
 
 /-- A finite ordered trajectory. -/
 abbrev Trajectory (V : Type*) := List V
@@ -55,7 +55,7 @@ theorem iterDiff_length (k : ℕ) (xs : List V) :
       omega
 
 /-- GEO-LEAN-TGT-001 — finite-difference length. -/
-theorem GEO_LEAN_TGT_001 (k : ℕ) (xs : List V) (hk : k < xs.length) :
+theorem GEO_LEAN_TGT_001 (k : ℕ) (xs : List V) (_hk : k < xs.length) :
     (iterDiff k xs).length = xs.length - k :=
   iterDiff_length k xs
 
@@ -65,8 +65,11 @@ theorem forwardDiff_translate (t : V) : ∀ xs : List V,
   | [] => by simp [translate, forwardDiff]
   | [_] => by simp [translate, forwardDiff]
   | x :: y :: xs => by
-      simp [translate, forwardDiff, forwardDiff_translate t (y :: xs), sub_eq_add_neg,
-        add_assoc, add_left_comm, add_comm]
+      change ((y + t) - (x + t)) :: forwardDiff (translate t (y :: xs)) =
+        (y - x) :: forwardDiff (y :: xs)
+      rw [forwardDiff_translate t (y :: xs)]
+      have hcancel : (y + t) - (x + t) = y - x := by abel
+      rw [hcancel]
 
 /-- GEO-LEAN-TGT-002 — every positive-order finite difference cancels translation. -/
 theorem GEO_LEAN_TGT_002 (k : ℕ) (hk : 1 ≤ k) (t : V) (xs : List V) :
@@ -89,8 +92,11 @@ theorem GEO_LEAN_TGT_003 (t : V) : ∀ xs : List V,
   | [] => by simp [translate, pathLength]
   | [_] => by simp [translate, pathLength]
   | x :: y :: xs => by
-      simp [translate, pathLength, GEO_LEAN_TGT_003 t (y :: xs), sub_eq_add_neg,
-        add_assoc, add_left_comm, add_comm]
+      change ‖(y + t) - (x + t)‖ + pathLength (translate t (y :: xs)) =
+        ‖y - x‖ + pathLength (y :: xs)
+      rw [GEO_LEAN_TGT_003 t (y :: xs)]
+      have hcancel : (y + t) - (x + t) = y - x := by abel
+      rw [hcancel]
 
 /-- GEO-LEAN-TGT-005 — zero path length exactly characterizes all-equal trajectories. -/
 theorem GEO_LEAN_TGT_005 : ∀ xs : List V,
@@ -132,8 +138,13 @@ theorem GEO_LEAN_TGT_004 (Q : V ≃ₗᵢ[ℝ] V) (t : V) : ∀ xs : List V,
   | [] => by simp [affineIsometryMap, pathLength]
   | [_] => by simp [affineIsometryMap, pathLength]
   | x :: y :: xs => by
-      simp [affineIsometryMap, pathLength, GEO_LEAN_TGT_004 Q t (y :: xs), ← Q.map_sub,
-        sub_eq_add_neg, add_assoc, add_left_comm, add_comm]
+      change ‖(Q y + t) - (Q x + t)‖ + pathLength (affineIsometryMap Q t (y :: xs)) =
+        ‖y - x‖ + pathLength (y :: xs)
+      rw [GEO_LEAN_TGT_004 Q t (y :: xs)]
+      have hcancel : (Q y + t) - (Q x + t) = Q (y - x) := by
+        rw [Q.map_sub]
+        abel
+      rw [hcancel, Q.norm_map]
 
 end Isometry
 
