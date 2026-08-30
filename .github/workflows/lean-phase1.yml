@@ -20,7 +20,6 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     env:
-      LEAN_NUM_THREADS: "1"
       LEAN_VERSION: "4.33.1"
       LEAN_LINUX_SHA256: "890afd185370f85666025b883914ab4f4b339136f8c96167b69cfb62aecaf235"
     steps:
@@ -43,6 +42,23 @@ jobs:
           "$lean_home/bin/lean" --version
           "$lean_home/bin/lake" --version
 
+      - name: Configure bounded Lean parallelism
+        shell: bash
+        run: |
+          set -euo pipefail
+          cpus="$(nproc)"
+          workers="$cpus"
+          if [ "$workers" -gt 4 ]; then
+            workers=4
+          fi
+          if [ "$workers" -lt 2 ]; then
+            echo "Multicore trust build requires at least 2 runner CPUs; observed ${cpus}" >&2
+            exit 1
+          fi
+          echo "LEAN_NUM_THREADS=${workers}" >> "$GITHUB_ENV"
+          echo "LEAN_WORKERS=${workers}" >> "$GITHUB_ENV"
+          echo "Cold source reconstruction will use ${workers} Lean threads on ${cpus} runner CPUs"
+
       - name: Resolve pinned dependencies from source
         shell: bash
         run: |
@@ -62,7 +78,14 @@ jobs:
           fi
 
       - name: Build formalization and pinned dependencies from source
-        run: lake build --wfail
+        shell: bash
+        run: |
+          set -euo pipefail
+          start="$(date +%s)"
+          lake build --wfail
+          stop="$(date +%s)"
+          elapsed="$((stop - start))"
+          echo "Cold source rebuild completed in ${elapsed}s with ${LEAN_WORKERS} Lean threads"
 
       - name: Reject source proof placeholders and explicit axioms
         shell: bash
