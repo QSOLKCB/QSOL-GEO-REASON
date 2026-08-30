@@ -1,7 +1,14 @@
 import math
 import unittest
 
-from qsol_geo_reason.geometry import align_pair, cosine_alignment, finite_difference, menger_curvature_sequence, path_length, resample_arclength
+from qsol_geo_reason.geometry import (
+    align_pair,
+    cosine_alignment,
+    finite_difference,
+    menger_curvature_sequence,
+    path_length,
+    resample_arclength,
+)
 
 
 class GeometryTests(unittest.TestCase):
@@ -26,9 +33,20 @@ class GeometryTests(unittest.TestCase):
         right = [[0.0], [-1e-9]]
         self.assertEqual(cosine_alignment(left, right, order=1, align="error"), -1.0)
 
+    def test_large_vectors_do_not_overflow_cosine(self):
+        left = [[0.0], [1e100]]
+        right = [[0.0], [1e100]]
+        opposite = [[0.0], [-1e100]]
+        self.assertEqual(cosine_alignment(left, right, order=1, align="error"), 1.0)
+        self.assertEqual(cosine_alignment(left, opposite, order=1, align="error"), -1.0)
+
+    def test_empty_finite_difference_alignment_is_undefined(self):
+        with self.assertRaisesRegex(ValueError, "no samples"):
+            cosine_alignment([[0.0], [1.0]], [[0.0], [1.0]], order=2, align="error")
+
     def test_menger_curvature_circle(self):
         r = 2.0
-        pts = [[r * math.cos(a), r * math.sin(a)] for a in [0, math.pi/4, math.pi/2]]
+        pts = [[r * math.cos(a), r * math.sin(a)] for a in [0, math.pi / 4, math.pi / 2]]
         self.assertAlmostEqual(menger_curvature_sequence(pts)[0], 1.0 / r, places=12)
 
     def test_small_nonzero_curvature_is_not_clipped(self):
@@ -38,6 +56,12 @@ class GeometryTests(unittest.TestCase):
         curvature = menger_curvature_sequence(pts)[0]
         self.assertGreater(curvature, 0.0)
         self.assertAlmostEqual(curvature, 1.0 / r, delta=1e-20)
+
+    def test_large_scale_menger_is_finite(self):
+        pts = [[1e100, 0.0], [0.0, 1e100], [-1e100, 0.0]]
+        curvature = menger_curvature_sequence(pts)[0]
+        self.assertTrue(math.isfinite(curvature))
+        self.assertAlmostEqual(curvature, 1e-100, delta=1e-112)
 
     def test_collinear_curvature_zero(self):
         self.assertEqual(menger_curvature_sequence([[0, 0], [1, 0], [2, 0]]), [0.0])
@@ -66,6 +90,13 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(result[-1], [1e-16])
         self.assertGreater(result[1][0], 0.0)
 
+    def test_arclength_resampling_preserves_late_small_segment(self):
+        points = [[0.0, 0.0], [1e16, 0.0], [1e16, 1.0]]
+        result = resample_arclength(points, 3)
+        self.assertEqual(result[0], points[0])
+        self.assertEqual(result[-1], points[-1])
+        self.assertNotEqual(result[-1], points[-2])
+
     def test_arclength_resampling_degenerate(self):
         self.assertEqual(resample_arclength([[1, 2], [1, 2]], 3), [[1.0, 2.0]] * 3)
 
@@ -77,3 +108,7 @@ class GeometryTests(unittest.TestCase):
             align_pair(a, b, mode="error")
         x, y = align_pair(a, b, mode="arclength")
         self.assertEqual(x, y)
+
+
+if __name__ == "__main__":
+    unittest.main()
