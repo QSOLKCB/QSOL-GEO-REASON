@@ -12,9 +12,9 @@ This report records the frozen Phase 1 reference result. It is not evidence abou
 
 - Protocol: `GEO-SIM-001`
 - Recipe: `GEO-SIM-REF-001`
-- Implementation revision: `03a3103a04d19f53331d37aa486db563ecca31f8`
+- Implementation / mathematical-kernel revision: `c63f2fc00370a03a2273f66fbab5108ff0c6989a`
 - Recipe SHA-256: `763edeb96a1eec8d87a90d200f8c03a3e2131ec924b558e26492640a342dbbeb`
-- Result artifact SHA-256: `01a0cba29d45b7859243fa12c5ae178cf91c0551b4e92dfa60fbf79387fe7d28`
+- Result artifact SHA-256: `68af011dd7364fb19985e20de9a96763531479ce1ae41569a9c3068d1ddd7818`
 
 The implementation revision includes the exact mathematical specification in [`MATH-SPEC.md`](MATH-SPEC.md). The frozen numerical artifact is an implementation-conformance record, not a substitute for the exact mathematics.
 
@@ -24,11 +24,11 @@ The implementation revision includes the exact mathematical specification in [`M
 | --- | ---: | ---: | --- |
 | Straight path length | `5.0` | `5.0` | PASS |
 | Straight curvature | all `0` | all `0` | PASS |
-| Radius-2 arc curvature | `0.5 ± 1e-12` | all `0.5` | PASS |
+| Radius-2 arc curvature | `0.5 ± 1e-12` | within tolerance | PASS |
 | Null path length | `0.0` | `0.0` | PASS |
 | Carrier order-1 alignment | `1.0` | `1.0` | PASS |
 | Control order-1 alignment | `1.0` | `1.0` | PASS |
-| Causal suffix alignment | `< 1.0` | `0.9664100588676` | PASS |
+| Causal suffix alignment | `< 1.0` | `0.96641005886757` | PASS |
 | Null self-alignment | `1.0` | `1.0` | PASS |
 
 The carrier analogue differs in absolute position while preserving its order-1 differences and exact-zero Menger-curvature sequence. The control translation preserves the same order-1 flow. The suffix perturbation deliberately changes the synthetic trajectory and lowers the preregistered order-1 alignment.
@@ -37,21 +37,27 @@ The carrier analogue differs in absolute position while preserving its order-1 d
 
 `MATH-SPEC.md` freezes stable `GEO-MATH-001` through `GEO-MATH-011` definitions covering finite trajectories, finite differences, path length, the project cosine convention, alignment, Menger curvature, transformation laws, undefined cases, and the exact/numerical boundary.
 
+`GEO-MATH-005` now fixes the previously underdetermined pairwise arc-length rule: both operands are resampled to `m = max(n_X, n_Y)` samples, at fractions `j/(m-1)` when `m >= 2`.
+
 It also records `GEO-LEAN-TGT-001` through `GEO-LEAN-TGT-012` as theorem targets for a post-release Lean 4 formalization.
 
 The formalization boundary is explicit: Lean is intended to prove the exact-real mathematical layer. It does not automatically prove CPython floating-point execution, serialization, hashes, Git provenance, or any LLM semantic claim.
 
 ## Review hardening
 
-The two Codex review rounds and proactive math-freeze pass fix and regression-test:
+Three Codex review rounds reduced from **9 findings → 6 findings → 3 findings**, for **18 findings total**. The final kernel fixes and regression-tests all of them.
+
+The hardening includes:
 
 - exact-zero rather than absolute-threshold handling for cosine vectors;
 - overflow-safe cosine normalization for very large vectors;
 - preservation of tiny nonzero paths during arc-length resampling;
 - preservation of late small path segments after much larger segments;
-- exact dyadic-rational collinearity detection before floating Menger estimation;
-- preservation of tiny nonzero Menger curvature;
-- scale-aware 13-significant-digit result normalization that preserves tiny nonzero values while stabilizing the supported runtime matrix;
+- exact dyadic-rational Menger `kappa^2` evaluation on represented binary64 displacements, preserving both exact collinearity and genuinely non-collinear near-collinearity before the final binary64 square root;
+- rejection rather than silent zero/infinity if a nonzero represented curvature cannot be expressed as a positive finite binary64 result;
+- scale-aware **14-significant-digit** output normalization;
+- translation-aware point canonicalization using a canonical first point plus canonical displacements, so small local geometry survives large absolute offsets;
+- derivation of all trajectory metrics and comparisons from the exact emitted coordinate arrays, preventing serialized points from disagreeing with serialized metrics;
 - rejection of undefined empty finite-difference comparisons rather than emitting `0.0`;
 - strict branch recipes with a required post-branch segment;
 - strict trajectory/comparison object shapes and unique comparison IDs;
@@ -63,9 +69,9 @@ The two Codex review rounds and proactive math-freeze pass fix and regression-te
 
 ## Edge-case coverage
 
-The Phase 1 unit suite covers order-0/order-1/order-2/higher finite differences, path length, known-circle Menger curvature, axis and diagonal collinearity, repeated points, short sequences, exact zero-length and tiny nonzero paths, tiny opposing vectors, `1e100`-scale cosine vectors, large-scale Menger curvature, late small arc-length segments, undefined empty comparisons, dimension mismatch, truncate/error/arc-length alignment, deterministic replay, implementation-revision hash binding, strict recipe object shapes, duplicate comparison IDs, invalid forward/self references, branch bounds, source-provenance behavior, result-schema shapes, and frozen-metadata identities.
+The Phase 1 unit suite covers order-0/order-1/order-2/higher finite differences, path length, known-circle Menger curvature, axis and diagonal collinearity, repeated points, short sequences, exact zero-length and tiny nonzero paths, tiny opposing vectors, `1e100`-scale cosine vectors, large-scale Menger curvature, Codex's exact near-collinear nonzero-curvature counterexample, late small arc-length segments, large absolute coordinates with small representable displacements, serialized-point/metric consistency, undefined empty comparisons, dimension mismatch, truncate/error/arc-length alignment, deterministic replay, implementation-revision hash binding, strict recipe object shapes, duplicate comparison IDs, invalid forward/self references, branch bounds, source-provenance behavior, result-schema shapes, the frozen arc-length count rule, and frozen-metadata identities.
 
-The hardened suite contains **42 unit tests**. GitHub Actions independently reruns the suite on Python 3.11, 3.12, and 3.13 and verifies both frozen metadata identities and byte-for-byte result identity.
+The hardened suite contains **45 unit tests**. GitHub Actions independently reruns the suite on Python 3.11, 3.12, and 3.13; all three exact-head jobs pass the tests, frozen metadata verification, and byte-for-byte result identity.
 
 ## Frozen artifacts
 
@@ -79,7 +85,7 @@ The hardened suite contains **42 unit tests**. GitHub Actions independently reru
 
 ## Release/formalization handoff
 
-After PR #2 receives a green exact-head review and is merged, the intended next step is to create an immutable Phase 1 release/tag. Lean 4 formalization should target that exact frozen release rather than a moving branch.
+After PR #2 receives a green exact-head Codex review and is merged, the intended next step is to create an immutable Phase 1 release/tag. Lean 4 formalization should target that exact frozen release rather than a moving branch.
 
 Future mathematical changes must produce a new release identity and update/reprove affected `GEO-LEAN-TGT-*` theorems rather than rewriting the frozen target under the Lean development.
 
