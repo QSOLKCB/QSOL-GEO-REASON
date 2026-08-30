@@ -8,35 +8,72 @@ section Trajectory
 
 variable {V : Type*} [NormedAddCommGroup V]
 
-/-- A finite ordered trajectory. -/
-abbrev Trajectory (V : Type*) := List V
+/-- GEO-MATH-001 — a finite ordered trajectory with at least one point.
 
-/-- One forward finite-difference step. -/
+The head/tail representation makes the frozen non-emptiness requirement
+unrepresentable by construction. Finite-difference outputs may still become
+empty at sufficiently high order, but a source trajectory cannot be empty.
+-/
+structure Trajectory (V : Type*) where
+  head : V
+  tail : List V
+
+/-- Ordered point list of a nonempty trajectory. -/
+def Trajectory.points (z : Trajectory V) : List V :=
+  z.head :: z.tail
+
+@[simp]
+theorem Trajectory.points_ne_nil (z : Trajectory V) : z.points ≠ [] := by
+  simp [Trajectory.points]
+
+@[simp]
+theorem Trajectory.points_length (z : Trajectory V) :
+    z.points.length = z.tail.length + 1 := by
+  simp [Trajectory.points]
+
+/-- One forward finite-difference step. Its input may be empty because
+higher-order differences are allowed to exhaust the source trajectory. -/
 def forwardDiff : List V → List V
   | [] => []
   | [_] => []
   | x :: y :: xs => (y - x) :: forwardDiff (y :: xs)
 
-/-- Repeated forward finite differences. -/
+/-- Repeated forward finite differences of an arbitrary finite sequence. -/
 def iterDiff : ℕ → List V → List V
   | 0, xs => xs
   | k + 1, xs => iterDiff k (forwardDiff xs)
 
-/-- Translation of every trajectory point by the same vector. -/
-def translate (t : V) (xs : List V) : List V :=
-  xs.map fun x => x + t
+/-- Order-`k` forward finite differences of a nonempty source trajectory. -/
+def trajectoryDiff (k : ℕ) (z : Trajectory V) : List V :=
+  iterDiff k z.points
 
-/-- Piecewise-linear path length of a finite trajectory. -/
-def pathLength : List V → ℝ
+/-- Translation of every trajectory point by the same vector. -/
+def translate (t : V) (z : Trajectory V) : Trajectory V where
+  head := z.head + t
+  tail := z.tail.map fun x => x + t
+
+@[simp]
+theorem points_translate (t : V) (z : Trajectory V) :
+    (translate t z).points = z.points.map fun x => x + t :=
+  rfl
+
+private def listPathLength : List V → ℝ
   | [] => 0
   | [_] => 0
-  | x :: y :: xs => ‖y - x‖ + pathLength (y :: xs)
+  | x :: y :: xs => ‖y - x‖ + listPathLength (y :: xs)
 
-/-- Recursive exact statement that all consecutive trajectory points are equal. -/
-def AllEqual : List V → Prop
+/-- GEO-MATH-003 — piecewise-linear path length of a nonempty trajectory. -/
+def pathLength (z : Trajectory V) : ℝ :=
+  listPathLength z.points
+
+private def listAllEqual : List V → Prop
   | [] => True
   | [_] => True
-  | x :: y :: xs => x = y ∧ AllEqual (y :: xs)
+  | x :: y :: xs => x = y ∧ listAllEqual (y :: xs)
+
+/-- Exact statement that all consecutive points in a nonempty trajectory agree. -/
+def AllEqual (z : Trajectory V) : Prop :=
+  listAllEqual z.points
 
 @[simp]
 theorem forwardDiff_length : ∀ xs : List V, (forwardDiff xs).length = xs.length - 1
@@ -45,8 +82,7 @@ theorem forwardDiff_length : ∀ xs : List V, (forwardDiff xs).length = xs.lengt
   | x :: y :: xs => by
       simp [forwardDiff, forwardDiff_length (y :: xs)]
 
-/-- Stronger length theorem underlying GEO-LEAN-TGT-001. -/
-theorem iterDiff_length (k : ℕ) (xs : List V) :
+private theorem iterDiff_length (k : ℕ) (xs : List V) :
     (iterDiff k xs).length = xs.length - k := by
   induction k generalizing xs with
   | zero => simp [iterDiff]
@@ -55,72 +91,84 @@ theorem iterDiff_length (k : ℕ) (xs : List V) :
       omega
 
 /-- GEO-LEAN-TGT-001 — finite-difference length. -/
-theorem GEO_LEAN_TGT_001 (k : ℕ) (xs : List V) (_hk : k < xs.length) :
-    (iterDiff k xs).length = xs.length - k :=
-  iterDiff_length k xs
+theorem GEO_LEAN_TGT_001 (k : ℕ) (z : Trajectory V) (_hk : k < z.points.length) :
+    (trajectoryDiff k z).length = z.points.length - k := by
+  exact iterDiff_length k z.points
 
-@[simp]
-theorem forwardDiff_translate (t : V) : ∀ xs : List V,
-    forwardDiff (translate t xs) = forwardDiff xs
-  | [] => by simp [translate, forwardDiff]
-  | [_] => by simp [translate, forwardDiff]
+private theorem forwardDiff_map_add (t : V) : ∀ xs : List V,
+    forwardDiff (xs.map fun x => x + t) = forwardDiff xs
+  | [] => by simp [forwardDiff]
+  | [_] => by simp [forwardDiff]
   | x :: y :: xs => by
-      change ((y + t) - (x + t)) :: forwardDiff (translate t (y :: xs)) =
+      change ((y + t) - (x + t)) :: forwardDiff ((y :: xs).map fun a => a + t) =
         (y - x) :: forwardDiff (y :: xs)
-      rw [forwardDiff_translate t (y :: xs)]
+      rw [forwardDiff_map_add t (y :: xs)]
       have hcancel : (y + t) - (x + t) = y - x := by abel
       rw [hcancel]
 
 /-- GEO-LEAN-TGT-002 — every positive-order finite difference cancels translation. -/
-theorem GEO_LEAN_TGT_002 (k : ℕ) (hk : 1 ≤ k) (t : V) (xs : List V) :
-    iterDiff k (translate t xs) = iterDiff k xs := by
+theorem GEO_LEAN_TGT_002 (k : ℕ) (hk : 1 ≤ k) (t : V) (z : Trajectory V) :
+    trajectoryDiff k (translate t z) = trajectoryDiff k z := by
+  unfold trajectoryDiff
+  rw [points_translate]
   cases k with
   | zero => omega
   | succ k =>
-      simp [iterDiff, forwardDiff_translate]
+      simp [iterDiff, forwardDiff_map_add]
 
-/-- Path length is nonnegative. -/
-theorem pathLength_nonneg : ∀ xs : List V, 0 ≤ pathLength xs
-  | [] => by simp [pathLength]
-  | [_] => by simp [pathLength]
+private theorem listPathLength_nonneg : ∀ xs : List V, 0 ≤ listPathLength xs
+  | [] => by simp [listPathLength]
+  | [_] => by simp [listPathLength]
   | x :: y :: xs =>
-      add_nonneg (norm_nonneg _) (pathLength_nonneg (y :: xs))
+      add_nonneg (norm_nonneg _) (listPathLength_nonneg (y :: xs))
 
-/-- GEO-LEAN-TGT-003 — path-length translation invariance. -/
-theorem GEO_LEAN_TGT_003 (t : V) : ∀ xs : List V,
-    pathLength (translate t xs) = pathLength xs
-  | [] => by simp [translate, pathLength]
-  | [_] => by simp [translate, pathLength]
+private theorem listPathLength_map_add (t : V) : ∀ xs : List V,
+    listPathLength (xs.map fun x => x + t) = listPathLength xs
+  | [] => by simp [listPathLength]
+  | [_] => by simp [listPathLength]
   | x :: y :: xs => by
-      change ‖(y + t) - (x + t)‖ + pathLength (translate t (y :: xs)) =
-        ‖y - x‖ + pathLength (y :: xs)
-      rw [GEO_LEAN_TGT_003 t (y :: xs)]
+      change ‖(y + t) - (x + t)‖ +
+          listPathLength ((y :: xs).map fun a => a + t) =
+        ‖y - x‖ + listPathLength (y :: xs)
+      rw [listPathLength_map_add t (y :: xs)]
       have hcancel : (y + t) - (x + t) = y - x := by abel
       rw [hcancel]
 
-/-- GEO-LEAN-TGT-005 — zero path length exactly characterizes all-equal trajectories. -/
-theorem GEO_LEAN_TGT_005 : ∀ xs : List V,
-    pathLength xs = 0 ↔ AllEqual xs
-  | [] => by simp [pathLength, AllEqual]
-  | [_] => by simp [pathLength, AllEqual]
+/-- GEO-LEAN-TGT-003 — path-length translation invariance. -/
+theorem GEO_LEAN_TGT_003 (t : V) (z : Trajectory V) :
+    pathLength (translate t z) = pathLength z := by
+  unfold pathLength
+  rw [points_translate, listPathLength_map_add]
+
+private theorem listPathLength_eq_zero_iff_allEqual : ∀ xs : List V,
+    listPathLength xs = 0 ↔ listAllEqual xs
+  | [] => by simp [listPathLength, listAllEqual]
+  | [_] => by simp [listPathLength, listAllEqual]
   | x :: y :: xs => by
       constructor
       · intro h
-        have htail_nonneg := pathLength_nonneg (y :: xs)
+        have htail_nonneg := listPathLength_nonneg (y :: xs)
         have hnorm_nonneg := norm_nonneg (y - x)
         have hnorm : ‖y - x‖ = 0 := by
-          rw [pathLength] at h
+          rw [listPathLength] at h
           nlinarith
         have hxy : x = y := by
           have hyx : y - x = 0 := norm_eq_zero.mp hnorm
           exact (sub_eq_zero.mp hyx).symm
-        have htail : pathLength (y :: xs) = 0 := by
-          rw [pathLength, hnorm, zero_add] at h
+        have htail : listPathLength (y :: xs) = 0 := by
+          rw [listPathLength, hnorm, zero_add] at h
           exact h
-        exact ⟨hxy, (GEO_LEAN_TGT_005 (y :: xs)).mp htail⟩
+        exact ⟨hxy, (listPathLength_eq_zero_iff_allEqual (y :: xs)).mp htail⟩
       · rintro ⟨hxy, htail⟩
-        have hz : pathLength (y :: xs) = 0 := (GEO_LEAN_TGT_005 (y :: xs)).mpr htail
-        simp [pathLength, hxy, hz]
+        have hz : listPathLength (y :: xs) = 0 :=
+          (listPathLength_eq_zero_iff_allEqual (y :: xs)).mpr htail
+        simp [listPathLength, hxy, hz]
+
+/-- GEO-LEAN-TGT-005 — zero path length exactly characterizes all-equal
+nonempty trajectories. -/
+theorem GEO_LEAN_TGT_005 (z : Trajectory V) :
+    pathLength z = 0 ↔ AllEqual z := by
+  exact listPathLength_eq_zero_iff_allEqual z.points
 
 end Trajectory
 
@@ -129,22 +177,35 @@ section Isometry
 variable {V : Type*} [NormedAddCommGroup V] [InnerProductSpace ℝ V]
 
 /-- Pointwise affine Euclidean isometry `x ↦ Q x + t`. -/
-def affineIsometryMap (Q : V ≃ₗᵢ[ℝ] V) (t : V) (xs : List V) : List V :=
-  xs.map fun x => Q x + t
+def affineIsometryMap (Q : V ≃ₗᵢ[ℝ] V) (t : V) (z : Trajectory V) : Trajectory V where
+  head := Q z.head + t
+  tail := z.tail.map fun x => Q x + t
 
-/-- GEO-LEAN-TGT-004 — path length is invariant under Euclidean isometries. -/
-theorem GEO_LEAN_TGT_004 (Q : V ≃ₗᵢ[ℝ] V) (t : V) : ∀ xs : List V,
-    pathLength (affineIsometryMap Q t xs) = pathLength xs
-  | [] => by simp [affineIsometryMap, pathLength]
-  | [_] => by simp [affineIsometryMap, pathLength]
+@[simp]
+theorem points_affineIsometryMap (Q : V ≃ₗᵢ[ℝ] V) (t : V) (z : Trajectory V) :
+    (affineIsometryMap Q t z).points = z.points.map fun x => Q x + t :=
+  rfl
+
+private theorem listPathLength_map_affineIsometry (Q : V ≃ₗᵢ[ℝ] V) (t : V) :
+    ∀ xs : List V,
+      listPathLength (xs.map fun x => Q x + t) = listPathLength xs
+  | [] => by simp [listPathLength]
+  | [_] => by simp [listPathLength]
   | x :: y :: xs => by
-      change ‖(Q y + t) - (Q x + t)‖ + pathLength (affineIsometryMap Q t (y :: xs)) =
-        ‖y - x‖ + pathLength (y :: xs)
-      rw [GEO_LEAN_TGT_004 Q t (y :: xs)]
+      change ‖(Q y + t) - (Q x + t)‖ +
+          listPathLength ((y :: xs).map fun a => Q a + t) =
+        ‖y - x‖ + listPathLength (y :: xs)
+      rw [listPathLength_map_affineIsometry Q t (y :: xs)]
       have hcancel : (Q y + t) - (Q x + t) = Q (y - x) := by
         rw [Q.map_sub]
         abel
       rw [hcancel, Q.norm_map]
+
+/-- GEO-LEAN-TGT-004 — path length is invariant under Euclidean isometries. -/
+theorem GEO_LEAN_TGT_004 (Q : V ≃ₗᵢ[ℝ] V) (t : V) (z : Trajectory V) :
+    pathLength (affineIsometryMap Q t z) = pathLength z := by
+  unfold pathLength
+  rw [points_affineIsometryMap, listPathLength_map_affineIsometry]
 
 end Isometry
 
