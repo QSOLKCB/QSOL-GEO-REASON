@@ -54,31 +54,33 @@ Runtime recipe validation follows the published top-level trajectory/comparison 
 
 The evidence record must be internally self-consistent: serialized points and serialized metrics describe the same numerical trajectory.
 
-To make significant-digit normalization stable under large absolute coordinate offsets, each generated trajectory is canonicalized relative to its first raw point:
+To make significant-digit normalization stable under binary64 spacing boundaries and large absolute coordinate offsets, each generated trajectory is canonicalized relative to its first raw point while independently preserving its local steps:
 
 1. compute every raw point's displacement from the raw first point;
-2. normalize each displacement independently to the frozen 14-significant-digit evidence precision;
-3. initially normalize the first point to the same 14-significant-digit precision;
-4. reconstruct the candidate emitted absolute coordinates as canonical origin plus canonical displacement;
-5. if that candidate origin would cause any nonzero canonical coordinate displacement to round back onto the origin, re-encode the origin at 17-significant-digit binary64 round-trip precision and reconstruct again;
-6. reject the trajectory if a nonzero canonical displacement would still be erased;
-7. compute trajectory hashes, finite differences, path length, Menger curvature, and all cross-trajectory comparisons from those verified emitted coordinates.
+2. normalize each origin-relative displacement independently to the frozen 14-significant-digit evidence precision;
+3. compute and normalize every consecutive point-to-point displacement independently to the same 14-significant-digit precision;
+4. initially normalize the first point to the same 14-significant-digit precision;
+5. reconstruct the candidate emitted absolute coordinates as canonical origin plus canonical origin-relative displacement;
+6. verify both that no nonzero canonical origin-relative displacement collapses onto the origin and that no nonzero canonical consecutive displacement becomes a zero emitted step;
+7. if either preservation check fails, re-encode the origin at 17-significant-digit binary64 round-trip precision and reconstruct again;
+8. reject the trajectory if any nonzero canonical origin-relative or consecutive displacement would still be erased;
+9. compute trajectory hashes, finite differences, path length, Menger curvature, and all cross-trajectory comparisons from those verified emitted coordinates.
 
-The 17-digit origin path is an adaptive spacing-boundary safeguard, not the ordinary evidence precision. It preserves ULP-sized representable steps such as `9007199254740991 -> 9007199254740992` while keeping ordinary generated coordinates on the coarser cross-runtime evidence normalization.
+The 17-digit origin path is an adaptive spacing-boundary safeguard, not the ordinary evidence precision. It preserves ULP-sized representable steps such as `9007199254740991 -> 9007199254740992` and later local steps that would otherwise collapse even though neither endpoint equals the origin.
 
-The result may not serialize a null coordinate path while retaining non-null derived geometry.
+The result may not serialize a locally null step when the corresponding canonical consecutive displacement is nonzero.
 
 ## Reference expectations
 
 The frozen suite requires: straight curvature 0; radius-2 circle curvature 0.5 at every interior point within absolute tolerance `1e-12`; null path length 0; carrier translation changes positions while preserving order-1 differences and curvature; carrier/control order-1 cosine alignment 1; suffix-shift alignment strictly below 1; and byte-identical replay for fixed recipe plus implementation revision.
 
-Unit tests additionally cover repeated points, short sequences, exact zero-length paths, tiny nonzero paths and vectors, very large vectors, near-collinear nonzero curvature, late small arc-length segments, large absolute coordinate offsets with small local displacements, ULP-sized origin offsets near binary64 spacing boundaries, finite-difference subtraction overflow, dimension mismatch, arbitrary finite-difference order, undefined empty comparisons, all Phase-1 alignment policies, recipe identity errors, and frozen-metadata identity enforcement.
+Unit tests additionally cover repeated points, short sequences, exact zero-length paths, tiny nonzero paths and vectors, very large vectors, near-collinear nonzero curvature, late small arc-length segments, large absolute coordinate offsets with small local displacements, ULP-sized origin offsets near binary64 spacing boundaries, later consecutive-step collapse under origin-relative reconstruction, finite-difference subtraction overflow, dimension mismatch, arbitrary finite-difference order, undefined empty comparisons, all Phase-1 alignment policies, recipe identity errors, and frozen-metadata identity enforcement.
 
 ## Floating-output identity
 
 Machine-readable finite derived values and ordinary trajectory coordinates are canonicalized to **14 significant decimal digits** for the Phase 1 release candidate. Significant-digit normalization is scale-aware and does not impose an absolute floor that collapses sufficiently small nonzero values to zero.
 
-A trajectory origin may use **17 significant decimal digits** only when required to preserve a nonzero canonical displacement that 14-digit origin rounding would erase at a binary64 spacing boundary. Seventeen significant digits provide round-trip identity for a finite binary64 value.
+A trajectory origin may use **17 significant decimal digits** only when required to preserve a nonzero canonical origin-relative or consecutive displacement that 14-digit origin rounding would erase at a binary64 spacing boundary. Seventeen significant digits provide round-trip identity for a finite binary64 value.
 
 Coordinates use the verified first-point-plus-displacement canonicalization above before being emitted. Metrics are then derived from those exact emitted coordinates and normalized for serialization.
 
@@ -96,7 +98,7 @@ When a CLI or reference-generation command derives or verifies a Git implementat
 
 ## Falsifier
 
-Phase 1 fails if the frozen implementation cannot recover the known synthetic properties within the stated tolerances, cannot preserve the specified numerical-domain distinctions, if serialized points and metrics disagree about the represented trajectory, if a finite binary64 intermediate silently becomes non-finite, if frozen provenance identities disagree, or if it cannot regenerate its frozen fixture byte-for-byte.
+Phase 1 fails if the frozen implementation cannot recover the known synthetic properties within the stated tolerances, cannot preserve the specified numerical-domain distinctions, if serialized points and metrics disagree about the represented trajectory, if a nonzero canonical consecutive displacement is serialized as a zero step, if a finite binary64 intermediate silently becomes non-finite, if frozen provenance identities disagree, or if it cannot regenerate its frozen fixture byte-for-byte.
 
 ## Claim ceiling
 
