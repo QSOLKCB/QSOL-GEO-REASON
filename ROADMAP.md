@@ -54,7 +54,9 @@ A later phase may prototype early, but its scientific claims must not outrun the
 - [x] Add tiny/large-scale numerical regressions so absolute magnitude alone cannot erase valid geometry.
 - [x] Evaluate represented binary64 Menger `kappa^2` with exact dyadic-rational arithmetic so exact collinearity and genuinely near-collinear nonzero curvature remain distinguishable without an epsilon.
 - [x] Canonicalize emitted coordinates relative to each trajectory origin so representable local geometry survives large absolute coordinate offsets.
+- [x] Preserve ULP-sized canonical offsets at binary64 spacing boundaries by escalating the origin to 17-digit round-trip precision only when the ordinary evidence precision would erase a nonzero displacement.
 - [x] Derive trajectory metrics and cross-trajectory comparisons from the exact emitted coordinate arrays so serialized points and metrics cannot describe different trajectories.
+- [x] Reject any finite-difference subtraction that overflows to a non-finite binary64 value before it can reach downstream metrics.
 - [x] Reject undefined empty finite-difference comparisons rather than encoding them as zero.
 - [x] Produce frozen reference fixtures with expected numerical outputs.
 - [x] Hash-bind simulation recipe, implementation revision, and result artifacts.
@@ -62,11 +64,11 @@ A later phase may prototype early, but its scientific claims must not outrun the
 
 **Evidence gate:** **PASS on the current frozen candidate** — numerical recovery of known synthetic properties within the preregistered tolerances in `GEO-SIM-001`, plus metadata-consistent byte-identical frozen replay across Python 3.11, 3.12, and 3.13.
 
-**Bound implementation / mathematical kernel:** `c63f2fc00370a03a2273f66fbab5108ff0c6989a`.
+**Bound implementation / mathematical kernel:** `952d20bb4c3506b4ddda5db54628e5b029d0eadc`.
 
-**Bound result artifact:** `68af011dd7364fb19985e20de9a96763531479ce1ae41569a9c3068d1ddd7818`.
+**Bound result artifact:** `3e890ccbd349ae6e0e7be330752c340d6e74f88ee33c78ed963935b15085dad4`.
 
-**Regression suite:** **45 tests** before the cross-version matrix.
+**Regression suite:** **47 tests** before the cross-version matrix.
 
 **Non-claim:** successful completion says nothing about real LLM reasoning.
 
@@ -77,7 +79,7 @@ A later phase may prototype early, but its scientific claims must not outrun the
 The Phase 1 implementation is not considered permanently frozen until the review/release handoff is complete.
 
 - [ ] Obtain a fresh Codex review on the exact PR #2 head with no unresolved correctness findings.
-- [ ] Confirm the Python 3.11/3.12/3.13 conformance matrix on that exact head.
+- [x] Confirm the Python 3.11/3.12/3.13 conformance matrix on the latest frozen candidate.
 - [ ] Merge PR #2 without changing the reviewed mathematical semantics.
 - [ ] Create an immutable Phase 1 release/tag bound to the merged source and record its exact commit identity.
 - [ ] Treat that immutable tag as the target for the first Lean 4 formalization.
