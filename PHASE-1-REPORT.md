@@ -12,9 +12,9 @@ This report records the frozen Phase 1 reference result. It is not evidence abou
 
 - Protocol: `GEO-SIM-001`
 - Recipe: `GEO-SIM-REF-001`
-- Implementation / mathematical-kernel revision: `952d20bb4c3506b4ddda5db54628e5b029d0eadc`
+- Implementation / mathematical-kernel revision: `5f45b5e69bcab890a757fffa491cf787f92a5bea`
 - Recipe SHA-256: `763edeb96a1eec8d87a90d200f8c03a3e2131ec924b558e26492640a342dbbeb`
-- Result artifact SHA-256: `3e890ccbd349ae6e0e7be330752c340d6e74f88ee33c78ed963935b15085dad4`
+- Result artifact SHA-256: `c542bce987d31350b4904122e5ec02ef026715f51a1fe21ee184a452cc67a583`
 
 The implementation revision contains the exact mathematical specification in [`MATH-SPEC.md`](MATH-SPEC.md) and the complete code changes that produce the frozen numerical artifact. The frozen artifact is an implementation-conformance record, not a substitute for the exact mathematics.
 
@@ -45,7 +45,7 @@ The formalization boundary is explicit: Lean is intended to prove the exact-real
 
 ## Review hardening
 
-Four Codex review rounds reduced from **9 findings → 6 findings → 3 findings → 2 findings**, for **20 findings total**. The current kernel fixes and regression-tests all of them.
+Five Codex review rounds reduced from **9 findings → 6 findings → 3 findings → 2 findings → 1 finding**, for **21 findings total**. The current kernel fixes and regression-tests all of them.
 
 The hardening includes:
 
@@ -57,8 +57,9 @@ The hardening includes:
 - exact dyadic-rational Menger `kappa^2` evaluation on represented binary64 displacements, preserving both exact collinearity and genuinely non-collinear near-collinearity before the final binary64 square root;
 - rejection rather than silent zero/infinity if a nonzero represented curvature cannot be expressed as a positive finite binary64 result;
 - scale-aware **14-significant-digit** ordinary output normalization;
-- translation-aware point canonicalization using canonical local displacements, with adaptive **17-significant-digit round-trip origin precision** when ordinary origin rounding would erase a nonzero ULP-sized displacement;
-- explicit rejection if a canonical nonzero displacement still cannot survive absolute-coordinate reconstruction;
+- translation-aware point canonicalization using canonical origin-relative and consecutive local displacements;
+- adaptive **17-significant-digit round-trip origin precision** whenever ordinary origin rounding would erase either a nonzero origin-relative displacement or any nonzero consecutive local step;
+- explicit rejection if any canonical nonzero displacement still cannot survive absolute-coordinate reconstruction;
 - derivation of all trajectory metrics and comparisons from the exact emitted coordinate arrays, preventing serialized points from disagreeing with serialized metrics;
 - rejection of undefined empty finite-difference comparisons rather than emitting `0.0`;
 - strict branch recipes with a required post-branch segment;
@@ -71,9 +72,9 @@ The hardening includes:
 
 ## Edge-case coverage
 
-The Phase 1 unit suite covers order-0/order-1/order-2/higher finite differences, path length, known-circle Menger curvature, axis and diagonal collinearity, repeated points, short sequences, exact zero-length and tiny nonzero paths, tiny opposing vectors, `1e100`-scale cosine vectors, finite-difference overflow from `-1e308` to `+1e308`, large-scale Menger curvature, Codex's exact near-collinear nonzero-curvature counterexample, late small arc-length segments, large absolute coordinates with small representable displacements, the ULP spacing-boundary step `9007199254740991 -> 9007199254740992`, serialized-point/metric consistency, undefined empty comparisons, dimension mismatch, truncate/error/arc-length alignment, deterministic replay, implementation-revision hash binding, strict recipe object shapes, duplicate comparison IDs, invalid forward/self references, branch bounds, source-provenance behavior, result-schema shapes, the frozen arc-length count rule, and frozen-metadata identities.
+The Phase 1 unit suite covers order-0/order-1/order-2/higher finite differences, path length, known-circle Menger curvature, axis and diagonal collinearity, repeated points, short sequences, exact zero-length and tiny nonzero paths, tiny opposing vectors, `1e100`-scale cosine vectors, finite-difference overflow from `-1e308` to `+1e308`, large-scale Menger curvature, Codex's exact near-collinear nonzero-curvature counterexample, late small arc-length segments, large absolute coordinates with small representable displacements, the ULP spacing-boundary step `9007199254740991 -> 9007199254740992`, Codex's 20-step later-local-collapse counterexample beginning at `0.0019531249999999998`, serialized-point/metric consistency, undefined empty comparisons, dimension mismatch, truncate/error/arc-length alignment, deterministic replay, implementation-revision hash binding, strict recipe object shapes, duplicate comparison IDs, invalid forward/self references, branch bounds, source-provenance behavior, result-schema shapes, the frozen arc-length count rule, and frozen-metadata identities.
 
-The hardened suite contains **47 unit tests**. GitHub Actions independently reruns the suite on Python 3.11, 3.12, and 3.13; all three jobs pass the tests, frozen metadata verification, and byte-for-byte result identity for the current frozen candidate.
+The hardened suite contains **48 unit tests**. GitHub Actions independently reruns the suite on Python 3.11, 3.12, and 3.13 and verifies the frozen metadata and byte-for-byte result identity for the current frozen candidate.
 
 ## Frozen artifacts
 
