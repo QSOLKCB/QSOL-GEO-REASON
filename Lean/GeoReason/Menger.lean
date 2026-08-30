@@ -95,8 +95,10 @@ theorem circumradius_scale (s : ℝ) (hs : s ≠ 0) (p : Fin 3 → V)
   let base : Affine.Simplex ℝ V 2 := ⟨p, h⟩
   let scaled : Affine.Simplex ℝ V 2 := ⟨fun i => s • p i, hsp⟩
   have hcMap : e base.circumcenter ∈ affineSpan ℝ (Set.range (e ∘ p)) := by
-    rw [Set.range_comp, ← AffineSubspace.map_span]
-    exact AffineSubspace.mem_map_of_mem _ base.circumcenter_mem_affineSpan
+    have hmem : e.toAffineMap base.circumcenter ∈
+        (affineSpan ℝ (Set.range p)).map e.toAffineMap :=
+      AffineSubspace.mem_map_of_mem _ base.circumcenter_mem_affineSpan
+    simpa [AffineSubspace.map_span, Set.range_comp] using hmem
   have hc : s • base.circumcenter ∈ affineSpan ℝ (Set.range fun i => s • p i) := by
     simpa [e, Function.comp_def] using hcMap
   have hd : ∀ i, dist ((fun j => s • p j) i) (s • base.circumcenter) =
