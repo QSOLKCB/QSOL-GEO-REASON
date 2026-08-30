@@ -18,18 +18,19 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       LEAN_NUM_THREADS: "1"
       LEAN_VERSION: "4.33.1"
       LEAN_LINUX_SHA256: "890afd185370f85666025b883914ab4f4b339136f8c96167b69cfb62aecaf235"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Install pinned Lean distribution
         shell: bash
         run: |
           set -euo pipefail
+          test "$(uname -m)" = "x86_64"
           archive="$RUNNER_TEMP/lean-${LEAN_VERSION}-linux.tar.zst"
           url="https://github.com/leanprover/lean4/releases/download/v${LEAN_VERSION}/lean-${LEAN_VERSION}-linux.tar.zst"
           curl --fail --location --proto '=https' --tlsv1.2 "$url" --output "$archive"
