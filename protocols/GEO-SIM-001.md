@@ -50,7 +50,9 @@ Unit tests additionally cover repeated points, short sequences, exact zero-lengt
 
 ## Floating-output identity
 
-Machine-readable result floats are normalized to **15 significant decimal digits** before hashing. Significant-digit normalization is scale-aware and does not impose an absolute floor that collapses sufficiently small nonzero values to zero.
+Machine-readable result floats are normalized to **13 significant decimal digits** before hashing. Significant-digit normalization is scale-aware and does not impose an absolute floor that collapses sufficiently small nonzero values to zero.
+
+Thirteen significant digits are intentionally coarser than binary64's full printed precision so insignificant libm/runtime tail differences do not become evidence identity across the supported Python/Linux CI matrix.
 
 This normalization is a serialization/reproducibility convention, not part of the exact mathematics. Exact negative zero may canonicalize to positive zero. Non-finite outputs are rejected.
 
