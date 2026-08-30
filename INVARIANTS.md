@@ -118,6 +118,20 @@ The project must preserve tests capable of producing a scientifically meaningful
 
 An experiment design that can only ever be interpreted as support for geometric reasoning is not an adequate test of geometric reasoning.
 
+## Terminology invariant
+
+### GEO-INV-020 — Geometric Reasoning is not Geometric Unity
+
+QSOL-GEO-REASON's use of **geometric reasoning** refers to the measurement, analysis, perturbation, simulation, or training of geometric structure in machine-learning representation spaces.
+
+It does **not** refer to, derive from, endorse, instantiate, validate, or imply any relationship with Eric Weinstein's **Geometric Unity** proposal. The shared word *geometric* establishes no mathematical, scientific, philosophical, evidentiary, or attributional equivalence.
+
+In short:
+
+`Geometric Reasoning != Geometric Unity`
+
+This invariant exists to prevent terminology collision from being mistaken for conceptual inheritance.
+
 ## Change policy
 
 Changes to this file are high-impact scientific-contract changes.
