@@ -98,12 +98,18 @@ class ReleaseKernelRegressionTests(unittest.TestCase):
         record = result["trajectories"][0]
         points = record["points"]
         order_1 = record["metrics"]["order_1"]
+        emitted_differences = finite_difference(points, 1)
+        serialized_differences = [
+            [float(format(value, ".14g")) for value in step]
+            for step in emitted_differences
+        ]
 
         self.assertEqual(len(points), 20)
         self.assertTrue(all(left != right for left, right in zip(points, points[1:])))
+        self.assertTrue(all(step[0] != 0.0 for step in emitted_differences))
         self.assertTrue(all(step[0] != 0.0 for step in order_1))
         self.assertNotEqual(points[16], points[17])
-        self.assertEqual(finite_difference(points, 1), order_1)
+        self.assertEqual(serialized_differences, order_1)
 
     def test_overflowing_finite_difference_is_rejected(self):
         points = [[-1e308], [1e308]]
