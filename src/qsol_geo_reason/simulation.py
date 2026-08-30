@@ -265,9 +265,13 @@ def _generate(item: dict[str, Any], trajectories: dict[str, list[list[float]]], 
     raise AssertionError(kind)
 
 
-def _round_float(value: float, digits: int = 15) -> float:
-    value = round(float(value), digits)
-    return 0.0 if value == -0.0 else value
+def _round_float(value: float, significant_digits: int = 15) -> float:
+    """Normalize a finite float to significant digits without an absolute zero floor."""
+    value = float(value)
+    if not math.isfinite(value):
+        raise RecipeError("result contains a non-finite numeric value")
+    normalized = float(format(value, f".{significant_digits}g"))
+    return 0.0 if normalized == 0.0 else normalized
 
 
 def _round_nested(value: Any) -> Any:
@@ -309,18 +313,22 @@ def run_recipe(recipe: dict[str, Any], *, implementation_revision: str) -> dict[
 
     comparisons = []
     for comp in recipe["comparisons"]:
+        try:
+            score = cosine_alignment(
+                trajectories[comp["left"]],
+                trajectories[comp["right"]],
+                order=comp.get("order", 1),
+                align=comp.get("align", "truncate"),
+            )
+        except ValueError as exc:
+            raise RecipeError(f"comparison {comp['id']} is undefined: {exc}") from exc
         comparisons.append(_round_nested({
             "id": comp["id"],
             "left": comp["left"],
             "right": comp["right"],
             "order": comp.get("order", 1),
             "align": comp.get("align", "truncate"),
-            "mean_cosine_alignment": cosine_alignment(
-                trajectories[comp["left"]],
-                trajectories[comp["right"]],
-                order=comp.get("order", 1),
-                align=comp.get("align", "truncate"),
-            ),
+            "mean_cosine_alignment": score,
         }))
 
     payload = _round_nested({
