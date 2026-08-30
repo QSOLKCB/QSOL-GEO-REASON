@@ -24,6 +24,8 @@ Cosine alignment uses an explicit alignment policy (`error`, `truncate`, or `arc
 
 If the selected finite-difference order leaves no samples, cosine alignment is undefined and the comparison is rejected. It is never emitted as a valid-looking score of `0.0`.
 
+Every binary64 finite-difference subtraction is checked immediately for finiteness. Finite operands whose subtraction overflows to a non-finite value are outside the Phase 1 numerical conformance domain and are rejected before the result can reach cosine, path, or curvature metrics.
+
 For three consecutive distinct points with side lengths `a,b,c` and Euclidean triangle area `A`, Menger curvature is `kappa = 4A/(abc)`. The reference implementation computes the equivalent squared expression over exact dyadic-rational representations of the stored binary64 displacement vectors and converts only the final positive square root back to binary64. Repeated-point or exactly collinear represented triples have curvature 0 by convention. A non-collinear represented triple is never turned into zero merely because unit-vector subtraction rounded away its angle; an unrepresentably small nonzero binary64 result is rejected instead.
 
 ## Alignment
@@ -54,29 +56,35 @@ The evidence record must be internally self-consistent: serialized points and se
 
 To make significant-digit normalization stable under large absolute coordinate offsets, each generated trajectory is canonicalized relative to its first raw point:
 
-1. normalize the first point to the frozen significant-digit precision;
-2. compute each raw point's displacement from that raw first point;
-3. normalize each displacement independently to the same significant-digit precision;
-4. reconstruct the emitted absolute coordinates as canonical origin plus canonical displacement;
-5. compute trajectory hashes, finite differences, path length, Menger curvature, and all cross-trajectory comparisons from those emitted coordinates.
+1. compute every raw point's displacement from the raw first point;
+2. normalize each displacement independently to the frozen 14-significant-digit evidence precision;
+3. initially normalize the first point to the same 14-significant-digit precision;
+4. reconstruct the candidate emitted absolute coordinates as canonical origin plus canonical displacement;
+5. if that candidate origin would cause any nonzero canonical coordinate displacement to round back onto the origin, re-encode the origin at 17-significant-digit binary64 round-trip precision and reconstruct again;
+6. reject the trajectory if a nonzero canonical displacement would still be erased;
+7. compute trajectory hashes, finite differences, path length, Menger curvature, and all cross-trajectory comparisons from those verified emitted coordinates.
 
-This rule preserves a representable local displacement such as `2` on top of an absolute coordinate near `1e16`; the result may not serialize a null coordinate path while retaining non-null derived geometry.
+The 17-digit origin path is an adaptive spacing-boundary safeguard, not the ordinary evidence precision. It preserves ULP-sized representable steps such as `9007199254740991 -> 9007199254740992` while keeping ordinary generated coordinates on the coarser cross-runtime evidence normalization.
+
+The result may not serialize a null coordinate path while retaining non-null derived geometry.
 
 ## Reference expectations
 
 The frozen suite requires: straight curvature 0; radius-2 circle curvature 0.5 at every interior point within absolute tolerance `1e-12`; null path length 0; carrier translation changes positions while preserving order-1 differences and curvature; carrier/control order-1 cosine alignment 1; suffix-shift alignment strictly below 1; and byte-identical replay for fixed recipe plus implementation revision.
 
-Unit tests additionally cover repeated points, short sequences, exact zero-length paths, tiny nonzero paths and vectors, very large vectors, near-collinear nonzero curvature, late small arc-length segments, large absolute coordinate offsets with small local displacements, dimension mismatch, arbitrary finite-difference order, undefined empty comparisons, all Phase-1 alignment policies, recipe identity errors, and frozen-metadata identity enforcement.
+Unit tests additionally cover repeated points, short sequences, exact zero-length paths, tiny nonzero paths and vectors, very large vectors, near-collinear nonzero curvature, late small arc-length segments, large absolute coordinate offsets with small local displacements, ULP-sized origin offsets near binary64 spacing boundaries, finite-difference subtraction overflow, dimension mismatch, arbitrary finite-difference order, undefined empty comparisons, all Phase-1 alignment policies, recipe identity errors, and frozen-metadata identity enforcement.
 
 ## Floating-output identity
 
-Machine-readable finite values are canonicalized to **14 significant decimal digits** for the Phase 1 release candidate. Significant-digit normalization is scale-aware and does not impose an absolute floor that collapses sufficiently small nonzero values to zero.
+Machine-readable finite derived values and ordinary trajectory coordinates are canonicalized to **14 significant decimal digits** for the Phase 1 release candidate. Significant-digit normalization is scale-aware and does not impose an absolute floor that collapses sufficiently small nonzero values to zero.
 
-Coordinates use the first-point-plus-displacement canonicalization above before being emitted. Metrics are then derived from those exact emitted coordinates and normalized for serialization.
+A trajectory origin may use **17 significant decimal digits** only when required to preserve a nonzero canonical displacement that 14-digit origin rounding would erase at a binary64 spacing boundary. Seventeen significant digits provide round-trip identity for a finite binary64 value.
 
-Fourteen significant digits are intentionally coarser than binary64's full printed precision so insignificant libm/runtime tail differences do not become evidence identity across the supported Python/Linux CI matrix while retaining the preregistered radius-2 curvature tolerance.
+Coordinates use the verified first-point-plus-displacement canonicalization above before being emitted. Metrics are then derived from those exact emitted coordinates and normalized for serialization.
 
-This normalization is a serialization/reproducibility convention, not part of the exact mathematics. Exact negative zero may canonicalize to positive zero. Non-finite outputs are rejected.
+Fourteen significant digits remain the ordinary evidence precision so insignificant libm/runtime tail differences do not become evidence identity across the supported Python/Linux CI matrix while retaining the preregistered radius-2 curvature tolerance.
+
+This normalization is a serialization/reproducibility convention, not part of the exact mathematics. Exact negative zero may canonicalize to positive zero. Non-finite outputs and non-finite numerical intermediates are rejected.
 
 ## Hash and provenance binding
 
@@ -88,7 +96,7 @@ When a CLI or reference-generation command derives or verifies a Git implementat
 
 ## Falsifier
 
-Phase 1 fails if the frozen implementation cannot recover the known synthetic properties within the stated tolerances, cannot preserve the specified numerical-domain distinctions, if serialized points and metrics disagree about the represented trajectory, if frozen provenance identities disagree, or if it cannot regenerate its frozen fixture byte-for-byte.
+Phase 1 fails if the frozen implementation cannot recover the known synthetic properties within the stated tolerances, cannot preserve the specified numerical-domain distinctions, if serialized points and metrics disagree about the represented trajectory, if a finite binary64 intermediate silently becomes non-finite, if frozen provenance identities disagree, or if it cannot regenerate its frozen fixture byte-for-byte.
 
 ## Claim ceiling
 
