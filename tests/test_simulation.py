@@ -45,13 +45,21 @@ class SimulationTests(unittest.TestCase):
 
     def test_forward_reference_rejected(self):
         bad = self.clone_recipe()
-        bad["trajectories"][0] = {"id": "bad", "kind": "translation", "parameters": {"source": "carrier_a", "shift": [1, 1]}}
+        bad["trajectories"][0] = {
+            "id": "bad",
+            "kind": "translation",
+            "parameters": {"source": "carrier_a", "shift": [1, 1]},
+        }
         with self.assertRaises(RecipeError):
             validate_recipe(bad)
 
     def test_self_reference_rejected(self):
         bad = self.clone_recipe()
-        bad["trajectories"][0] = {"id": "bad", "kind": "translation", "parameters": {"source": "bad", "shift": [1, 1]}}
+        bad["trajectories"][0] = {
+            "id": "bad",
+            "kind": "translation",
+            "parameters": {"source": "bad", "shift": [1, 1]},
+        }
         with self.assertRaises(RecipeError):
             validate_recipe(bad)
 
@@ -89,6 +97,55 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(comparisons["control_velocity_alignment"]["mean_cosine_alignment"], 1.0)
         self.assertLess(comparisons["causal_velocity_alignment"]["mean_cosine_alignment"], 1.0)
 
+    def test_tiny_nonzero_values_survive_result_normalization(self):
+        recipe = {
+            "schema_version": "1.0.0",
+            "recipe_id": "tiny",
+            "seed": 0,
+            "trajectories": [
+                {
+                    "id": "tiny",
+                    "kind": "straight",
+                    "parameters": {
+                        "start": [0.0],
+                        "direction": [1.0],
+                        "steps": 2,
+                        "step_size": 1e-16,
+                    },
+                }
+            ],
+            "comparisons": [],
+        }
+        result = run_recipe(recipe, implementation_revision="test-revision")
+        trajectory = result["trajectories"][0]
+        self.assertEqual(trajectory["points"][-1], [1e-16])
+        self.assertEqual(trajectory["metrics"]["order_1"], [[1e-16]])
+        self.assertEqual(trajectory["metrics"]["path_length"], 1e-16)
+
+    def test_undefined_comparison_is_rejected(self):
+        recipe = {
+            "schema_version": "1.0.0",
+            "recipe_id": "undefined-comparison",
+            "seed": 0,
+            "trajectories": [
+                {
+                    "id": "line",
+                    "kind": "straight",
+                    "parameters": {
+                        "start": [0.0],
+                        "direction": [1.0],
+                        "steps": 2,
+                        "step_size": 1.0,
+                    },
+                }
+            ],
+            "comparisons": [
+                {"id": "too-high-order", "left": "line", "right": "line", "order": 2, "align": "error"}
+            ],
+        }
+        with self.assertRaisesRegex(RecipeError, "undefined"):
+            run_recipe(recipe, implementation_revision="test-revision")
+
     def test_result_schema_defines_record_shapes(self):
         schema = json.loads((ROOT / "schemas/simulation-result.schema.json").read_text(encoding="utf-8"))
         self.assertEqual(schema["properties"]["trajectories"]["items"]["$ref"], "#/$defs/trajectory")
@@ -107,3 +164,7 @@ class SimulationTests(unittest.TestCase):
             run_recipe(self.recipe, implementation_revision="rev-a")["artifact_sha256"],
             run_recipe(self.recipe, implementation_revision="rev-b")["artifact_sha256"],
         )
+
+
+if __name__ == "__main__":
+    unittest.main()
