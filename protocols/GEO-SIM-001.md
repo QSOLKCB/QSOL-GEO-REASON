@@ -6,6 +6,8 @@ Evidence class: **`SIMULATION`**
 
 This protocol validates QSOL-GEO-REASON's geometry instrumentation against synthetic trajectories whose relevant properties are known by construction. It does not test a language model and cannot support a claim about model reasoning.
 
+The exact mathematical semantics are frozen in [`MATH-SPEC.md`](../MATH-SPEC.md). This protocol tests a finite-precision reference implementation of that specification.
+
 ## Purpose
 
 The protocol asks whether the implementation can generate deterministic reference trajectories, recover expected finite-difference/path/alignment/curvature properties, distinguish a geometry-preserving control from a deliberately geometry-changing suffix perturbation, and regenerate the complete result byte-for-byte for a fixed recipe and implementation revision.
@@ -18,13 +20,19 @@ The protocol asks whether the implementation can generate deterministic referenc
 
 For `z_0,...,z_T`, order-1 finite difference is `Delta z_t = z_(t+1)-z_t`; higher orders repeat that operator. Path length is `sum_t ||z_(t+1)-z_t||_2`.
 
-Cosine alignment uses an explicit alignment policy (`error`, `truncate`, or `arclength`), applies the selected finite-difference order, then reports mean pointwise cosine similarity. Two **exactly zero** displacement vectors have alignment 1 by convention; exactly zero versus non-zero has alignment 0. Small nonzero displacements retain their ordinary cosine direction and are not coerced to the zero-vector convention.
+Cosine alignment uses an explicit alignment policy (`error`, `truncate`, or `arclength`), applies the selected finite-difference order, then reports mean pointwise cosine similarity. Two **exact** zero displacement vectors have alignment 1 by convention; exact zero versus non-zero has alignment 0. Nonzero vectors are not reclassified as zero by an absolute threshold.
 
-For three consecutive distinct points with side lengths `a,b,c` and Euclidean triangle area `A`, Menger curvature is `kappa = 4A/(abc)`. Area is obtained from the Gram determinant. Exactly repeated-point or collinear triples have curvature 0 by convention; small nonzero geometry is not clipped solely because of scale.
+If the selected finite-difference order leaves no samples, cosine alignment is undefined and the comparison is rejected. It is never emitted as a valid-looking score of `0.0`.
+
+For three consecutive distinct points with side lengths `a,b,c` and Euclidean triangle area `A`, Menger curvature is `kappa = 4A/(abc)`. The implementation evaluates the equivalent `2 sin(theta)/c` form using scale-normalized vectors to avoid overflow. Repeated-point or collinear triples have curvature 0 by convention.
 
 ## Alignment
 
-`error` requires equal lengths. `truncate` retains the common prefix. `arclength` linearly resamples to equally spaced cumulative-arc-length targets; an **exactly zero-length** path repeats its single geometric location. Small nonzero paths preserve their endpoints and are resampled normally. No interpolation rule is treated as cognitively privileged.
+`error` requires equal lengths. `truncate` retains the common prefix. `arclength` linearly resamples to equally spaced cumulative-arc-length targets; a zero-length path repeats its single geometric location.
+
+For nonzero paths, first and final endpoints are preserved exactly. Segment-length accumulation must not erase a short segment merely because it follows a much larger segment.
+
+No interpolation rule is treated as cognitively privileged.
 
 ## Deterministic noise
 
@@ -38,11 +46,13 @@ Runtime recipe validation follows the published top-level trajectory/comparison 
 
 The frozen suite requires: straight curvature 0; radius-2 circle curvature 0.5 at every interior point within absolute tolerance `1e-12`; null path length 0; carrier translation changes positions while preserving order-1 differences and curvature; carrier/control order-1 cosine alignment 1; suffix-shift alignment strictly below 1; and byte-identical replay for fixed recipe plus implementation revision.
 
-Unit tests additionally cover repeated points, short sequences, zero-length and tiny-nonzero paths, dimension mismatch, arbitrary finite-difference order, tiny nonzero vectors/curvature, all Phase-1 alignment policies, recipe identity errors, and frozen-metadata identity enforcement.
+Unit tests additionally cover repeated points, short sequences, exact zero-length paths, tiny nonzero paths and vectors, very large vectors, late small arc-length segments, dimension mismatch, arbitrary finite-difference order, undefined empty comparisons, all Phase-1 alignment policies, recipe identity errors, and frozen-metadata identity enforcement.
 
 ## Floating-output identity
 
-Machine-readable result floats are rounded to 15 decimal digits before hashing so insignificant libm tail bits do not become artifact identity across supported Python/Linux CI environments.
+Machine-readable result floats are normalized to **15 significant decimal digits** before hashing. Significant-digit normalization is scale-aware and does not impose an absolute floor that collapses sufficiently small nonzero values to zero.
+
+This normalization is a serialization/reproducibility convention, not part of the exact mathematics. Exact negative zero may canonicalize to positive zero. Non-finite outputs are rejected.
 
 ## Hash and provenance binding
 
@@ -50,12 +60,18 @@ Every result records `protocol_id`, `recipe_sha256`, `implementation_revision`, 
 
 `tools/verify_reference.py` verifies every one of those frozen metadata identities against the recipe, regenerated record, and frozen result before accepting byte identity.
 
-When a CLI or reference-generation command derives or verifies a Git implementation revision from the source checkout, the checkout must be clean. A dirty working tree cannot be silently attributed to `HEAD`.
+When a CLI or reference-generation command derives or verifies a Git implementation revision from the source checkout, tracked changes and source-relevant untracked files make the checkout dirty and revision binding is rejected. Untracked interpreter/build artifacts such as `__pycache__`, bytecode, editable-install metadata, and ordinary build caches are not source identity.
 
 ## Falsifier
 
-Phase 1 fails if the frozen implementation cannot recover the known synthetic properties within the stated tolerances, if frozen provenance identities disagree, or if it cannot regenerate its frozen fixture byte-for-byte.
+Phase 1 fails if the frozen implementation cannot recover the known synthetic properties within the stated tolerances, cannot preserve the specified numerical-domain distinctions, if frozen provenance identities disagree, or if it cannot regenerate its frozen fixture byte-for-byte.
 
 ## Claim ceiling
 
 Success permits only an instrumentation claim: under GEO-SIM-001, the implementation deterministically recovers the preregistered synthetic geometry. It does not permit claims about real LLM reasoning, hidden-state smoothness, logical equivalence, or training benefit.
+
+## Formalization handoff
+
+After this mathematical kernel receives a green exact-head review and is merged, the intended next step is to freeze an immutable release/tag. Lean 4 formalization should then target the `GEO-MATH-*` definitions and `GEO-LEAN-TGT-*` theorem targets in `MATH-SPEC.md` against that exact frozen release.
+
+A Lean proof is a new formal evidence layer. It must not be described as retroactively proving the Python floating-point implementation unless a separate refinement argument is established.
