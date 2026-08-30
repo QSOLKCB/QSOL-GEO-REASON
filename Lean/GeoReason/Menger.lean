@@ -15,8 +15,9 @@ For an affinely independent triple this is the reciprocal of its Euclidean
 circumradius. Affinely dependent triples, including repeated or collinear
 points, use the project convention `κ = 0`.
 -/
-def mengerCurvature (p : Fin 3 → V) : ℝ :=
-  if h : AffineIndependent ℝ p then
+noncomputable def mengerCurvature (p : Fin 3 → V) : ℝ := by
+  classical
+  exact if h : AffineIndependent ℝ p then
     1 / (⟨p, h⟩ : Affine.Simplex ℝ V 2).circumradius
   else
     0
@@ -24,10 +25,12 @@ def mengerCurvature (p : Fin 3 → V) : ℝ :=
 /-- Affine Euclidean isometries preserve the exact project Menger curvature. -/
 theorem mengerCurvature_affineIsometry (f : V →ᵃⁱ[ℝ] V) (p : Fin 3 → V) :
     mengerCurvature (fun i => f (p i)) = mengerCurvature p := by
+  classical
   by_cases h : AffineIndependent ℝ p
   · have hfp : AffineIndependent ℝ (fun i => f (p i)) := by
       simpa [Function.comp_def] using h.map' f.toAffineMap f.injective
-    rw [mengerCurvature, dif_pos hfp, mengerCurvature, dif_pos h]
+    unfold mengerCurvature
+    rw [dif_pos hfp, dif_pos h]
     let s : Affine.Simplex ℝ V 2 := ⟨p, h⟩
     have hs :
         (⟨fun i => f (p i), hfp⟩ : Affine.Simplex ℝ V 2) =
@@ -41,7 +44,8 @@ theorem mengerCurvature_affineIsometry (f : V →ᵃⁱ[ℝ] V) (p : Fin 3 → V
       apply h
       exact AffineIndependent.of_comp f.toAffineMap (by
         simpa [Function.comp_def] using hbad)
-    simp [mengerCurvature, h, hfp]
+    unfold mengerCurvature
+    rw [dif_neg hfp, dif_neg h]
 
 /-- The affine Euclidean isometry `x ↦ Q x + t`. -/
 def linearTranslateIsometry (Q : V ≃ₗᵢ[ℝ] V) (t : V) : V →ᵃⁱ[ℝ] V :=
@@ -76,6 +80,7 @@ theorem GEO_LEAN_TGT_011 (p : Fin 3 → V) (h : AffineIndependent ℝ p)
     (hc : c ∈ affineSpan ℝ (Set.range p))
     (hon : ∀ i, dist (p i) c = r) :
     mengerCurvature p = 1 / r := by
+  classical
   let s : Affine.Simplex ℝ V 2 := ⟨p, h⟩
   have hc' : c ∈ affineSpan ℝ (Set.range s.points) := by
     simpa [s] using hc
@@ -84,7 +89,8 @@ theorem GEO_LEAN_TGT_011 (p : Fin 3 → V) (h : AffineIndependent ℝ p)
     simpa [s] using hon i
   have hradius : r = s.circumradius :=
     s.eq_circumradius_of_dist_eq hc' hon'
-  rw [mengerCurvature, dif_pos h]
+  unfold mengerCurvature
+  rw [dif_pos h]
   change 1 / s.circumradius = 1 / r
   rw [← hradius]
 
