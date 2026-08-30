@@ -4,7 +4,7 @@ This roadmap is staged to prevent the project from making stronger claims than i
 
 The governing research workflow is:
 
-`contract -> validate instruments -> canonical capture -> validate serving -> observe -> perturb -> replicate -> intervene -> ablate -> claim`
+`contract -> exact math -> validate instruments -> canonical capture -> validate serving -> observe -> perturb -> replicate -> intervene -> ablate -> claim`
 
 This is a workflow, not a claim ladder. Replication status remains orthogonal to evidence class.
 
@@ -36,10 +36,11 @@ A later phase may prototype early, but its scientific claims must not outrun the
 
 ## Phase 1 — Deterministic geometry reference simulation
 
-**Status:** **complete in PR #2 candidate branch; frozen `SIMULATION` evidence recorded in [`PHASE-1-REPORT.md`](PHASE-1-REPORT.md).**
+**Status:** **implementation and frozen `SIMULATION` evidence complete in PR #2 candidate branch; exact-head review/release gate still pending.**
 
-**Goal:** prove that the measurement machinery can recover known geometry before touching model hidden states.
+**Goal:** prove that the measurement machinery can recover known geometry before touching model hidden states, while freezing the exact mathematical semantics before later model work depends on them.
 
+- [x] Define the exact Phase 1 mathematical semantics and stable theorem targets in `MATH-SPEC.md`.
 - [x] Define a machine-readable synthetic trajectory recipe schema.
 - [x] Implement deterministic generators for straight, curved, branching, noisy, and null trajectories.
 - [x] Implement known same-logic/different-carrier analogue trajectories by construction.
@@ -49,17 +50,35 @@ A later phase may prototype early, but its scientific claims must not outrun the
 - [x] Implement at least one explicitly defined curvature statistic, initially Menger curvature if retained.
 - [x] Implement deterministic alignment/resampling with edge-case tests.
 - [x] Add degenerate-path, zero-length, repeated-point, short-sequence, and dimension-mismatch tests.
+- [x] Add tiny/large-scale numerical regressions so absolute magnitude alone cannot erase valid geometry.
+- [x] Reject undefined empty finite-difference comparisons rather than encoding them as zero.
 - [x] Produce frozen reference fixtures with expected numerical outputs.
 - [x] Hash-bind simulation recipe, implementation revision, and result artifacts.
 - [x] Mark every generated result record `evidence_class: SIMULATION`.
 
-**Evidence gate:** **PASS** — numerical recovery of known synthetic properties within the preregistered tolerances in `GEO-SIM-001`, plus byte-identical frozen replay.
+**Evidence gate:** **PASS on the current frozen candidate** — numerical recovery of known synthetic properties within the preregistered tolerances in `GEO-SIM-001`, plus metadata-consistent byte-identical frozen replay.
 
-**Bound implementation:** `4850d985c9844d361c053b8cc37f98e402f1f450`.
+**Bound implementation:** `84f57877ea71b5d60939f2c030bf5771a498dfea`.
+
+**Bound result artifact:** `5cf20981169ba561fbe5eb7da873b979a542d2db993ac10540cd51976e12d30f`.
 
 **Non-claim:** successful completion says nothing about real LLM reasoning.
 
 **Candidate delivery:** PR #2.
+
+### Phase 1 release/formalization gate
+
+The Phase 1 implementation is not considered permanently frozen until the review/release handoff is complete.
+
+- [ ] Obtain a fresh Codex review on the exact PR #2 head with no unresolved correctness findings.
+- [ ] Confirm the Python 3.11/3.12/3.13 conformance matrix on that exact head.
+- [ ] Merge PR #2 without changing the reviewed mathematical semantics.
+- [ ] Create an immutable Phase 1 release/tag bound to the merged source and record its exact commit identity.
+- [ ] Treat that immutable tag as the target for the first Lean 4 formalization.
+- [ ] Formalize `GEO-MATH-*` definitions and `GEO-LEAN-TGT-*` theorems without silently strengthening the release claims.
+- [ ] Keep Lean proofs as a separate formal evidence layer; do not claim they automatically prove CPython/IEEE-754 execution.
+
+If the Lean work discovers a mathematical defect in the frozen specification, preserve the frozen release as historical evidence, amend the mathematical contract in a new release, and reprove affected theorem targets against the new identity.
 
 ---
 
@@ -306,7 +325,7 @@ These are deliberately not assumed to be useful until earlier evidence warrants 
 - [ ] information-geometric metrics;
 - [ ] geometric regularization during pretraining rather than fine-tuning;
 - [ ] latent-step reasoning without explicit textual intermediate steps;
-- [ ] formal verification of analysis invariants where it reduces real ambiguity;
+- [ ] formal verification beyond the Phase 1 exact-math kernel where it reduces real ambiguity;
 - [ ] advanced MoE expert-paging or bandwidth-adaptive serving beyond what Phase 2 equivalence testing justifies;
 - [ ] integration with other QSOL repositories only after this repository has stable interfaces and evidence classes.
 
