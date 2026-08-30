@@ -95,9 +95,12 @@ A later phase may prototype early, but its scientific claims must not outrun the
 - [ ] Add answer-correctness labels independently of geometry.
 - [ ] Add shuffled-step and broken-logic controls.
 - [ ] Audit accidental lexical cues that reveal logic class.
+- [ ] Record dataset-generation provenance, including any model-assisted generation or rewriting.
+- [ ] Assess whether proposed evaluation material may already be present in candidate models' pretraining, post-training, benchmark, or fine-tuning exposure.
+- [ ] Prefer newly generated or otherwise exposure-resistant confirmatory items where feasible, while retaining reproducible public baselines separately.
 - [ ] Freeze a first dataset version before confirmatory analysis.
 
-**Evidence gate:** logic and carrier can be varied independently enough to support the planned comparisons.
+**Evidence gate:** logic and carrier can be varied independently enough to support the planned comparisons, with material exposure risks documented.
 
 ---
 
@@ -154,6 +157,10 @@ A later phase may prototype early, but its scientific claims must not outrun the
 - [ ] Add at least one different model family.
 - [ ] Match prompting and evaluation policy as closely as architecture permits.
 - [ ] Record tokenizer and architecture differences explicitly.
+- [ ] Audit dataset-exposure risk separately for every compared model, including known or plausible pretraining, post-training, fine-tuning, and benchmark exposure.
+- [ ] Classify exposure status for each model/dataset pair as `known`, `plausible`, `unlikely`, or `unknown`, with supporting provenance where available.
+- [ ] Treat uncontrolled or unknown differential exposure as a comparison confounder rather than evidence of scale, family, or geometric superiority.
+- [ ] Where feasible, repeat key comparisons on newly generated or exposure-resistant held-out logic/carrier material.
 - [ ] Run quantization sensitivity/ablation where practical.
 - [ ] Compare logic/carrier separation across layers and sizes.
 - [ ] Compare perturbation sensitivity across sizes.
@@ -161,7 +168,7 @@ A later phase may prototype early, but its scientific claims must not outrun the
 - [ ] Identify geometry that appears family-specific rather than general.
 - [ ] Re-run frozen primary analyses without retuning thresholds per model.
 
-**Falsifier:** apparent geometric signatures fail to replicate outside the original model/protocol configuration.
+**Falsifier:** apparent geometric signatures fail to replicate outside the original model/protocol configuration, or an apparent cross-model advantage cannot be separated from material exposure differences.
 
 **Claim ceiling:** `REPLICATION` plus the supported lower classes.
 
