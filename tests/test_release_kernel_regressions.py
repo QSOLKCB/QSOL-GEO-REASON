@@ -75,6 +75,36 @@ class ReleaseKernelRegressionTests(unittest.TestCase):
         self.assertEqual(record["metrics"]["order_1"], [[1.0]])
         self.assertEqual(record["metrics"]["path_length"], 1.0)
 
+    def test_every_consecutive_step_survives_origin_canonicalization(self):
+        recipe = {
+            "schema_version": "1.0.0",
+            "recipe_id": "CONSECUTIVE-STEPS",
+            "seed": 0,
+            "trajectories": [
+                {
+                    "id": "spacing-boundary-line",
+                    "kind": "straight",
+                    "parameters": {
+                        "start": [0.0019531249999999998],
+                        "direction": [1.0],
+                        "steps": 20,
+                        "step_size": 6.505213034913027e-19,
+                    },
+                }
+            ],
+            "comparisons": [],
+        }
+        result = run_recipe(recipe, implementation_revision="test-revision")
+        record = result["trajectories"][0]
+        points = record["points"]
+        order_1 = record["metrics"]["order_1"]
+
+        self.assertEqual(len(points), 20)
+        self.assertTrue(all(left != right for left, right in zip(points, points[1:])))
+        self.assertTrue(all(step[0] != 0.0 for step in order_1))
+        self.assertNotEqual(points[16], points[17])
+        self.assertEqual(finite_difference(points, 1), order_1)
+
     def test_overflowing_finite_difference_is_rejected(self):
         points = [[-1e308], [1e308]]
         with self.assertRaisesRegex(ValueError, "displacement is not finite"):
