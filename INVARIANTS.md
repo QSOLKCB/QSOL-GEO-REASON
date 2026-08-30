@@ -70,9 +70,11 @@ Simulation outputs must be labelled as synthetic, and successful recovery of kno
 
 ### GEO-INV-012 — Model comparisons expose material confounders
 
-Comparisons across models must record material differences including architecture/family, tokenizer, parameter count, quantization, dtype, prompting, generation settings, context, training/evaluation budget, and dataset-exposure or contamination risk where known or plausibly different.
+Comparisons across models must record material differences including architecture/family, tokenizer, parameter count, quantization, dtype, prompting, generation settings, context, training/evaluation budget, serving backend, and dataset-exposure or contamination risk where known or plausibly different.
 
-Unknown exposure status is itself a documented confounder. If material differences are not controlled, causal wording is prohibited.
+Exposure assessments must distinguish the assessed outcome from confidence in that assessment. Unknown exposure is itself a documented confounder, and absence of evidence is not evidence of non-exposure.
+
+If material differences are not controlled, causal wording is prohibited.
 
 ### GEO-INV-013 — Training interventions require controlled baselines
 
@@ -106,13 +108,29 @@ Known or suspected contamination must be disclosed.
 
 ### GEO-INV-018 — Claims bind to exact evidence artifacts
 
-Every published experimental claim must be traceable to the exact model revision, dataset/protocol revision, code revision, run manifest, and result artifact that support it.
+Every published experimental claim must be traceable to the exact code revision, protocol identity, model revision, dataset revision, run ID/run manifest, serving backend where applicable, and result artifacts that support it.
 
 A later run may strengthen or weaken a claim, but must not silently replace the evidence identity of an earlier claim.
 
+### GEO-INV-019 — Replication status is not an evidence class
+
+Replication describes whether a previously defined result survives a materially varied repetition. It does not replace the evidence class of the experiment being replicated.
+
+For example, a controlled perturbation that reproduces on another model remains `PERTURBATION` evidence with a separate replication status.
+
+Result schemas and prose must preserve both dimensions independently.
+
+### GEO-INV-020 — Serving output equivalence is not representation equivalence
+
+Two serving backends producing the same generated tokens, final answer, or benchmark score are not thereby shown to produce equivalent hidden states or reasoning-flow geometry.
+
+Serving backend, precision, kernels, device placement, offloading, cache/state reuse, and related runtime choices remain measurement variables until a serving-equivalence protocol demonstrates otherwise for the claim being made.
+
+Resource optimizations may change performance; they must not silently redefine the scientific object under measurement.
+
 ## Research-program invariant
 
-### GEO-INV-019 — The repository must remain capable of falsifying its motivating hypothesis
+### GEO-INV-021 — The repository must remain capable of falsifying its motivating hypothesis
 
 The project must preserve tests capable of producing a scientifically meaningful negative conclusion.
 
@@ -120,7 +138,7 @@ An experiment design that can only ever be interpreted as support for geometric 
 
 ## Terminology invariant
 
-### GEO-INV-020 — Geometric Reasoning is not Geometric Unity
+### GEO-INV-022 — Geometric Reasoning is not Geometric Unity
 
 QSOL-GEO-REASON's use of **geometric reasoning** refers to the measurement, analysis, perturbation, simulation, or training of geometric structure in machine-learning representation spaces.
 
