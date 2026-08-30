@@ -8,8 +8,6 @@ from typing import Sequence
 Point = list[float]
 Trajectory = list[Point]
 
-_EPS = 1e-15
-
 
 def _validate_trajectory(points: Sequence[Sequence[float]], *, name: str = "trajectory") -> int:
     if not isinstance(points, Sequence):
@@ -40,7 +38,6 @@ def finite_difference(points: Sequence[Sequence[float]], order: int = 1) -> Traj
     order=0 returns a float-normalized copy of the input. If order is greater
     than or equal to the trajectory length, an empty sequence is returned.
     """
-
     _validate_trajectory(points)
     if not isinstance(order, int) or order < 0:
         raise ValueError("order must be a non-negative integer")
@@ -63,8 +60,11 @@ def path_length(points: Sequence[Sequence[float]]) -> float:
 
 
 def resample_arclength(points: Sequence[Sequence[float]], count: int) -> Trajectory:
-    """Linearly resample a trajectory at equally spaced arc-length targets."""
+    """Linearly resample a trajectory at equally spaced arc-length targets.
 
+    Only an exactly zero-length path is collapsed to repeated copies. Small
+    but nonzero geometry remains scale-faithful.
+    """
     dim = _validate_trajectory(points)
     if not isinstance(count, int) or count <= 0:
         raise ValueError("count must be a positive integer")
@@ -78,7 +78,7 @@ def resample_arclength(points: Sequence[Sequence[float]], count: int) -> Traject
     for i in range(len(pts) - 1):
         cumulative.append(cumulative[-1] + _distance(pts[i], pts[i + 1]))
     total = cumulative[-1]
-    if total <= _EPS:
+    if total == 0.0:
         return [pts[0][:] for _ in range(count)]
 
     targets = [total * i / (count - 1) for i in range(count)]
@@ -91,7 +91,7 @@ def resample_arclength(points: Sequence[Sequence[float]], count: int) -> Traject
             out.append(pts[-1][:])
             continue
         lo, hi = cumulative[segment], cumulative[segment + 1]
-        if hi - lo <= _EPS:
+        if hi == lo:
             out.append(pts[segment + 1][:])
             continue
         weight = (target - lo) / (hi - lo)
@@ -137,8 +137,8 @@ def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
         raise ValueError("vector dimension mismatch")
     aa = math.fsum(float(x) * float(x) for x in a)
     bb = math.fsum(float(x) * float(x) for x in b)
-    if aa <= _EPS or bb <= _EPS:
-        return 1.0 if aa <= _EPS and bb <= _EPS else 0.0
+    if aa == 0.0 or bb == 0.0:
+        return 1.0 if aa == 0.0 and bb == 0.0 else 0.0
     dot = math.fsum(float(x) * float(y) for x, y in zip(a, b))
     value = dot / math.sqrt(aa * bb)
     return max(-1.0, min(1.0, value))
@@ -152,7 +152,6 @@ def cosine_alignment(
     align: str = "truncate",
 ) -> float:
     """Mean pointwise cosine similarity after alignment and finite differencing."""
-
     a, b = align_pair(left, right, mode=align)
     a = finite_difference(a, order)
     b = finite_difference(b, order)
@@ -169,9 +168,8 @@ def menger_curvature_sequence(points: Sequence[Sequence[float]]) -> list[float]:
 
     For side lengths a,b,c and triangle area A, kappa = 4A/(abc). The
     dimension-independent area is obtained from the Gram determinant.
-    Repeated points and collinear triples are assigned curvature zero.
+    Exactly repeated points and collinear triples are assigned curvature zero.
     """
-
     _validate_trajectory(points)
     if len(points) < 3:
         return []
@@ -184,14 +182,16 @@ def menger_curvature_sequence(points: Sequence[Sequence[float]]) -> list[float]:
         b = math.sqrt(math.fsum(x * x for x in v))
         chord = [float(c) - float(a0) for a0, c in zip(p0, p2)]
         c = math.sqrt(math.fsum(x * x for x in chord))
-        if a <= _EPS or b <= _EPS or c <= _EPS:
+        if a == 0.0 or b == 0.0 or c == 0.0:
             out.append(0.0)
             continue
         uu = math.fsum(x * x for x in u)
         vv = math.fsum(x * x for x in v)
         uv = math.fsum(x * y for x, y in zip(u, v))
         gram = max(0.0, uu * vv - uv * uv)
+        if gram == 0.0:
+            out.append(0.0)
+            continue
         area = 0.5 * math.sqrt(gram)
-        kappa = (4.0 * area) / (a * b * c)
-        out.append(0.0 if abs(kappa) <= _EPS else kappa)
+        out.append((4.0 * area) / (a * b * c))
     return out
