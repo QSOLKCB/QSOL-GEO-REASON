@@ -92,25 +92,27 @@ The frozen protocol is [`GEO-SIM-001`](protocols/GEO-SIM-001.md). It provides:
 - dimension-independent Menger curvature;
 - deterministic truncate/error/arc-length alignment and resampling;
 - canonical JSON and SHA-256 evidence binding;
-- frozen reference fixtures and byte-for-byte replay verification;
+- frozen reference fixtures with full metadata-identity and byte-for-byte replay verification;
 - CI on Python 3.11, 3.12, and 3.13.
 
 Frozen identities:
 
-- implementation revision: `4850d985c9844d361c053b8cc37f98e402f1f450`
+- protocol: `GEO-SIM-001`
+- implementation revision: `e23c057e283c22cfec9de11b623e8f4d2173da75`
 - recipe SHA-256: `763edeb96a1eec8d87a90d200f8c03a3e2131ec924b558e26492640a342dbbeb`
-- result artifact SHA-256: `4124db87a775dc2d1f7ae83418dbe8e9e0f3b26f1fcc5c2b2556781a93bd25e1`
+- result artifact SHA-256: `c2c93399b4352958e6a95e4336d4cd7b5800eb16937126173805763c661ebd37`
 
-The frozen checks recover straight-line curvature `0`, radius-2 circular curvature `0.5`, null path length `0`, carrier/control order-1 alignment `1.0`, and a lower order-1 alignment for the deliberate suffix perturbation. See [`PHASE-1-REPORT.md`](PHASE-1-REPORT.md).
+The frozen checks recover straight-line curvature `0`, radius-2 circular curvature within `0.5 ± 1e-12`, null path length `0`, carrier/control order-1 alignment `1.0`, and a lower order-1 alignment for the deliberate suffix perturbation. The hardened suite also preserves tiny nonzero geometry rather than classifying it as zero. See [`PHASE-1-REPORT.md`](PHASE-1-REPORT.md).
 
 ### Running the reference simulation
 
 ```bash
 python -m pip install -e .
 python -m qsol_geo_reason recipes/reference-suite.json \
-  --output /tmp/reference-result.json \
-  --implementation-revision "$(git rev-parse HEAD)"
+  --output /tmp/reference-result.json
 ```
+
+The CLI uses `HEAD` only when the source checkout is clean. A dirty checkout is rejected rather than silently binding modified source bytes to the last commit.
 
 Verify the frozen evidence artifact:
 
