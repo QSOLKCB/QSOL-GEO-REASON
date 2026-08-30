@@ -2,7 +2,7 @@
 
 **Experimental research framework for measuring, perturbing, simulating, and eventually training geometric reasoning flows in local language-model representation spaces.**
 
-> Status: **foundation / pre-experiment**. This repository currently defines the scientific contract, invariants, documentation, and research roadmap. It does **not** yet claim empirical evidence that geometric structure causes, explains, or improves reasoning.
+> Status: **Phase 1 complete / synthetic instrument validated**. The repository now contains a deterministic geometry reference instrument and frozen `SIMULATION` evidence. It still makes **no empirical claim about any language model**.
 
 ## Research question
 
@@ -46,6 +46,8 @@ The normative rules are frozen in [`INVARIANTS.md`](INVARIANTS.md) and [`SCIENTI
 | [`INVARIANTS.md`](INVARIANTS.md) | Human + AI | Non-negotiable epistemic and experimental invariants |
 | [`SCIENTIFIC-CONTRACT.md`](SCIENTIFIC-CONTRACT.md) | Human + AI | Evidence classes, replication status, operational definitions, provenance, and experiment rules |
 | [`ROADMAP.md`](ROADMAP.md) | Human + AI | Staged research programme |
+| [`protocols/GEO-SIM-001.md`](protocols/GEO-SIM-001.md) | Human + AI | Phase 1 synthetic conformance protocol |
+| [`PHASE-1-REPORT.md`](PHASE-1-REPORT.md) | Human + AI | Frozen Phase 1 evidence summary and hashes |
 
 ## Initial research context
 
@@ -76,6 +78,47 @@ Serving ideas such as hardware profiling, phase-aware prefill/decode execution, 
 
 For representation research, the serving backend is itself part of the instrument. An optimized backend must either pass a serving-equivalence protocol against the canonical capture path or remain an explicit experimental variable.
 
+## Phase 1 reference instrument
+
+Phase 1 validates the measurement machinery **before any model hidden state is touched**.
+
+The frozen protocol is [`GEO-SIM-001`](protocols/GEO-SIM-001.md). It provides:
+
+- deterministic straight, circular, branching, noisy, and null trajectory generators;
+- same-flow/different-carrier synthetic analogues by rigid translation;
+- geometry-preserving control translation and a geometry-changing suffix perturbation;
+- order-0 through configurable order-k finite differences;
+- Euclidean path length and mean cosine alignment;
+- dimension-independent Menger curvature;
+- deterministic truncate/error/arc-length alignment and resampling;
+- canonical JSON and SHA-256 evidence binding;
+- frozen reference fixtures and byte-for-byte replay verification;
+- CI on Python 3.11, 3.12, and 3.13.
+
+Frozen identities:
+
+- implementation revision: `4850d985c9844d361c053b8cc37f98e402f1f450`
+- recipe SHA-256: `763edeb96a1eec8d87a90d200f8c03a3e2131ec924b558e26492640a342dbbeb`
+- result artifact SHA-256: `4124db87a775dc2d1f7ae83418dbe8e9e0f3b26f1fcc5c2b2556781a93bd25e1`
+
+The frozen checks recover straight-line curvature `0`, radius-2 circular curvature `0.5`, null path length `0`, carrier/control order-1 alignment `1.0`, and a lower order-1 alignment for the deliberate suffix perturbation. See [`PHASE-1-REPORT.md`](PHASE-1-REPORT.md).
+
+### Running the reference simulation
+
+```bash
+python -m pip install -e .
+python -m qsol_geo_reason recipes/reference-suite.json \
+  --output /tmp/reference-result.json \
+  --implementation-revision "$(git rev-parse HEAD)"
+```
+
+Verify the frozen evidence artifact:
+
+```bash
+python -m unittest discover -s tests -v
+python tools/verify_reference.py
+```
+
 ## Evidence classes and replication
 
 The repository uses six evidence classes defined normatively in [`SCIENTIFIC-CONTRACT.md`](SCIENTIFIC-CONTRACT.md):
@@ -87,7 +130,7 @@ The repository uses six evidence classes defined normatively in [`SCIENTIFIC-CON
 5. **`INTERVENTION`**: intentionally alter a model, training process, or representation property and test downstream change against a controlled baseline.
 6. **`MECHANISM`**: identify a specific internal process that survives targeted intervention, ablation, prediction, and alternative-explanation tests.
 
-**Replication is orthogonal to that sequence.** A result separately records whether the underlying evidence has been replicated, failed replication, produced mixed replications, or has not yet been replicated. Reproducing a `PERTURBATION` result does not turn it into a different kind of experiment.
+**Replication is orthogonal to that sequence.** A result separately records whether the underlying evidence has been replicated, failed replication, produced mixed replications, or has not yet been replicated.
 
 These are claim ceilings, not an automatic ladder: completing a later experiment does not silently grant every stronger interpretation.
 
@@ -95,9 +138,10 @@ See [`ROADMAP.md`](ROADMAP.md) for the full programme.
 
 ## Non-claims
 
-At the foundation stage, QSOL-GEO-REASON does **not** claim that:
+Phase 1 does **not** claim that:
 
 - latent or representation geometry is the mechanism of reasoning;
+- any LLM has been observed to produce the synthetic structures in the fixture;
 - smooth trajectories imply correct reasoning;
 - curvature, velocity, or other geometric quantities have a unique cognitive interpretation;
 - matching outputs across serving engines imply matching hidden-state geometry;
