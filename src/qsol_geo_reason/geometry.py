@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from fractions import Fraction
 from typing import Sequence
 
 Point = list[float]
@@ -26,10 +27,36 @@ def _validate_trajectory(points: Sequence[Sequence[float]], *, name: str = "traj
     return dim
 
 
-def _distance(a: Sequence[float], b: Sequence[float]) -> float:
+def _vector_between(a: Sequence[float], b: Sequence[float]) -> list[float]:
     if len(a) != len(b):
         raise ValueError("point dimension mismatch")
-    return math.sqrt(math.fsum((float(x) - float(y)) ** 2 for x, y in zip(a, b)))
+    delta = [float(y) - float(x) for x, y in zip(a, b)]
+    if any(not math.isfinite(x) for x in delta):
+        raise ValueError("point displacement is not finite")
+    return delta
+
+
+def _norm(vector: Sequence[float]) -> float:
+    values = [float(x) for x in vector]
+    if any(not math.isfinite(x) for x in values):
+        raise ValueError("vector contains non-finite value")
+    return math.hypot(*values)
+
+
+def _unit(vector: Sequence[float]) -> list[float] | None:
+    values = [float(x) for x in vector]
+    if not values:
+        raise ValueError("vector must contain at least one component")
+    scale = max(abs(x) for x in values)
+    if scale == 0.0:
+        return None
+    scaled = [x / scale for x in values]
+    norm = math.hypot(*scaled)
+    return [x / norm for x in scaled]
+
+
+def _distance(a: Sequence[float], b: Sequence[float]) -> float:
+    return _norm(_vector_between(a, b))
 
 
 def finite_difference(points: Sequence[Sequence[float]], order: int = 1) -> Trajectory:
@@ -39,7 +66,7 @@ def finite_difference(points: Sequence[Sequence[float]], order: int = 1) -> Traj
     than or equal to the trajectory length, an empty sequence is returned.
     """
     _validate_trajectory(points)
-    if not isinstance(order, int) or order < 0:
+    if not isinstance(order, int) or isinstance(order, bool) or order < 0:
         raise ValueError("order must be a non-negative integer")
     current = [[float(x) for x in point] for point in points]
     for _ in range(order):
@@ -56,17 +83,24 @@ def path_length(points: Sequence[Sequence[float]]) -> float:
     _validate_trajectory(points)
     if len(points) == 1:
         return 0.0
-    return math.fsum(_distance(points[i], points[i + 1]) for i in range(len(points) - 1))
+    result = math.fsum(_distance(points[i], points[i + 1]) for i in range(len(points) - 1))
+    if not math.isfinite(result):
+        raise ValueError("path length is not finite")
+    return result
 
 
 def resample_arclength(points: Sequence[Sequence[float]], count: int) -> Trajectory:
     """Linearly resample a trajectory at equally spaced arc-length targets.
 
-    Only an exactly zero-length path is collapsed to repeated copies. Small
-    but nonzero geometry remains scale-faithful.
+    Segment lengths are accumulated as exact rational representations of their
+    binary64 values. This prevents a short late segment from disappearing when
+    preceded by a much larger segment. The first and final samples are always
+    the exact input endpoints.
+
+    Only an exactly zero-length path is collapsed to repeated copies.
     """
     dim = _validate_trajectory(points)
-    if not isinstance(count, int) or count <= 0:
+    if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
         raise ValueError("count must be a positive integer")
     pts = [[float(x) for x in point] for point in points]
     if count == 1:
@@ -74,27 +108,38 @@ def resample_arclength(points: Sequence[Sequence[float]], count: int) -> Traject
     if len(pts) == 1:
         return [pts[0][:] for _ in range(count)]
 
-    cumulative = [0.0]
-    for i in range(len(pts) - 1):
-        cumulative.append(cumulative[-1] + _distance(pts[i], pts[i + 1]))
-    total = cumulative[-1]
-    if total == 0.0:
+    segment_lengths = [_distance(pts[i], pts[i + 1]) for i in range(len(pts) - 1)]
+    exact_lengths = [Fraction.from_float(length) for length in segment_lengths]
+    total = sum(exact_lengths, Fraction(0, 1))
+    if total == 0:
         return [pts[0][:] for _ in range(count)]
 
-    targets = [total * i / (count - 1) for i in range(count)]
     out: Trajectory = []
     segment = 0
-    for target in targets:
-        while segment + 1 < len(cumulative) and cumulative[segment + 1] < target:
-            segment += 1
-        if segment + 1 >= len(pts):
+    segment_start = Fraction(0, 1)
+
+    for sample_index in range(count):
+        if sample_index == 0:
+            out.append(pts[0][:])
+            continue
+        if sample_index == count - 1:
             out.append(pts[-1][:])
             continue
-        lo, hi = cumulative[segment], cumulative[segment + 1]
-        if hi == lo:
+
+        target = total * Fraction(sample_index, count - 1)
+        while (
+            segment < len(exact_lengths) - 1
+            and segment_start + exact_lengths[segment] < target
+        ):
+            segment_start += exact_lengths[segment]
+            segment += 1
+
+        segment_length = exact_lengths[segment]
+        if segment_length == 0:
             out.append(pts[segment + 1][:])
             continue
-        weight = (target - lo) / (hi - lo)
+
+        weight = float((target - segment_start) / segment_length)
         out.append([
             (1.0 - weight) * pts[segment][d] + weight * pts[segment + 1][d]
             for d in range(dim)
@@ -135,12 +180,11 @@ def align_pair(
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
     if len(a) != len(b):
         raise ValueError("vector dimension mismatch")
-    aa = math.fsum(float(x) * float(x) for x in a)
-    bb = math.fsum(float(x) * float(x) for x in b)
-    if aa == 0.0 or bb == 0.0:
-        return 1.0 if aa == 0.0 and bb == 0.0 else 0.0
-    dot = math.fsum(float(x) * float(y) for x, y in zip(a, b))
-    value = dot / math.sqrt(aa * bb)
+    ua = _unit(a)
+    ub = _unit(b)
+    if ua is None or ub is None:
+        return 1.0 if ua is None and ub is None else 0.0
+    value = math.fsum(x * y for x, y in zip(ua, ub))
     return max(-1.0, min(1.0, value))
 
 
@@ -151,7 +195,11 @@ def cosine_alignment(
     order: int = 1,
     align: str = "truncate",
 ) -> float:
-    """Mean pointwise cosine similarity after alignment and finite differencing."""
+    """Mean pointwise cosine similarity after alignment and finite differencing.
+
+    Raises ValueError if the selected finite-difference order leaves no samples;
+    an empty mean is undefined and is never encoded as an apparent zero score.
+    """
     a, b = align_pair(left, right, mode=align)
     a = finite_difference(a, order)
     b = finite_difference(b, order)
@@ -159,39 +207,43 @@ def cosine_alignment(
         size = min(len(a), len(b))
         a, b = a[:size], b[:size]
     if not a:
-        return 0.0
+        raise ValueError("finite-difference comparison has no samples")
     return math.fsum(_cosine(x, y) for x, y in zip(a, b)) / len(a)
 
 
 def menger_curvature_sequence(points: Sequence[Sequence[float]]) -> list[float]:
     """Return Menger curvature for each consecutive triple.
 
-    For side lengths a,b,c and triangle area A, kappa = 4A/(abc). The
-    dimension-independent area is obtained from the Gram determinant.
+    For consecutive displacement vectors u and v and endpoint chord c,
+    kappa = 2 sin(theta) / ||c||. This is algebraically equivalent to
+    4A/(abc) but uses scaled unit vectors to avoid overflow in Gram products.
     Exactly repeated points and collinear triples are assigned curvature zero.
     """
     _validate_trajectory(points)
     if len(points) < 3:
         return []
+
     out: list[float] = []
     for i in range(1, len(points) - 1):
         p0, p1, p2 = points[i - 1], points[i], points[i + 1]
-        u = [float(b) - float(a) for a, b in zip(p0, p1)]
-        v = [float(c) - float(b) for b, c in zip(p1, p2)]
-        a = math.sqrt(math.fsum(x * x for x in u))
-        b = math.sqrt(math.fsum(x * x for x in v))
-        chord = [float(c) - float(a0) for a0, c in zip(p0, p2)]
-        c = math.sqrt(math.fsum(x * x for x in chord))
+        u = _vector_between(p0, p1)
+        v = _vector_between(p1, p2)
+        chord = _vector_between(p0, p2)
+        a = _norm(u)
+        b = _norm(v)
+        c = _norm(chord)
         if a == 0.0 or b == 0.0 or c == 0.0:
             out.append(0.0)
             continue
-        uu = math.fsum(x * x for x in u)
-        vv = math.fsum(x * x for x in v)
-        uv = math.fsum(x * y for x, y in zip(u, v))
-        gram = max(0.0, uu * vv - uv * uv)
-        if gram == 0.0:
-            out.append(0.0)
-            continue
-        area = 0.5 * math.sqrt(gram)
-        out.append((4.0 * area) / (a * b * c))
+
+        uu = _unit(u)
+        vv = _unit(v)
+        assert uu is not None and vv is not None
+        dot = max(-1.0, min(1.0, math.fsum(x * y for x, y in zip(uu, vv))))
+        orthogonal_residual = [vv[j] - dot * uu[j] for j in range(len(uu))]
+        sin_theta = _norm(orthogonal_residual)
+        kappa = (2.0 * sin_theta) / c
+        if not math.isfinite(kappa):
+            raise ValueError("Menger curvature is not finite")
+        out.append(0.0 if sin_theta == 0.0 else kappa)
     return out
