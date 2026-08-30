@@ -95,9 +95,11 @@ The frozen numerical protocol is [`GEO-SIM-001`](protocols/GEO-SIM-001.md). It p
 - geometry-preserving control translation and a geometry-changing suffix perturbation;
 - order-0 through configurable order-k finite differences;
 - Euclidean path length and mean cosine alignment;
-- dimension-independent Menger curvature with exact dyadic-rational collinearity detection before floating angle estimation;
-- deterministic truncate/error/arc-length alignment and resampling;
-- scale-aware 13-significant-digit result normalization;
+- dimension-independent Menger curvature using exact dyadic-rational `kappa^2` on represented binary64 displacements before the final binary64 square root;
+- deterministic truncate/error/arc-length alignment and resampling, with pairwise `arclength` count fixed at `max(n_left, n_right)`;
+- translation-aware coordinate canonicalization using a normalized first point plus normalized local displacements;
+- derivation of metrics and comparisons from the exact emitted coordinate arrays;
+- scale-aware **14-significant-digit** output normalization;
 - canonical JSON and SHA-256 evidence binding;
 - frozen reference fixtures with full metadata-identity and byte-for-byte replay verification;
 - CI on Python 3.11, 3.12, and 3.13.
@@ -105,11 +107,11 @@ The frozen numerical protocol is [`GEO-SIM-001`](protocols/GEO-SIM-001.md). It p
 Frozen identities:
 
 - protocol: `GEO-SIM-001`
-- implementation revision: `03a3103a04d19f53331d37aa486db563ecca31f8`
+- implementation / mathematical-kernel revision: `c63f2fc00370a03a2273f66fbab5108ff0c6989a`
 - recipe SHA-256: `763edeb96a1eec8d87a90d200f8c03a3e2131ec924b558e26492640a342dbbeb`
-- result artifact SHA-256: `01a0cba29d45b7859243fa12c5ae178cf91c0551b4e92dfa60fbf79387fe7d28`
+- result artifact SHA-256: `68af011dd7364fb19985e20de9a96763531479ce1ae41569a9c3068d1ddd7818`
 
-The frozen checks recover straight-line curvature `0`, radius-2 circular curvature `0.5`, null path length `0`, carrier/control order-1 alignment `1.0`, and a lower order-1 alignment for the deliberate suffix perturbation. The hardened suite preserves tiny nonzero geometry, avoids large-vector cosine overflow, preserves late small arc-length segments, makes exact stored collinearity exactly zero without an epsilon, and rejects undefined empty comparisons. See [`PHASE-1-REPORT.md`](PHASE-1-REPORT.md).
+The frozen checks recover straight-line curvature `0`, radius-2 circular curvature within `0.5 ± 1e-12`, null path length `0`, carrier/control order-1 alignment `1.0`, and a lower order-1 alignment for the deliberate suffix perturbation. The hardened suite preserves tiny nonzero geometry, avoids large-vector cosine overflow, preserves late small arc-length segments, preserves genuine near-collinear curvature, keeps small local displacements visible on large absolute coordinate offsets, makes exact stored collinearity exactly zero without an epsilon, and rejects undefined empty comparisons. See [`PHASE-1-REPORT.md`](PHASE-1-REPORT.md).
 
 ### Running the reference simulation
 
@@ -128,7 +130,7 @@ python -m unittest discover -s tests -v
 python tools/verify_reference.py
 ```
 
-The hardened suite contains **42 unit tests** before the cross-version CI matrix is applied.
+The hardened suite contains **45 unit tests** before the cross-version CI matrix is applied.
 
 ## Release and Lean handoff
 
