@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0.0",
+  "protocol_id": "GEO-SIM-001",
+  "recipe_id": "GEO-SIM-REF-001",
+  "implementation_revision": "4850d985c9844d361c053b8cc37f98e402f1f450",
+  "recipe_sha256": "763edeb96a1eec8d87a90d200f8c03a3e2131ec924b558e26492640a342dbbeb",
+  "artifact_sha256": "4124db87a775dc2d1f7ae83418dbe8e9e0f3b26f1fcc5c2b2556781a93bd25e1",
+  "evidence_class": "SIMULATION",
+  "replication_status": "not_attempted"
+}
