@@ -1,0 +1,31 @@
+name: lean-phase1
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "Lean/**"
+      - "lean-toolchain"
+      - "lakefile.lean"
+      - "LEAN-FORMALIZATION.md"
+      - ".github/workflows/lean-phase1.yml"
+  push:
+    branches: ["lean-phase1-v0.1.0"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: leanprover/lean-action@v1
+        env:
+          LEAN_NUM_THREADS: "1"
+        with:
+          build: true
+          use-mathlib-cache: true
+          axiom-audit: true
+          axiom-audit-root: GeoReason
