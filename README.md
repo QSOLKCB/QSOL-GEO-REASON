@@ -55,15 +55,30 @@ This project was motivated in part by work studying reasoning as trajectories in
 
 External work is treated as motivation and prior art, not as evidence for claims made by this repository. Reproduction and extension experiments must satisfy this repository's own contract.
 
-## Intended research sequence
+### Source boundary
 
-The repository deliberately separates five evidence levels:
+Zhou et al. study **post-hoc representation geometry in fixed, trained models**. Their principal construction is a context-cumulative trajectory of representation states, with finite differences and Menger curvature used to compare logical structure across semantic carriers. Their paper explicitly limits its central scope to natural-language understanding and does not claim to explain training dynamics, generation behaviour, or a causal mechanism of reasoning.
 
-1. **Reference simulation**: validate measurement code against known synthetic geometry.
-2. **Observation**: measure hidden-state trajectories in frozen local models.
-3. **Controlled perturbation**: test sensitivity to causal versus surface changes.
-4. **Replication**: repeat results across model sizes, families, layers, and seeds.
-5. **Intervention**: train geometric objectives and compare against controlled baselines.
+QSOL-GEO-REASON therefore distinguishes:
+
+- **reproduction**: testing whether the reported geometric patterns can be recovered under a frozen local-model protocol;
+- **extension**: adding controls, perturbations, cross-model exposure audits, output-behaviour comparisons, training interventions, or mechanistic tests that go beyond the cited work.
+
+An extension result must not be attributed to the cited paper unless that result is actually established there.
+
+## Evidence and claim sequence
+
+The repository deliberately separates the seven claim classes defined normatively in [`SCIENTIFIC-CONTRACT.md`](SCIENTIFIC-CONTRACT.md):
+
+1. **`SIMULATION`**: validate measurement code against known synthetic geometry; no real-model claim is permitted.
+2. **`OBSERVATION`**: measure a property in one or more frozen model runs under a specified extraction protocol.
+3. **`ASSOCIATION`**: establish a statistical relationship between a geometric quantity and another measured variable under the frozen analysis.
+4. **`PERTURBATION`**: test reproducible differential response to controlled input changes against matched controls.
+5. **`REPLICATION`**: reproduce a previously defined result under a materially new model, seed set, carrier set, dataset split, or implementation while preserving the relevant contract.
+6. **`INTERVENTION`**: intentionally alter a model, training process, or representation property and test downstream change against a controlled baseline.
+7. **`MECHANISM`**: identify a specific internal process that survives targeted intervention, ablation, prediction, and alternative-explanation tests.
+
+These are claim ceilings, not an automatic ladder: completing a later experiment does not silently grant every stronger interpretation.
 
 See [`ROADMAP.md`](ROADMAP.md) for the full programme.
 
