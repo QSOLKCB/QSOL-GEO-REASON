@@ -74,10 +74,17 @@ The `lean-phase1` workflow must pass all of the following before the formalizati
 
 1. resolve the exact pinned dependencies;
 2. compile the complete `GeoReason` library with `lake build --wfail`;
-3. reject source-level `sorry`, `admit`, or local `axiom` declarations;
+3. reject source-level `sorry`, `admit`, and explicit `axiom` declarations;
 4. execute `Lean/GeoReason/Audit.lean` against the compiled environment;
 5. require mathlib's recursive `#print sorries` audit to report the twelve targets sorry-free;
-6. reject compiled dependencies on `sorryAx` or `Lean.ofReduceBool`.
+6. collect the transitive kernel axioms of each frozen theorem with `Lean.collectAxioms`;
+7. reject every compiled axiom dependency except the explicit classical trust-base allowlist:
+   - `propext`
+   - `Classical.choice`
+   - `Quot.sound`
+8. retain a secondary denylist check for `sorryAx` and `Lean.ofReduceBool` as diagnostic defense in depth.
+
+The compiled allowlist is the authoritative trust-boundary gate. It does not depend on how an axiom was spelled in source. An axiom introduced via `constant`, a macro, an imported project module, or another declaration mechanism is rejected if any frozen theorem depends on it and it is not one of the three allowed classical Lean axioms.
 
 The existing `phase1-reference` workflow remains a separate gate and must continue reproducing the immutable numerical Phase 1 evidence unchanged.
 
