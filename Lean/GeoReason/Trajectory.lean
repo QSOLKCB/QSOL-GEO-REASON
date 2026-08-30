@@ -22,10 +22,12 @@ structure Trajectory (V : Type*) where
 def Trajectory.points (z : Trajectory V) : List V :=
   z.head :: z.tail
 
+omit [NormedAddCommGroup V] in
 @[simp]
 theorem Trajectory.points_ne_nil (z : Trajectory V) : z.points ≠ [] := by
   simp [Trajectory.points]
 
+omit [NormedAddCommGroup V] in
 @[simp]
 theorem Trajectory.points_length (z : Trajectory V) :
     z.points.length = z.tail.length + 1 := by
