@@ -19,13 +19,28 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      LEAN_NUM_THREADS: "1"
     steps:
       - uses: actions/checkout@v4
-      - uses: leanprover/lean-action@v1
-        env:
-          LEAN_NUM_THREADS: "1"
-        with:
-          build: true
-          use-mathlib-cache: true
-          axiom-audit: true
-          axiom-audit-root: GeoReason
+
+      - name: Install elan
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Resolve pinned dependencies
+        run: |
+          lake update
+          lake exe cache get
+
+      - name: Build formalization with warnings fatal
+        run: lake build --wfail
+
+      - name: Reject proof placeholders and local axioms
+        shell: bash
+        run: |
+          if grep -RInE '(^|[^[:alnum:]_])(sorry|admit)([^[:alnum:]_]|$)|^[[:space:]]*axiom[[:space:]]' Lean; then
+            echo "Lean proof placeholder or local axiom found" >&2
+            exit 1
+          fi
