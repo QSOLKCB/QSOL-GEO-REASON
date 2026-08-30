@@ -13,6 +13,7 @@ SCHEMA_VERSION = "1.0.0"
 PROTOCOL_ID = "GEO-SIM-001"
 EVIDENCE_CLASS = "SIMULATION"
 REPLICATION_STATUS = "not_attempted"
+SERIALIZATION_SIGNIFICANT_DIGITS = 13
 
 _TRAJECTORY_KEYS = {"id", "kind", "parameters"}
 _COMPARISON_KEYS = {"id", "left", "right", "order", "align"}
@@ -265,7 +266,7 @@ def _generate(item: dict[str, Any], trajectories: dict[str, list[list[float]]], 
     raise AssertionError(kind)
 
 
-def _round_float(value: float, significant_digits: int = 15) -> float:
+def _round_float(value: float, significant_digits: int = SERIALIZATION_SIGNIFICANT_DIGITS) -> float:
     """Normalize a finite float to significant digits without an absolute zero floor."""
     value = float(value)
     if not math.isfinite(value):
