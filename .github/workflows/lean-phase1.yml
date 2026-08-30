@@ -40,7 +40,20 @@ jobs:
       - name: Reject proof placeholders and local axioms
         shell: bash
         run: |
-          if grep -RInE '(^|[^[:alnum:]_])(sorry|admit)([^[:alnum:]_]|$)|^[[:space:]]*axiom[[:space:]]' Lean; then
+          if grep -RInE '(^|[^[:alnum:]_])(sorry|admit)([^[:alnum:]_]|$)|^[[:space:]]*axiom[[:space:]]' Lean --exclude='Audit.lean'; then
             echo "Lean proof placeholder or local axiom found" >&2
+            exit 1
+          fi
+
+      - name: Audit compiled theorem dependencies
+        shell: bash
+        run: |
+          lake env lean Lean/GeoReason/Audit.lean 2>&1 | tee /tmp/lean-axiom-audit.log
+          if ! grep -q 'Declarations are sorry-free!' /tmp/lean-axiom-audit.log; then
+            echo "Compiled theorem graph did not report sorry-free" >&2
+            exit 1
+          fi
+          if grep -E 'sorryAx|Lean\.ofReduceBool' /tmp/lean-axiom-audit.log; then
+            echo "Disallowed compiled proof dependency found" >&2
             exit 1
           fi
