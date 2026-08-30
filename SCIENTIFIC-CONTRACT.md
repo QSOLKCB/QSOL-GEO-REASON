@@ -12,11 +12,15 @@ The repository does not assume that the motivating hypothesis is true.
 
 The minimum acceptable research outcome is a reproducible result that narrows the hypothesis space, including a null result.
 
-## 2. Claim classes
+## 2. Evidence classes and replication status
 
-Every substantive result SHOULD be assigned the strongest claim class actually supported by its evidence.
+Every substantive result SHOULD be assigned the strongest **evidence class** actually supported by the experiment that produced it.
 
-### `SIMULATION`
+Replication is recorded on a separate axis. It is not a stronger evidence class and must not erase the experimental type of the underlying result.
+
+### Evidence classes
+
+#### `SIMULATION`
 
 A property was demonstrated in synthetic/reference data generated from a known construction.
 
@@ -24,7 +28,7 @@ Permits claims about analysis-tool correctness or recovery of known geometry.
 
 Does not permit claims about real LLM behaviour.
 
-### `OBSERVATION`
+#### `OBSERVATION`
 
 A property was measured in one or more frozen model runs under a specified extraction protocol.
 
@@ -32,7 +36,7 @@ Permits descriptive claims such as “order-1 trajectory similarity was higher w
 
 Does not establish causation.
 
-### `ASSOCIATION`
+#### `ASSOCIATION`
 
 A statistical relationship was demonstrated between a geometric quantity and another variable such as logic class, correctness, model size, or layer.
 
@@ -40,7 +44,7 @@ Requires an explicit comparison statistic and uncertainty or repeatability analy
 
 Does not establish mechanism.
 
-### `PERTURBATION`
+#### `PERTURBATION`
 
 A controlled input intervention produced a reproducible differential response compared with matched controls.
 
@@ -48,13 +52,7 @@ This supports sensitivity claims about the tested intervention under the tested 
 
 It does not, by itself, establish that the observed geometry causes reasoning.
 
-### `REPLICATION`
-
-A previously defined result reproduced under a new model, model size, seed set, carrier set, dataset split, or implementation while preserving the relevant protocol contract.
-
-Material deviations must be documented.
-
-### `INTERVENTION`
+#### `INTERVENTION`
 
 A model/training/representation intervention intentionally changed a geometric property and produced a controlled downstream change relative to a matched baseline.
 
@@ -62,11 +60,26 @@ This may support causal claims about the intervention under the tested condition
 
 It does not automatically establish a complete mechanism of reasoning.
 
-### `MECHANISM`
+#### `MECHANISM`
 
 A mechanistic claim requires converging evidence that identifies a specific internal structure or process, predicts behaviour under intervention, survives relevant ablations, and outperforms plausible alternative explanations.
 
 This is deliberately a high bar.
+
+### Replication status
+
+A result record SHOULD separately carry `replication_status` using one of:
+
+- `not_attempted`: no independent or materially varied replication has yet been evaluated;
+- `replicated`: the preregistered result reproduced under the declared replication scope;
+- `failed`: the preregistered result failed to reproduce under the declared replication scope;
+- `mixed`: materially varied replications produced inconsistent outcomes.
+
+A replication record must identify what changed, for example model, model size, seed set, carrier set, dataset split, serving implementation, or independent implementation, while preserving the relevant protocol contract.
+
+Example: a controlled perturbation reproduced on another model remains `evidence_class: PERTURBATION` and may additionally carry `replication_status: replicated`.
+
+Material deviations from the original protocol must be documented rather than hidden inside the replication label.
 
 ## 3. Operational definitions
 
@@ -166,6 +179,7 @@ Possible controls include:
 - prompt/template controls;
 - model-size or family controls;
 - newly generated or otherwise exposure-resistant held-out evaluation material;
+- serving-backend equivalence controls;
 - label permutation tests.
 
 Controls are not interchangeable. A protocol must explain what failure mode each control addresses.
@@ -184,7 +198,7 @@ Any projection figure must record:
 
 A projection may not substitute for the native-space statistic supporting the claim.
 
-## 8. Model comparison contract
+## 8. Model comparison and dataset-exposure contract
 
 Cross-model comparisons must record known material differences.
 
@@ -198,25 +212,69 @@ A strong parameter-efficiency comparison SHOULD use the same:
 - hidden-state extraction definition where architecture permits;
 - quantization policy or an explicit quantization ablation.
 
-For every model/dataset pair used in a cross-model claim, the protocol SHOULD assess evaluation exposure through pretraining, post-training, fine-tuning, benchmark use, or other known ingestion routes. Exposure status should be recorded as `known`, `plausible`, `unlikely`, or `unknown`, together with supporting provenance where available.
+For every model/dataset pair used in a cross-model claim, the protocol SHOULD assess evaluation exposure through pretraining, post-training, fine-tuning, benchmark use, or other known ingestion routes.
 
-`unknown` does not mean `unexposed`. Differential or uncontrolled exposure is a confounder and must limit claims about scale, family generality, parameter efficiency, or geometric superiority.
+Exposure must be represented with separate fields:
+
+- `exposure_outcome`: `exposed`, `unexposed`, or `unknown`;
+- `exposure_confidence`: `verified`, `high`, `medium`, `low`, or `unknown`;
+- `exposure_basis`: citations, model-card statements, training-corpus records, benchmark disclosures, or other provenance supporting the assessment.
+
+`unexposed` is always scoped to the named model revision, dataset/version, and assessed ingestion routes. It must not be used as an absolute claim that no semantically related material ever appeared in training. If affirmative evidence for scoped non-exposure is unavailable, use `unknown` rather than inferring `unexposed` from silence.
+
+Differential or uncontrolled exposure is a confounder and must limit claims about scale, family generality, parameter efficiency, or geometric superiority.
 
 Training-intervention comparisons SHOULD additionally match data and optimization budgets and report all added trainable parameters.
 
 Uncontrolled differences are confounders, not footnotes.
 
-## 9. Provenance contract
+## 9. Serving and backend equivalence contract
+
+The serving stack is part of the measurement instrument whenever hidden states or representation geometry are studied.
+
+Matching generated tokens, final answers, or benchmark scores across two runtimes does **not** establish representation-space equivalence.
+
+A canonical reference capture SHOULD therefore be established using the simplest sufficiently transparent backend before optimized serving paths are admitted as measurement-equivalent substitutes.
+
+A serving-equivalence study SHOULD compare the canonical backend and candidate backend under the same model revision and frozen inputs, including where applicable:
+
+- representation positions `z_t`;
+- order-1 and higher finite differences;
+- preregistered curvature statistics;
+- generated-token equality or divergence;
+- layer and token-span identity;
+- numeric tolerances and uncertainty appropriate to dtype and hardware.
+
+Every empirical run must record material serving variables, including where applicable:
+
+- serving backend and version;
+- attention/kernel implementation;
+- dtype and quantization;
+- CPU/GPU/device placement and offloading policy;
+- KV/prefix/recurrent-state reuse policy;
+- prefill versus decode phase;
+- cache/state reuse after prompt edits;
+- hardware and measured resource characteristics relevant to execution.
+
+Until equivalence is demonstrated for the claim being made, a changed serving backend remains an experimental factor or confounder.
+
+Resource adaptation may change latency, throughput, memory residency, or scheduling. It must not silently redefine the scientific object being measured.
+
+For MoE or hybrid serving, exact-output claims about CPU/GPU split execution, expert caching, or other heterogeneous scheduling must be verified rather than inferred from architecture alone.
+
+## 10. Provenance contract
 
 Every empirical result artifact SHOULD be traceable to:
 
 - repository commit;
 - protocol ID/version;
+- run ID and run-manifest identity;
 - dataset ID/version/hash;
 - dataset-generation provenance;
 - dataset-exposure assessment where relevant;
 - model identifier and immutable revision where available;
 - tokenizer identifier/revision;
+- serving backend/version and material runtime policy;
 - environment/runtime versions;
 - hardware/device metadata;
 - quantization and dtype;
@@ -228,25 +286,31 @@ Every empirical result artifact SHOULD be traceable to:
 
 The project should prefer content-addressed or hash-bound artifacts where practical.
 
-## 10. Result records
+## 11. Result records
 
 A future machine-readable result record SHOULD contain:
 
-- `claim_class`;
+- `evidence_class`;
+- `replication_status`;
+- `replication_scope` when replication is attempted;
+- `replicates_result_ids` when applicable;
 - `protocol_id`;
 - `run_id`;
+- `run_manifest_id`;
+- `repository_commit`;
 - `evidence_artifacts`;
 - `primary_metrics`;
 - `control_metrics`;
 - `uncertainty`;
-- `dataset_exposure_assessment` when relevant;
+- `dataset_exposure_assessment` when relevant, containing outcome, confidence, and basis;
+- `serving_backend` and material serving settings for empirical model runs;
 - `result_status` (`supports`, `null`, `contradicts`, `inconclusive`);
 - `limitations`;
 - `provenance`.
 
 A result record must not omit a null or contradictory primary outcome merely because an exploratory secondary metric is positive.
 
-## 11. Simulation contract
+## 12. Simulation contract
 
 Reference simulations exist to answer questions such as:
 
@@ -260,7 +324,7 @@ They do not answer whether a local model reasons geometrically.
 
 Synthetic artifacts must be visibly labelled `SIMULATION`.
 
-## 12. Falsification contract
+## 13. Falsification contract
 
 Each major hypothesis must eventually have a stated observation that would count against it.
 
@@ -270,17 +334,20 @@ Examples:
 - apparent geometry disappears under native-space tests after projection artefacts are removed;
 - causal premise perturbations are not distinguishable from matched surface perturbations;
 - geometric training changes geometry without improving controlled reasoning outcomes;
-- apparent small-model gains vanish under matched parameter, data, compute, or exposure accounting.
+- apparent small-model gains vanish under matched parameter, data, compute, or exposure accounting;
+- a claimed serving-equivalent backend materially changes preregistered representation geometry beyond its tolerance.
 
 The repository must preserve these outcomes if observed.
 
-## 13. Current evidence status
+## 14. Current evidence status
 
 At PR #1 / foundation stage:
 
-- claim class: none;
+- evidence class: none;
+- replication status: not applicable;
 - empirical runs: none;
 - reference simulations: none;
+- serving-equivalence studies: none;
 - geometric training interventions: none;
 - supported mechanism claims: none.
 
