@@ -2,9 +2,9 @@
   "schema_version": "1.0.0",
   "protocol_id": "GEO-SIM-001",
   "recipe_id": "GEO-SIM-REF-001",
-  "implementation_revision": "03a3103a04d19f53331d37aa486db563ecca31f8",
+  "implementation_revision": "c63f2fc00370a03a2273f66fbab5108ff0c6989a",
   "recipe_sha256": "763edeb96a1eec8d87a90d200f8c03a3e2131ec924b558e26492640a342dbbeb",
-  "artifact_sha256": "01a0cba29d45b7859243fa12c5ae178cf91c0551b4e92dfa60fbf79387fe7d28",
+  "artifact_sha256": "68af011dd7364fb19985e20de9a96763531479ce1ae41569a9c3068d1ddd7818",
   "evidence_class": "SIMULATION",
   "replication_status": "not_attempted"
 }
