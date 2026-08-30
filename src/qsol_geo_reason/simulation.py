@@ -289,28 +289,41 @@ def _round_nested(value: Any) -> Any:
 def _canonicalize_points(points: list[list[float]]) -> list[list[float]]:
     """Create the exact emitted coordinate representation.
 
-    Each displacement from the raw first point is normalized independently at
-    the frozen 14-significant-digit evidence precision. The origin normally
-    uses the same precision, but if that would erase any nonzero canonical
-    displacement through binary64 addition, the origin escalates to 17-digit
-    round-trip precision. The reconstructed representation is then verified so
-    no canonical nonzero coordinate displacement has collapsed to zero.
+    Each displacement from the raw first point and each consecutive local
+    displacement is normalized independently at the frozen 14-significant-digit
+    evidence precision. The origin normally uses the same precision, but if
+    reconstruction would erase any nonzero canonical origin offset or any
+    nonzero canonical consecutive step, the origin escalates to 17-digit
+    round-trip precision. If a nonzero canonical displacement still collapses,
+    the trajectory is rejected rather than publishing false zero geometry.
 
-    All downstream metrics and comparisons are computed from these emitted
-    points, so the serialized coordinates and serialized geometry describe the
-    same trajectory.
+    All downstream metrics and comparisons are computed from these verified
+    emitted points, so the serialized coordinates and serialized geometry
+    describe the same trajectory.
     """
     if not points:
         raise RecipeError("generated trajectory must contain at least one point")
     raw_origin = [float(x) for x in points[0]]
     canonical_offsets: list[list[float]] = []
+    canonical_steps: list[list[float]] = []
+    previous: list[float] | None = None
     for point in points:
         if len(point) != len(raw_origin):
             raise RecipeError("generated trajectory has inconsistent dimensions")
+        current = [float(x) for x in point]
         canonical_offsets.append([
-            _round_float(float(point[d]) - raw_origin[d])
+            _round_float(current[d] - raw_origin[d])
             for d in range(len(raw_origin))
         ])
+        if previous is not None:
+            step: list[float] = []
+            for d in range(len(raw_origin)):
+                delta = current[d] - previous[d]
+                if not math.isfinite(delta):
+                    raise RecipeError("generated consecutive displacement is not finite")
+                step.append(_round_float(delta))
+            canonical_steps.append(step)
+        previous = current
 
     def reconstruct(origin: list[float]) -> list[list[float]]:
         out: list[list[float]] = []
@@ -322,23 +335,32 @@ def _canonicalize_points(points: list[list[float]]) -> list[list[float]]:
         out[0] = origin[:]
         return out
 
-    def erases_nonzero_offset(origin: list[float], emitted: list[list[float]]) -> bool:
-        return any(
+    def erases_nonzero_displacement(origin: list[float], emitted: list[list[float]]) -> bool:
+        if any(
             offsets[d] != 0.0 and point[d] == origin[d]
             for offsets, point in zip(canonical_offsets, emitted)
             for d in range(len(origin))
-        )
+        ):
+            return True
+        for index, step in enumerate(canonical_steps, start=1):
+            for d, canonical_delta in enumerate(step):
+                if canonical_delta == 0.0:
+                    continue
+                emitted_delta = emitted[index][d] - emitted[index - 1][d]
+                if not math.isfinite(emitted_delta) or emitted_delta == 0.0:
+                    return True
+        return False
 
     origin = [_round_float(x) for x in raw_origin]
     out = reconstruct(origin)
-    if erases_nonzero_offset(origin, out):
+    if erases_nonzero_displacement(origin, out):
         origin = [
             _round_float(x, significant_digits=ORIGIN_ROUNDTRIP_SIGNIFICANT_DIGITS)
             for x in raw_origin
         ]
         out = reconstruct(origin)
-    if erases_nonzero_offset(origin, out):
-        raise RecipeError("canonical origin reconstruction erases a nonzero displacement")
+    if erases_nonzero_displacement(origin, out):
+        raise RecipeError("canonical reconstruction erases a nonzero displacement")
     return out
 
 
