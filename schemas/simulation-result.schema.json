@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/QSOLKCB/QSOL-GEO-REASON/schemas/simulation-result.schema.json",
+  "title": "QSOL-GEO-REASON Phase 1 simulation result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "evidence_class", "replication_status", "recipe_id", "recipe_sha256", "implementation_revision", "trajectories", "comparisons", "artifact_sha256"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "evidence_class": {"const": "SIMULATION"},
+    "replication_status": {"const": "not_attempted"},
+    "recipe_id": {"type": "string", "minLength": 1},
+    "recipe_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "implementation_revision": {"type": "string", "minLength": 1},
+    "artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "trajectories": {"type": "array", "items": {"type": "object"}},
+    "comparisons": {"type": "array", "items": {"type": "object"}}
+  }
+}

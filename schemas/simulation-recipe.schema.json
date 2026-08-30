@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/QSOLKCB/QSOL-GEO-REASON/schemas/simulation-recipe.schema.json",
+  "title": "QSOL-GEO-REASON Phase 1 simulation recipe",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "recipe_id", "seed", "trajectories", "comparisons"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "recipe_id": {"type": "string", "minLength": 1},
+    "description": {"type": "string"},
+    "seed": {"type": "integer"},
+    "trajectories": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "parameters"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["straight", "circle_arc", "branch", "noisy_straight", "null", "isometry", "suffix_shift", "translation"]},
+          "parameters": {"type": "object"}
+        }
+      }
+    },
+    "comparisons": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "left", "right"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "left": {"type": "string", "minLength": 1},
+          "right": {"type": "string", "minLength": 1},
+          "order": {"type": "integer", "minimum": 0},
+          "align": {"enum": ["truncate", "arclength", "error"]}
+        }
+      }
+    }
+  }
+}
