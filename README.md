@@ -2,7 +2,7 @@
 
 **Experimental research framework for measuring, perturbing, simulating, and eventually training geometric reasoning flows in local language-model representation spaces.**
 
-> Status: **Phase 1 complete / synthetic instrument validated**. The repository now contains a deterministic geometry reference instrument and frozen `SIMULATION` evidence. It still makes **no empirical claim about any language model**.
+> Status: **Phase 1 complete / mathematical kernel freeze candidate**. The repository contains a deterministic geometry reference instrument, an exact mathematical specification, and frozen `SIMULATION` evidence. It still makes **no empirical claim about any language model**.
 
 ## Research question
 
@@ -31,10 +31,11 @@ The project therefore treats the following distinctions as foundational:
 - simulation is not an empirical local-model result;
 - replication status is not an evidence class;
 - matching output tokens is not proof of hidden-state equivalence;
+- exact mathematical semantics are not the same thing as one floating-point implementation;
 - a benchmark win is not automatically a reasoning improvement;
 - a smaller parameter count is not, by itself, evidence of greater reasoning efficiency.
 
-The normative rules are frozen in [`INVARIANTS.md`](INVARIANTS.md) and [`SCIENTIFIC-CONTRACT.md`](SCIENTIFIC-CONTRACT.md).
+The primary normative rules are frozen in [`INVARIANTS.md`](INVARIANTS.md) and [`SCIENTIFIC-CONTRACT.md`](SCIENTIFIC-CONTRACT.md). [`MATH-SPEC.md`](MATH-SPEC.md) is normative for the Phase 1 exact mathematical semantics, subject to those higher-level contracts.
 
 ## Documentation map
 
@@ -45,6 +46,7 @@ The normative rules are frozen in [`INVARIANTS.md`](INVARIANTS.md) and [`SCIENTI
 | [`AGENTS.md`](AGENTS.md) | AI / agents | Repository operating rules |
 | [`INVARIANTS.md`](INVARIANTS.md) | Human + AI | Non-negotiable epistemic and experimental invariants |
 | [`SCIENTIFIC-CONTRACT.md`](SCIENTIFIC-CONTRACT.md) | Human + AI | Evidence classes, replication status, operational definitions, provenance, and experiment rules |
+| [`MATH-SPEC.md`](MATH-SPEC.md) | Human + AI + Lean | Exact Phase 1 definitions, transformation laws, numerical boundary, and formal theorem targets |
 | [`ROADMAP.md`](ROADMAP.md) | Human + AI | Staged research programme |
 | [`protocols/GEO-SIM-001.md`](protocols/GEO-SIM-001.md) | Human + AI | Phase 1 synthetic conformance protocol |
 | [`PHASE-1-REPORT.md`](PHASE-1-REPORT.md) | Human + AI | Frozen Phase 1 evidence summary and hashes |
@@ -78,11 +80,15 @@ Serving ideas such as hardware profiling, phase-aware prefill/decode execution, 
 
 For representation research, the serving backend is itself part of the instrument. An optimized backend must either pass a serving-equivalence protocol against the canonical capture path or remain an explicit experimental variable.
 
-## Phase 1 reference instrument
+## Phase 1 mathematical kernel
 
 Phase 1 validates the measurement machinery **before any model hidden state is touched**.
 
-The frozen protocol is [`GEO-SIM-001`](protocols/GEO-SIM-001.md). It provides:
+The exact semantics are defined in [`MATH-SPEC.md`](MATH-SPEC.md). Stable identifiers `GEO-MATH-001` through `GEO-MATH-011` define trajectories, finite differences, path length, the project cosine convention, alignment, Menger curvature, transformation laws, undefined cases, and the exact/numerical boundary.
+
+`GEO-LEAN-TGT-001` through `GEO-LEAN-TGT-012` record theorem targets for a later Lean 4 formalization against an immutable release.
+
+The frozen numerical protocol is [`GEO-SIM-001`](protocols/GEO-SIM-001.md). It provides:
 
 - deterministic straight, circular, branching, noisy, and null trajectory generators;
 - same-flow/different-carrier synthetic analogues by rigid translation;
@@ -91,6 +97,7 @@ The frozen protocol is [`GEO-SIM-001`](protocols/GEO-SIM-001.md). It provides:
 - Euclidean path length and mean cosine alignment;
 - dimension-independent Menger curvature;
 - deterministic truncate/error/arc-length alignment and resampling;
+- scale-aware significant-digit result normalization;
 - canonical JSON and SHA-256 evidence binding;
 - frozen reference fixtures with full metadata-identity and byte-for-byte replay verification;
 - CI on Python 3.11, 3.12, and 3.13.
@@ -98,11 +105,11 @@ The frozen protocol is [`GEO-SIM-001`](protocols/GEO-SIM-001.md). It provides:
 Frozen identities:
 
 - protocol: `GEO-SIM-001`
-- implementation revision: `e23c057e283c22cfec9de11b623e8f4d2173da75`
+- implementation revision: `84f57877ea71b5d60939f2c030bf5771a498dfea`
 - recipe SHA-256: `763edeb96a1eec8d87a90d200f8c03a3e2131ec924b558e26492640a342dbbeb`
-- result artifact SHA-256: `c2c93399b4352958e6a95e4336d4cd7b5800eb16937126173805763c661ebd37`
+- result artifact SHA-256: `5cf20981169ba561fbe5eb7da873b979a542d2db993ac10540cd51976e12d30f`
 
-The frozen checks recover straight-line curvature `0`, radius-2 circular curvature within `0.5 ± 1e-12`, null path length `0`, carrier/control order-1 alignment `1.0`, and a lower order-1 alignment for the deliberate suffix perturbation. The hardened suite also preserves tiny nonzero geometry rather than classifying it as zero. See [`PHASE-1-REPORT.md`](PHASE-1-REPORT.md).
+The frozen checks recover straight-line curvature `0`, radius-2 circular curvature within `0.5 ± 1e-12`, null path length `0`, carrier/control order-1 alignment `1.0`, and a lower order-1 alignment for the deliberate suffix perturbation. The hardened suite preserves tiny nonzero geometry, avoids large-vector cosine overflow, preserves late small arc-length segments, and rejects undefined empty comparisons. See [`PHASE-1-REPORT.md`](PHASE-1-REPORT.md).
 
 ### Running the reference simulation
 
@@ -112,7 +119,7 @@ python -m qsol_geo_reason recipes/reference-suite.json \
   --output /tmp/reference-result.json
 ```
 
-The CLI uses `HEAD` only when the source checkout is clean. A dirty checkout is rejected rather than silently binding modified source bytes to the last commit.
+The CLI uses `HEAD` only when the source checkout is clean with respect to source-relevant changes. Generated interpreter/build artifacts such as `__pycache__` do not make an otherwise clean checkout dirty.
 
 Verify the frozen evidence artifact:
 
@@ -120,6 +127,26 @@ Verify the frozen evidence artifact:
 python -m unittest discover -s tests -v
 python tools/verify_reference.py
 ```
+
+The hardened suite contains **41 unit tests** before the cross-version CI matrix is applied.
+
+## Release and Lean handoff
+
+The intended Phase 1 closure is:
+
+```text
+exact-head Codex approval
+        ↓
+merge PR #2
+        ↓
+freeze immutable Phase 1 release/tag
+        ↓
+formalize MATH-SPEC in Lean 4 against that frozen identity
+```
+
+Lean is intended to prove the exact-real mathematics, not to retroactively certify CPython floating point, JSON, SHA-256, Git provenance, or LLM semantics. A formal implementation-refinement proof would be a separate future result.
+
+Once a release is frozen, later mathematical changes must create a new release identity rather than rewriting the frozen target under the Lean development.
 
 ## Evidence classes and replication
 
@@ -147,6 +174,7 @@ Phase 1 does **not** claim that:
 - smooth trajectories imply correct reasoning;
 - curvature, velocity, or other geometric quantities have a unique cognitive interpretation;
 - matching outputs across serving engines imply matching hidden-state geometry;
+- a future Lean proof of the exact mathematical contract automatically proves the Python implementation;
 - geometric reasoning makes small models equivalent to larger models;
 - any cited external performance claim has been independently reproduced here.
 
