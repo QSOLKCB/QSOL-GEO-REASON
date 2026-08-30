@@ -55,6 +55,24 @@ def _unit(vector: Sequence[float]) -> list[float] | None:
     return [x / norm for x in scaled]
 
 
+def _exactly_collinear(a: Sequence[float], b: Sequence[float]) -> bool:
+    """Test collinearity exactly for the represented binary64 vectors.
+
+    Finite Python floats are exact dyadic rationals. Converting them to
+    ``Fraction`` lets us test all 2x2 minors without an epsilon, so exactly
+    collinear stored vectors are recognized as such while arbitrarily small
+    genuine turns remain non-collinear.
+    """
+    if len(a) != len(b):
+        raise ValueError("vector dimension mismatch")
+    af = [Fraction.from_float(float(x)) for x in a]
+    bf = [Fraction.from_float(float(x)) for x in b]
+    pivot = next((i for i, value in enumerate(af) if value != 0), None)
+    if pivot is None:
+        return all(value == 0 for value in bf)
+    return all(af[pivot] * bf[j] == af[j] * bf[pivot] for j in range(len(af)))
+
+
 def _distance(a: Sequence[float], b: Sequence[float]) -> float:
     return _norm(_vector_between(a, b))
 
@@ -217,7 +235,11 @@ def menger_curvature_sequence(points: Sequence[Sequence[float]]) -> list[float]:
     For consecutive displacement vectors u and v and endpoint chord c,
     kappa = 2 sin(theta) / ||c||. This is algebraically equivalent to
     4A/(abc) but uses scaled unit vectors to avoid overflow in Gram products.
-    Exactly repeated points and collinear triples are assigned curvature zero.
+
+    Exact collinearity of the represented binary64 displacement vectors is
+    tested as dyadic-rational arithmetic before the floating angle estimate.
+    Thus exactly collinear triples map to zero without a scale-dependent
+    epsilon, while non-collinear triples retain nonzero curvature.
     """
     _validate_trajectory(points)
     if len(points) < 3:
@@ -235,6 +257,9 @@ def menger_curvature_sequence(points: Sequence[Sequence[float]]) -> list[float]:
         if a == 0.0 or b == 0.0 or c == 0.0:
             out.append(0.0)
             continue
+        if _exactly_collinear(u, v):
+            out.append(0.0)
+            continue
 
         uu = _unit(u)
         vv = _unit(v)
@@ -245,5 +270,5 @@ def menger_curvature_sequence(points: Sequence[Sequence[float]]) -> list[float]:
         kappa = (2.0 * sin_theta) / c
         if not math.isfinite(kappa):
             raise ValueError("Menger curvature is not finite")
-        out.append(0.0 if sin_theta == 0.0 else kappa)
+        out.append(kappa)
     return out
