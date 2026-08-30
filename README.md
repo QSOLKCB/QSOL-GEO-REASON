@@ -29,6 +29,8 @@ The project therefore treats the following distinctions as foundational:
 - correlation is not mechanism;
 - visualization is not evidence;
 - simulation is not an empirical local-model result;
+- replication status is not an evidence class;
+- matching output tokens is not proof of hidden-state equivalence;
 - a benchmark win is not automatically a reasoning improvement;
 - a smaller parameter count is not, by itself, evidence of greater reasoning efficiency.
 
@@ -42,7 +44,7 @@ The normative rules are frozen in [`INVARIANTS.md`](INVARIANTS.md) and [`SCIENTI
 | [`README4AI.md`](README4AI.md) | AI / agents | Machine-oriented project context and terminology |
 | [`AGENTS.md`](AGENTS.md) | AI / agents | Repository operating rules |
 | [`INVARIANTS.md`](INVARIANTS.md) | Human + AI | Non-negotiable epistemic and experimental invariants |
-| [`SCIENTIFIC-CONTRACT.md`](SCIENTIFIC-CONTRACT.md) | Human + AI | Claim classes, operational definitions, provenance, and experiment rules |
+| [`SCIENTIFIC-CONTRACT.md`](SCIENTIFIC-CONTRACT.md) | Human + AI | Evidence classes, replication status, operational definitions, provenance, and experiment rules |
 | [`ROADMAP.md`](ROADMAP.md) | Human + AI | Staged research programme |
 
 ## Initial research context
@@ -62,21 +64,30 @@ Zhou et al. study **post-hoc representation geometry in fixed, trained models**.
 QSOL-GEO-REASON therefore distinguishes:
 
 - **reproduction**: testing whether the reported geometric patterns can be recovered under a frozen local-model protocol;
-- **extension**: adding controls, perturbations, cross-model exposure audits, output-behaviour comparisons, training interventions, or mechanistic tests that go beyond the cited work.
+- **extension**: adding controls, perturbations, cross-model exposure audits, output-behaviour comparisons, training interventions, serving-equivalence studies, or mechanistic tests that go beyond the cited work.
 
 An extension result must not be attributed to the cited paper unless that result is actually established there.
 
-## Evidence and claim sequence
+### Serving-system context
 
-The repository deliberately separates the seven claim classes defined normatively in [`SCIENTIFIC-CONTRACT.md`](SCIENTIFIC-CONTRACT.md):
+The project is also interested in local serving research such as **FreeToken: Efficient Edge-Native MoE Serving with Bandwidth-Adaptive Execution**: <https://arxiv.org/abs/2608.16157>.
+
+Serving ideas such as hardware profiling, phase-aware prefill/decode execution, prefix/state reuse, elastic memory, expert caching, and CPU/GPU co-execution may later improve local-model practicality. They are treated as serving-system prior art, not as evidence about geometric reasoning.
+
+For representation research, the serving backend is itself part of the instrument. An optimized backend must either pass a serving-equivalence protocol against the canonical capture path or remain an explicit experimental variable.
+
+## Evidence classes and replication
+
+The repository uses six evidence classes defined normatively in [`SCIENTIFIC-CONTRACT.md`](SCIENTIFIC-CONTRACT.md):
 
 1. **`SIMULATION`**: validate measurement code against known synthetic geometry; no real-model claim is permitted.
 2. **`OBSERVATION`**: measure a property in one or more frozen model runs under a specified extraction protocol.
 3. **`ASSOCIATION`**: establish a statistical relationship between a geometric quantity and another measured variable under the frozen analysis.
 4. **`PERTURBATION`**: test reproducible differential response to controlled input changes against matched controls.
-5. **`REPLICATION`**: reproduce a previously defined result under a materially new model, seed set, carrier set, dataset split, or implementation while preserving the relevant contract.
-6. **`INTERVENTION`**: intentionally alter a model, training process, or representation property and test downstream change against a controlled baseline.
-7. **`MECHANISM`**: identify a specific internal process that survives targeted intervention, ablation, prediction, and alternative-explanation tests.
+5. **`INTERVENTION`**: intentionally alter a model, training process, or representation property and test downstream change against a controlled baseline.
+6. **`MECHANISM`**: identify a specific internal process that survives targeted intervention, ablation, prediction, and alternative-explanation tests.
+
+**Replication is orthogonal to that sequence.** A result separately records whether the underlying evidence has been replicated, failed replication, produced mixed replications, or has not yet been replicated. Reproducing a `PERTURBATION` result does not turn it into a different kind of experiment.
 
 These are claim ceilings, not an automatic ladder: completing a later experiment does not silently grant every stronger interpretation.
 
@@ -89,6 +100,7 @@ At the foundation stage, QSOL-GEO-REASON does **not** claim that:
 - latent or representation geometry is the mechanism of reasoning;
 - smooth trajectories imply correct reasoning;
 - curvature, velocity, or other geometric quantities have a unique cognitive interpretation;
+- matching outputs across serving engines imply matching hidden-state geometry;
 - geometric reasoning makes small models equivalent to larger models;
 - any cited external performance claim has been independently reproduced here.
 
