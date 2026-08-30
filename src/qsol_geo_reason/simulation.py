@@ -14,6 +14,7 @@ PROTOCOL_ID = "GEO-SIM-001"
 EVIDENCE_CLASS = "SIMULATION"
 REPLICATION_STATUS = "not_attempted"
 SERIALIZATION_SIGNIFICANT_DIGITS = 14
+ORIGIN_ROUNDTRIP_SIGNIFICANT_DIGITS = 17
 
 _TRAJECTORY_KEYS = {"id", "kind", "parameters"}
 _COMPARISON_KEYS = {"id", "left", "right", "order", "align"}
@@ -288,11 +289,12 @@ def _round_nested(value: Any) -> Any:
 def _canonicalize_points(points: list[list[float]]) -> list[list[float]]:
     """Create the exact emitted coordinate representation.
 
-    Normalize the first point and each displacement from the raw first point
-    independently to significant digits, then reconstruct absolute points from
-    that canonical origin plus canonical offsets. This preserves small local
-    displacements on top of large coordinate offsets while still removing
-    insignificant libm/runtime tail variation.
+    Each displacement from the raw first point is normalized independently at
+    the frozen 14-significant-digit evidence precision. The origin normally
+    uses the same precision, but if that would erase any nonzero canonical
+    displacement through binary64 addition, the origin escalates to 17-digit
+    round-trip precision. The reconstructed representation is then verified so
+    no canonical nonzero coordinate displacement has collapsed to zero.
 
     All downstream metrics and comparisons are computed from these emitted
     points, so the serialized coordinates and serialized geometry describe the
@@ -301,20 +303,42 @@ def _canonicalize_points(points: list[list[float]]) -> list[list[float]]:
     if not points:
         raise RecipeError("generated trajectory must contain at least one point")
     raw_origin = [float(x) for x in points[0]]
-    origin = [_round_float(x) for x in raw_origin]
-    out: list[list[float]] = []
+    canonical_offsets: list[list[float]] = []
     for point in points:
         if len(point) != len(raw_origin):
             raise RecipeError("generated trajectory has inconsistent dimensions")
-        offsets = [
+        canonical_offsets.append([
             _round_float(float(point[d]) - raw_origin[d])
             for d in range(len(raw_origin))
+        ])
+
+    def reconstruct(origin: list[float]) -> list[list[float]]:
+        out: list[list[float]] = []
+        for offsets in canonical_offsets:
+            emitted = [origin[d] + offsets[d] for d in range(len(origin))]
+            if any(not math.isfinite(value) for value in emitted):
+                raise RecipeError("canonical emitted point is not finite")
+            out.append(emitted)
+        out[0] = origin[:]
+        return out
+
+    def erases_nonzero_offset(origin: list[float], emitted: list[list[float]]) -> bool:
+        return any(
+            offsets[d] != 0.0 and point[d] == origin[d]
+            for offsets, point in zip(canonical_offsets, emitted)
+            for d in range(len(origin))
+        )
+
+    origin = [_round_float(x) for x in raw_origin]
+    out = reconstruct(origin)
+    if erases_nonzero_offset(origin, out):
+        origin = [
+            _round_float(x, significant_digits=ORIGIN_ROUNDTRIP_SIGNIFICANT_DIGITS)
+            for x in raw_origin
         ]
-        emitted = [origin[d] + offsets[d] for d in range(len(origin))]
-        if any(not math.isfinite(value) for value in emitted):
-            raise RecipeError("canonical emitted point is not finite")
-        out.append(emitted)
-    out[0] = origin[:]
+        out = reconstruct(origin)
+    if erases_nonzero_offset(origin, out):
+        raise RecipeError("canonical origin reconstruction erases a nonzero displacement")
     return out
 
 
