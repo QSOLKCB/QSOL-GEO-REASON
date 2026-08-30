@@ -60,33 +60,38 @@ A perturbation intended not to change the relevant logical consequence while mod
 
 A synthetic trajectory experiment where the generating geometry is known by construction. Reference simulations validate instruments and analysis code only. They are not empirical evidence about LLM reasoning.
 
-## Claim classes
+## Evidence classes and replication
 
-Use the claim labels defined in `SCIENTIFIC-CONTRACT.md`:
+Use the evidence classes defined in `SCIENTIFIC-CONTRACT.md`:
 
 - `SIMULATION`
 - `OBSERVATION`
 - `ASSOCIATION`
 - `PERTURBATION`
-- `REPLICATION`
 - `INTERVENTION`
 - `MECHANISM`
 
-Never silently upgrade a claim class.
+Replication is separate. Record `replication_status` as `not_attempted`, `replicated`, `failed`, or `mixed` and preserve the underlying evidence class.
+
+Never silently upgrade an evidence class or replace it with replication status.
 
 ## Required experiment metadata
 
-Every empirical run must eventually record, at minimum:
+Every empirical run must record, at minimum:
 
+- repository commit;
+- protocol ID/version;
+- run ID and run-manifest identity;
 - model identifier and immutable revision/hash when available;
 - model family and parameter count;
 - tokenizer identifier/revision;
+- serving backend and version;
 - runtime/library versions;
 - quantization and dtype;
 - device information;
 - prompts / dataset revision;
 - dataset-generation provenance;
-- dataset-exposure / contamination assessment when relevant to cross-model, scaling, or training comparisons;
+- dataset-exposure / contamination assessment when relevant;
 - random seeds;
 - generation parameters;
 - hidden-state layer(s);
@@ -99,7 +104,21 @@ Every empirical run must eventually record, at minimum:
 - preregistered primary outcomes when confirmatory;
 - output artifact hashes.
 
-For exposure assessments, `unknown` must remain distinct from `unlikely` or `unexposed`.
+### Exposure assessment shape
+
+Keep outcome and confidence separate:
+
+- `exposure_outcome`: `exposed`, `unexposed`, or `unknown`;
+- `exposure_confidence`: `verified`, `high`, `medium`, `low`, or `unknown`;
+- `exposure_basis`: supporting provenance.
+
+`unexposed` is scoped to the named model revision, dataset/version, and assessed ingestion routes. Lack of evidence of exposure must remain `unknown`, not be silently converted to `unexposed`.
+
+### Serving metadata
+
+When hidden states or geometry are measured, record material serving choices including backend/version, attention or kernel implementation, dtype/quantization, device placement/offloading, cache or state reuse, and whether the captured state occurred during prefill, decode, or replayed-prefix execution.
+
+Matching output tokens across runtimes does not prove hidden-state equivalence.
 
 ## Scientific guardrails
 
@@ -111,6 +130,8 @@ Do not:
 - compare differently quantized or differently prompted models as though parameter count were the only difference;
 - treat unknown dataset exposure as evidence that a model was unexposed;
 - attribute a cross-model advantage to scale or geometry when differential exposure remains a material confounder;
+- treat identical generated tokens from two serving backends as proof of representation-space equivalence;
+- substitute an optimized backend for the canonical capture backend without either a serving-equivalence result or explicit treatment of backend as an experimental variable;
 - treat a reasoning benchmark score alone as proof of geometric reasoning;
 - hide negative results;
 - collapse carrier similarity, logical similarity, answer correctness, and trajectory similarity into one label;
@@ -120,6 +141,8 @@ Do not:
 
 The intended progression is:
 
-`contract -> simulation -> instrumentation -> observational dataset -> perturbation -> cross-model replication -> geometric training intervention -> ablation / falsification -> release`
+`contract -> simulation -> canonical instrumentation -> serving-equivalence validation -> observational dataset -> perturbation -> cross-model replication -> geometric training intervention -> ablation / falsification -> release`
+
+This is a research workflow, not a claim ladder. Replication remains orthogonal to evidence class.
 
 Do not skip directly from the foundation stage to capability claims.
