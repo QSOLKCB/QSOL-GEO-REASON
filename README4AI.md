@@ -85,6 +85,8 @@ Every empirical run must eventually record, at minimum:
 - quantization and dtype;
 - device information;
 - prompts / dataset revision;
+- dataset-generation provenance;
+- dataset-exposure / contamination assessment when relevant to cross-model, scaling, or training comparisons;
 - random seeds;
 - generation parameters;
 - hidden-state layer(s);
@@ -97,6 +99,8 @@ Every empirical run must eventually record, at minimum:
 - preregistered primary outcomes when confirmatory;
 - output artifact hashes.
 
+For exposure assessments, `unknown` must remain distinct from `unlikely` or `unexposed`.
+
 ## Scientific guardrails
 
 Do not:
@@ -105,6 +109,8 @@ Do not:
 - select layers or metrics after inspecting target labels and present them as preregistered;
 - describe synthetic outputs as model observations;
 - compare differently quantized or differently prompted models as though parameter count were the only difference;
+- treat unknown dataset exposure as evidence that a model was unexposed;
+- attribute a cross-model advantage to scale or geometry when differential exposure remains a material confounder;
 - treat a reasoning benchmark score alone as proof of geometric reasoning;
 - hide negative results;
 - collapse carrier similarity, logical similarity, answer correctness, and trajectory similarity into one label;
