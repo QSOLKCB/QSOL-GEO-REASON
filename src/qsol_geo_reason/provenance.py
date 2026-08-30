@@ -3,23 +3,61 @@
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 class SourceIdentityError(RuntimeError):
     pass
 
 
+_GENERATED_TOP_LEVEL = {
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "build",
+    "dist",
+}
+
+
 def source_repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def _is_generated_untracked(path: str) -> bool:
+    """Return True for untracked interpreter/build artifacts, never source."""
+    normalized = path.strip().replace("\\", "/")
+    parts = PurePosixPath(normalized).parts
+    if not parts:
+        return False
+    if "__pycache__" in parts:
+        return True
+    if any(part.endswith(".egg-info") for part in parts):
+        return True
+    if parts[0] in _GENERATED_TOP_LEVEL:
+        return True
+    if normalized == ".coverage" or normalized.endswith((".pyc", ".pyo", ".pyd")):
+        return True
+    return False
+
+
+def _status_has_source_changes(status_text: str) -> bool:
+    for line in status_text.splitlines():
+        if not line.strip():
+            continue
+        code = line[:2]
+        path = line[3:] if len(line) > 3 else ""
+        if code == "??" and _is_generated_untracked(path):
+            continue
+        return True
+    return False
 
 
 def git_source_revision(*, require_clean: bool = True) -> str | None:
     """Return HEAD for the source checkout, or None when not running from Git.
 
-    When require_clean is true, any tracked or untracked working-tree change
-    rejects revision binding because HEAD would not identify the executing
-    source bytes.
+    When require_clean is true, tracked changes and source-relevant untracked
+    files reject revision binding because HEAD would not identify the executing
+    source bytes. Untracked interpreter/build artifacts are ignored.
     """
     root = source_repo_root()
     try:
@@ -38,14 +76,14 @@ def git_source_revision(*, require_clean: bool = True) -> str | None:
 
     if require_clean:
         status = subprocess.run(
-            ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"],
+            ["git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=all"],
             check=True,
             capture_output=True,
             text=True,
         )
-        if status.stdout.strip():
+        if _status_has_source_changes(status.stdout):
             raise SourceIdentityError(
-                "source checkout is dirty; commit or stash changes before binding an implementation revision"
+                "source checkout is dirty; commit or stash source-relevant changes before binding an implementation revision"
             )
 
     head = subprocess.run(
