@@ -123,6 +123,8 @@ def finite_difference(points: Sequence[Sequence[float]], order: int = 1) -> Traj
 
     order=0 returns a float-normalized copy of the input. If order is greater
     than or equal to the trajectory length, an empty sequence is returned.
+    Any binary64 subtraction overflow is rejected immediately rather than
+    allowing a non-finite difference to reach downstream metrics.
     """
     _validate_trajectory(points)
     if not isinstance(order, int) or isinstance(order, bool) or order < 0:
@@ -130,7 +132,7 @@ def finite_difference(points: Sequence[Sequence[float]], order: int = 1) -> Traj
     current = [[float(x) for x in point] for point in points]
     for _ in range(order):
         current = [
-            [b - a for a, b in zip(current[i], current[i + 1])]
+            _vector_between(current[i], current[i + 1])
             for i in range(len(current) - 1)
         ]
         if not current:
