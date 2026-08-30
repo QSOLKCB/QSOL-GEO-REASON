@@ -70,9 +70,9 @@ Simulation outputs must be labelled as synthetic, and successful recovery of kno
 
 ### GEO-INV-012 — Model comparisons expose material confounders
 
-Comparisons across models must record material differences including architecture/family, tokenizer, parameter count, quantization, dtype, prompting, generation settings, context, and training/evaluation budget where known.
+Comparisons across models must record material differences including architecture/family, tokenizer, parameter count, quantization, dtype, prompting, generation settings, context, training/evaluation budget, and dataset-exposure or contamination risk where known or plausibly different.
 
-If these are not controlled, causal wording is prohibited.
+Unknown exposure status is itself a documented confounder. If material differences are not controlled, causal wording is prohibited.
 
 ### GEO-INV-013 — Training interventions require controlled baselines
 
