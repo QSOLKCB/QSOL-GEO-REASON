@@ -112,25 +112,9 @@ Every published experimental claim must be traceable to the exact code revision,
 
 A later run may strengthen or weaken a claim, but must not silently replace the evidence identity of an earlier claim.
 
-### GEO-INV-019 — Replication status is not an evidence class
-
-Replication describes whether a previously defined result survives a materially varied repetition. It does not replace the evidence class of the experiment being replicated.
-
-For example, a controlled perturbation that reproduces on another model remains `PERTURBATION` evidence with a separate replication status.
-
-Result schemas and prose must preserve both dimensions independently.
-
-### GEO-INV-020 — Serving output equivalence is not representation equivalence
-
-Two serving backends producing the same generated tokens, final answer, or benchmark score are not thereby shown to produce equivalent hidden states or reasoning-flow geometry.
-
-Serving backend, precision, kernels, device placement, offloading, cache/state reuse, and related runtime choices remain measurement variables until a serving-equivalence protocol demonstrates otherwise for the claim being made.
-
-Resource optimizations may change performance; they must not silently redefine the scientific object under measurement.
-
 ## Research-program invariant
 
-### GEO-INV-021 — The repository must remain capable of falsifying its motivating hypothesis
+### GEO-INV-019 — The repository must remain capable of falsifying its motivating hypothesis
 
 The project must preserve tests capable of producing a scientifically meaningful negative conclusion.
 
@@ -138,7 +122,7 @@ An experiment design that can only ever be interpreted as support for geometric 
 
 ## Terminology invariant
 
-### GEO-INV-022 — Geometric Reasoning is not Geometric Unity
+### GEO-INV-020 — Geometric Reasoning is not Geometric Unity
 
 QSOL-GEO-REASON's use of **geometric reasoning** refers to the measurement, analysis, perturbation, simulation, or training of geometric structure in machine-learning representation spaces.
 
@@ -149,6 +133,26 @@ In short:
 `Geometric Reasoning != Geometric Unity`
 
 This invariant exists to prevent terminology collision from being mistaken for conceptual inheritance.
+
+## Evidence-identity invariant
+
+### GEO-INV-021 — Replication status is not an evidence class
+
+Replication describes whether a previously defined result survives a materially varied repetition. It does not replace the evidence class of the experiment being replicated.
+
+For example, a controlled perturbation that reproduces on another model remains `PERTURBATION` evidence with a separate replication status.
+
+Result schemas and prose must preserve both dimensions independently.
+
+## Serving invariant
+
+### GEO-INV-022 — Serving output equivalence is not representation equivalence
+
+Two serving backends producing the same generated tokens, final answer, or benchmark score are not thereby shown to produce equivalent hidden states or reasoning-flow geometry.
+
+Serving backend, precision, kernels, device placement, offloading, cache/state reuse, and related runtime choices remain measurement variables until a serving-equivalence protocol demonstrates otherwise for the claim being made.
+
+Resource optimizations may change performance; they must not silently redefine the scientific object under measurement.
 
 ## Change policy
 
