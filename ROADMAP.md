@@ -51,6 +51,7 @@ A later phase may prototype early, but its scientific claims must not outrun the
 - [x] Implement deterministic alignment/resampling with edge-case tests.
 - [x] Add degenerate-path, zero-length, repeated-point, short-sequence, and dimension-mismatch tests.
 - [x] Add tiny/large-scale numerical regressions so absolute magnitude alone cannot erase valid geometry.
+- [x] Use exact dyadic-rational collinearity detection so exactly collinear stored float vectors map to curvature zero without an epsilon.
 - [x] Reject undefined empty finite-difference comparisons rather than encoding them as zero.
 - [x] Produce frozen reference fixtures with expected numerical outputs.
 - [x] Hash-bind simulation recipe, implementation revision, and result artifacts.
@@ -58,9 +59,9 @@ A later phase may prototype early, but its scientific claims must not outrun the
 
 **Evidence gate:** **PASS on the current frozen candidate** — numerical recovery of known synthetic properties within the preregistered tolerances in `GEO-SIM-001`, plus metadata-consistent byte-identical frozen replay.
 
-**Bound implementation:** `84f57877ea71b5d60939f2c030bf5771a498dfea`.
+**Bound implementation:** `03a3103a04d19f53331d37aa486db563ecca31f8`.
 
-**Bound result artifact:** `5cf20981169ba561fbe5eb7da873b979a542d2db993ac10540cd51976e12d30f`.
+**Bound result artifact:** `01a0cba29d45b7859243fa12c5ae178cf91c0551b4e92dfa60fbf79387fe7d28`.
 
 **Non-claim:** successful completion says nothing about real LLM reasoning.
 
