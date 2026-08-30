@@ -33,12 +33,14 @@ Agents MUST preserve these distinctions in code, docs, schemas, fixtures, and pr
 - association vs controlled perturbation;
 - perturbation vs training intervention;
 - intervention vs mechanistic explanation;
+- evidence class vs replication status;
 - semantic carrier vs logical structure;
 - representation position vs finite-difference geometry;
 - projected visualization vs native-space metric;
-- benchmark accuracy vs demonstrated reasoning behaviour.
+- benchmark accuracy vs demonstrated reasoning behaviour;
+- output-token equivalence vs representation-space equivalence.
 
-Never promote a claim beyond the evidence class actually produced.
+Never promote a claim beyond the evidence class actually produced. Replication status must be recorded separately and must not replace the evidence class.
 
 ## Experiment changes
 
@@ -46,6 +48,7 @@ For any experiment implementation, an agent SHOULD provide or update:
 
 - a protocol;
 - immutable/frozen inputs where practical;
+- repository commit, protocol ID/version, run ID, and run-manifest identity;
 - deterministic or explicitly stochastic run metadata;
 - schemas for machine-readable results;
 - positive and negative controls;
@@ -84,10 +87,23 @@ Record material confounders. At minimum, consider:
 - prompting/template;
 - context length;
 - generation settings;
+- serving backend/runtime;
 - dataset exposure risk;
 - compute/training budget.
 
-If these are not controlled, describe the comparison as confounded rather than causal.
+Dataset exposure assessments must record separate outcome, confidence, and supporting basis. `unknown` must not be converted to `unexposed` merely because no exposure evidence was found.
+
+If material differences are not controlled, describe the comparison as confounded rather than causal.
+
+## Serving backends
+
+For hidden-state or geometry experiments, the serving runtime is part of the instrument.
+
+Agents MUST NOT treat matching generated tokens or final answers across runtimes as proof that hidden states or trajectory geometry are equivalent.
+
+Establish a canonical capture backend first. Optimized, quantized, hybrid CPU/GPU, cached, or otherwise adaptive serving paths may replace it only after a serving-equivalence protocol supports that substitution for the claim being made. Otherwise, backend identity remains an explicit experimental variable.
+
+Record material serving choices including backend/version, kernels or attention implementation, dtype/quantization, device placement/offloading, prefix/KV/recurrent-state reuse, and prefill/decode/replayed-prefix phase where relevant.
 
 ## Results and roadmap
 
