@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0.0",
+  "recipe_id": "GEO-SIM-REF-001",
+  "description": "Frozen Phase 1 conformance suite. Synthetic only; no LLM evidence.",
+  "seed": 18437,
+  "trajectories": [
+    {"id": "straight", "kind": "straight", "parameters": {"start": [0, 0, 0], "direction": [1, 0, 0], "steps": 6, "step_size": 1}},
+    {"id": "curved", "kind": "circle_arc", "parameters": {"center": [0, 0, 0], "radius": 2, "start_angle": 0, "end_angle": 1.5707963267948966, "steps": 7, "plane_axes": [0, 1]}},
+    {"id": "branch", "kind": "branch", "parameters": {"start": [0, 0, 0], "trunk_direction": [1, 0, 0], "branch_direction": [0, 1, 0], "steps": 7, "branch_index": 3, "step_size": 1}},
+    {"id": "noisy", "kind": "noisy_straight", "parameters": {"start": [0, 0], "direction": [1, 0], "steps": 6, "step_size": 1, "noise_amplitude": 0.05, "seed": 18437}},
+    {"id": "null", "kind": "null", "parameters": {"point": [3, -2], "steps": 5}},
+    {"id": "carrier_a", "kind": "straight", "parameters": {"start": [0, 0], "direction": [1, 1], "steps": 6, "step_size": 0.5}},
+    {"id": "carrier_b", "kind": "isometry", "parameters": {"source": "carrier_a", "permutation": [0, 1], "signs": [1, 1], "translation": [10, -4]}},
+    {"id": "control_translation", "kind": "translation", "parameters": {"source": "carrier_a", "shift": [7, -3]}},
+    {"id": "causal_suffix", "kind": "suffix_shift", "parameters": {"source": "carrier_a", "start_index": 3, "shift": [0, 2]}}
+  ],
+  "comparisons": [
+    {"id": "carrier_velocity_alignment", "left": "carrier_a", "right": "carrier_b", "order": 1, "align": "error"},
+    {"id": "control_velocity_alignment", "left": "carrier_a", "right": "control_translation", "order": 1, "align": "error"},
+    {"id": "causal_velocity_alignment", "left": "carrier_a", "right": "causal_suffix", "order": 1, "align": "error"},
+    {"id": "null_alignment", "left": "null", "right": "null", "order": 1, "align": "error"}
+  ]
+}

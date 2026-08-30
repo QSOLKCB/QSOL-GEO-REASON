@@ -12,12 +12,21 @@ Before proposing or modifying experiments, read in this order:
 
 1. `INVARIANTS.md`
 2. `SCIENTIFIC-CONTRACT.md`
-3. `ROADMAP.md`
-4. this file
-5. `README.md`
-6. relevant implementation, protocol, schema, fixture, and result files
+3. `MATH-SPEC.md` for geometry and mathematical semantics
+4. `ROADMAP.md`
+5. this file
+6. `README.md`
+7. relevant implementation, protocol, schema, fixture, and result files
 
-`INVARIANTS.md` and `SCIENTIFIC-CONTRACT.md` are normative. If another document conflicts with them, the normative files win unless a pull request explicitly updates the contract and explains why.
+`INVARIANTS.md` and `SCIENTIFIC-CONTRACT.md` are the primary normative files. `MATH-SPEC.md` is normative for Phase 1 exact mathematical semantics and future formalization targets, but cannot weaken the primary contracts.
+
+## Exact mathematics versus implementation
+
+`MATH-SPEC.md` defines the exact-real mathematical objects. The Python implementation is a finite-precision conformance instrument.
+
+Do not claim that a future Lean 4 proof of the mathematical specification proves the Python/IEEE-754 implementation, JSON serialization, SHA-256, Git provenance, or LLM behavior. Those require separate evidence.
+
+Stable IDs `GEO-MATH-*` and `GEO-LEAN-TGT-*` should be preserved across discussion and formalization.
 
 ## Core objects
 
@@ -39,6 +48,8 @@ It is not automatically a semantic state, belief state, proof state, or mechanis
 - higher orders: repeated finite differences under an explicitly stated convention
 
 These are analysis constructs. Terms such as “velocity” and “acceleration” are shorthand and must not be interpreted as physical quantities without additional justification.
+
+A comparison whose selected order leaves no finite-difference samples is undefined and must not be emitted as alignment `0`.
 
 ### Semantic carrier
 
@@ -132,6 +143,8 @@ Do not:
 - attribute a cross-model advantage to scale or geometry when differential exposure remains a material confounder;
 - treat identical generated tokens from two serving backends as proof of representation-space equivalence;
 - substitute an optimized backend for the canonical capture backend without either a serving-equivalence result or explicit treatment of backend as an experimental variable;
+- use fixed absolute zero thresholds where `MATH-SPEC.md` specifies exact zero;
+- turn an undefined metric into an ordinary numerical zero;
 - treat a reasoning benchmark score alone as proof of geometric reasoning;
 - hide negative results;
 - collapse carrier similarity, logical similarity, answer correctness, and trajectory similarity into one label;
@@ -141,8 +154,10 @@ Do not:
 
 The intended progression is:
 
-`contract -> simulation -> canonical instrumentation -> serving-equivalence validation -> observational dataset -> perturbation -> cross-model replication -> geometric training intervention -> ablation / falsification -> release`
+`contract -> exact math -> simulation -> canonical instrumentation -> serving-equivalence validation -> observational dataset -> perturbation -> cross-model replication -> geometric training intervention -> ablation / falsification -> release/formalization`
 
 This is a research workflow, not a claim ladder. Replication remains orthogonal to evidence class.
+
+After the Phase 1 mathematical kernel receives a green exact-head review, the intended handoff is to freeze an immutable release/tag and formalize `MATH-SPEC.md` in Lean 4 against that exact frozen identity.
 
 Do not skip directly from the foundation stage to capability claims.

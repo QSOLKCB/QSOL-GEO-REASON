@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/QSOLKCB/QSOL-GEO-REASON/schemas/simulation-result.schema.json",
+  "title": "QSOL-GEO-REASON Phase 1 simulation result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "protocol_id",
+    "evidence_class",
+    "replication_status",
+    "recipe_id",
+    "recipe_sha256",
+    "implementation_revision",
+    "trajectories",
+    "comparisons",
+    "artifact_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "protocol_id": {"const": "GEO-SIM-001"},
+    "evidence_class": {"const": "SIMULATION"},
+    "replication_status": {"const": "not_attempted"},
+    "recipe_id": {"type": "string", "minLength": 1},
+    "recipe_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "implementation_revision": {"type": "string", "minLength": 1},
+    "artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "trajectories": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/trajectory"}},
+    "comparisons": {"type": "array", "items": {"$ref": "#/$defs/comparison"}}
+  },
+  "$defs": {
+    "point": {"type": "array", "minItems": 1, "items": {"type": "number"}},
+    "vector_sequence": {"type": "array", "items": {"$ref": "#/$defs/point"}},
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path_length", "order_1", "order_2", "menger_curvature"],
+      "properties": {
+        "path_length": {"type": "number", "minimum": 0},
+        "order_1": {"$ref": "#/$defs/vector_sequence"},
+        "order_2": {"$ref": "#/$defs/vector_sequence"},
+        "menger_curvature": {"type": "array", "items": {"type": "number", "minimum": 0}}
+      }
+    },
+    "trajectory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "point_count", "dimension", "points", "trajectory_sha256", "metrics"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["straight", "circle_arc", "branch", "noisy_straight", "null", "isometry", "suffix_shift", "translation"]},
+        "point_count": {"type": "integer", "minimum": 1},
+        "dimension": {"type": "integer", "minimum": 1},
+        "points": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/point"}},
+        "trajectory_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "metrics": {"$ref": "#/$defs/metrics"}
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "left", "right", "order", "align", "mean_cosine_alignment"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "left": {"type": "string", "minLength": 1},
+        "right": {"type": "string", "minLength": 1},
+        "order": {"type": "integer", "minimum": 0},
+        "align": {"enum": ["truncate", "arclength", "error"]},
+        "mean_cosine_alignment": {"type": "number", "minimum": -1, "maximum": 1}
+      }
+    }
+  }
+}
