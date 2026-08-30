@@ -36,22 +36,26 @@ A later phase may prototype early, but its scientific claims must not outrun the
 
 ## Phase 1 — Deterministic geometry reference simulation
 
+**Status:** **complete in PR #2 candidate branch; frozen `SIMULATION` evidence recorded in [`PHASE-1-REPORT.md`](PHASE-1-REPORT.md).**
+
 **Goal:** prove that the measurement machinery can recover known geometry before touching model hidden states.
 
-- [ ] Define a machine-readable synthetic trajectory recipe schema.
-- [ ] Implement deterministic generators for straight, curved, branching, noisy, and null trajectories.
-- [ ] Implement known same-logic/different-carrier analogue trajectories by construction.
-- [ ] Implement known causal/control perturbation analogues by construction.
-- [ ] Implement order-0, order-1, order-2, and configurable order-k finite differences.
-- [ ] Implement path length and cosine alignment primitives.
-- [ ] Implement at least one explicitly defined curvature statistic, initially Menger curvature if retained.
-- [ ] Implement deterministic alignment/resampling with edge-case tests.
-- [ ] Add degenerate-path, zero-length, repeated-point, short-sequence, and dimension-mismatch tests.
-- [ ] Produce frozen reference fixtures with expected numerical outputs.
-- [ ] Hash-bind simulation recipe, implementation revision, and result artifacts.
-- [ ] Mark every generated result record `evidence_class: SIMULATION`.
+- [x] Define a machine-readable synthetic trajectory recipe schema.
+- [x] Implement deterministic generators for straight, curved, branching, noisy, and null trajectories.
+- [x] Implement known same-logic/different-carrier analogue trajectories by construction.
+- [x] Implement known causal/control perturbation analogues by construction.
+- [x] Implement order-0, order-1, order-2, and configurable order-k finite differences.
+- [x] Implement path length and cosine alignment primitives.
+- [x] Implement at least one explicitly defined curvature statistic, initially Menger curvature if retained.
+- [x] Implement deterministic alignment/resampling with edge-case tests.
+- [x] Add degenerate-path, zero-length, repeated-point, short-sequence, and dimension-mismatch tests.
+- [x] Produce frozen reference fixtures with expected numerical outputs.
+- [x] Hash-bind simulation recipe, implementation revision, and result artifacts.
+- [x] Mark every generated result record `evidence_class: SIMULATION`.
 
-**Evidence gate:** numerical recovery of known synthetic properties within preregistered tolerances.
+**Evidence gate:** **PASS** — numerical recovery of known synthetic properties within the preregistered tolerances in `GEO-SIM-001`, plus byte-identical frozen replay.
+
+**Bound implementation:** `4850d985c9844d361c053b8cc37f98e402f1f450`.
 
 **Non-claim:** successful completion says nothing about real LLM reasoning.
 
