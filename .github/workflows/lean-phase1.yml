@@ -33,7 +33,7 @@ jobs:
       LEAN_VERSION: "4.33.1"
       LEAN_LINUX_SHA256: "890afd185370f85666025b883914ab4f4b339136f8c96167b69cfb62aecaf235"
       MATHLIB_COMMIT: "0df444a360eaa60ab8c11dca51a86af692955474"
-      SOURCE_CACHE_SCHEMA: "geo-lean-source-v1"
+      SOURCE_CACHE_SCHEMA: "geo-lean-source-v2"
       BUILD_CACHE_SCHEMA: "geo-lean-deps-v1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -72,12 +72,14 @@ jobs:
           echo "LEAN_WORKERS=${workers}" >> "$GITHUB_ENV"
           echo "Formal build will use ${workers} Lean threads on ${cpus} runner CPUs"
 
-      - name: Derive pinned source cache identity
+      - name: Derive declaration-bound source cache identity
         id: source-key
         shell: bash
         run: |
           set -euo pipefail
-          key="${SOURCE_CACHE_SCHEMA}-${RUNNER_OS}-x86_64-lean-${LEAN_VERSION}-${LEAN_LINUX_SHA256}-${EXPECTED_LAKE_MANIFEST_SHA256}"
+          declaration_sha="$(sha256sum lakefile.lean | awk '{print $1}')"
+          key="${SOURCE_CACHE_SCHEMA}-${RUNNER_OS}-x86_64-lean-${LEAN_VERSION}-${LEAN_LINUX_SHA256}-${declaration_sha}-${EXPECTED_LAKE_MANIFEST_SHA256}"
+          echo "declaration_sha=${declaration_sha}" >> "$GITHUB_OUTPUT"
           echo "key=${key}" >> "$GITHUB_OUTPUT"
           echo "Pinned source cache identity: ${key}"
 
@@ -88,6 +90,7 @@ jobs:
           path: |
             .lake/packages
             lake-manifest.json
+            .lean-cache/source-receipt.json
           key: ${{ steps.source-key.outputs.key }}
 
       - name: Verify restored pinned dependency source state
@@ -98,8 +101,10 @@ jobs:
           python3 scripts/verify_lean_source_state.py \
             --root .lake/packages \
             --lake-manifest lake-manifest.json \
-            --expected-manifest-sha256 "$EXPECTED_LAKE_MANIFEST_SHA256"
-          echo "Verified pinned dependency source cache hit."
+            --expected-manifest-sha256 "$EXPECTED_LAKE_MANIFEST_SHA256" \
+            --dependency-declaration lakefile.lean \
+            --receipt .lean-cache/source-receipt.json
+          echo "Verified declaration-bound pinned dependency source cache hit."
 
       - name: Resolve pinned dependency sources on first source-cache miss
         if: steps.source-cache.outputs.cache-hit != 'true'
@@ -123,13 +128,18 @@ jobs:
           python3 scripts/verify_lean_source_state.py \
             --root .lake/packages \
             --lake-manifest lake-manifest.json \
-            --expected-manifest-sha256 "$EXPECTED_LAKE_MANIFEST_SHA256"
+            --expected-manifest-sha256 "$EXPECTED_LAKE_MANIFEST_SHA256" \
+            --dependency-declaration lakefile.lean \
+            --receipt .lean-cache/source-receipt.json \
+            --write-receipt
           elapsed="$(( $(date +%s) - started ))"
           echo "Pinned source resolution completed in ${elapsed}s"
           {
             echo "### Lean dependency source state"
             echo "- Source cache: \`miss\`"
             echo "- Action: resolved exact pinned git revisions"
+            echo "- lakefile SHA-256: \`${{ steps.source-key.outputs.declaration_sha }}\`"
+            echo "- tracked bytes/modes: \`verified against commit trees\`"
             echo "- mathlib public-cache post-update hook: \`disabled\`"
             echo "- elapsed: \`${elapsed}s\`"
             echo "- lake manifest SHA-256: \`${EXPECTED_LAKE_MANIFEST_SHA256}\`"
@@ -142,6 +152,7 @@ jobs:
           path: |
             .lake/packages
             lake-manifest.json
+            .lean-cache/source-receipt.json
           key: ${{ steps.source-key.outputs.key }}
 
       - name: Derive audited build-artifact cache identity
@@ -216,6 +227,7 @@ jobs:
             echo "### Lean verified-cache lane"
             echo "- Source state: \`verified ${SOURCE_CACHE_SCHEMA}\`"
             echo "- Build cache: \`verified hit\`"
+            echo "- Dependency source bytes/modes: \`commit-tree verified\`"
             echo "- Dependency state: canonical SHA-256 manifest verified"
             echo "- XOR-fold: regression receipt verified"
             echo "- GeoReason project build: rebuilt from current source"
@@ -329,7 +341,8 @@ jobs:
           python3 scripts/verify_lean_source_state.py \
             --root .lake/packages \
             --lake-manifest lake-manifest.json \
-            --expected-manifest-sha256 "$EXPECTED_LAKE_MANIFEST_SHA256"
+            --expected-manifest-sha256 "$EXPECTED_LAKE_MANIFEST_SHA256" \
+            --dependency-declaration lakefile.lean
 
       - name: Build formalization and pinned dependencies from source
         shell: bash
@@ -350,7 +363,7 @@ jobs:
             echo "### Lean cold-source trust build"
             echo "- Cache restore: \`disabled\`"
             echo "- mathlib public-cache post-update hook: \`disabled\`"
-            echo "- source git revisions: \`verified against frozen manifest\`"
+            echo "- source git revisions/bytes/modes: \`verified against frozen commit trees\`"
             echo "- Lean threads: \`${LEAN_WORKERS}\`"
             echo "- Dependency OLean files rebuilt: \`${dependency_oleans}\`"
             echo "- Project OLean files rebuilt: \`${project_oleans}\`"
