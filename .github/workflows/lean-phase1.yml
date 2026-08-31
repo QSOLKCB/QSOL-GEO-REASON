@@ -16,6 +16,12 @@ on:
 permissions:
   contents: read
 
+# mathlib's pinned post-update hook otherwise downloads its public binary cache.
+# Both lanes either restore our independently cold-built cache or deliberately
+# rebuild from source, so those public artifacts are never part of our evidence.
+env:
+  MATHLIB_NO_CACHE_ON_UPDATE: "1"
+
 jobs:
   build:
     if: github.event_name == 'pull_request'
@@ -68,11 +74,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          started="$(date +%s)"
           lake update
 
-          # lake update may run dependency post-update hooks that populate
-          # public binary caches. The verified-cache lane never mixes those
-          # objects with the cache produced by this repository's cold build.
+          # Defense in depth: even with the mathlib cache hook disabled, no
+          # dependency proof artifacts are allowed to survive source resolution.
           for pkg in .lake/packages/*; do
             [ -d "$pkg" ] || continue
             rm -rf "$pkg/.lake/build"
@@ -84,9 +90,17 @@ jobs:
 
           manifest_sha="$(sha256sum lake-manifest.json | awk '{print $1}')"
           key="${CACHE_SCHEMA}-${RUNNER_OS}-x86_64-lean-${LEAN_VERSION}-${LEAN_LINUX_SHA256}-${manifest_sha}"
+          elapsed="$(( $(date +%s) - started ))"
           echo "manifest_sha=${manifest_sha}" >> "$GITHUB_OUTPUT"
           echo "key=${key}" >> "$GITHUB_OUTPUT"
           echo "Dependency cache identity: ${key}"
+          echo "Pinned source resolution completed in ${elapsed}s with mathlib public-cache population disabled"
+          {
+            echo "### Lean dependency source resolution"
+            echo "- mathlib public-cache post-update hook: \`disabled\`"
+            echo "- elapsed: \`${elapsed}s\`"
+            echo "- lake manifest SHA-256: \`${manifest_sha}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Restore cold-built dependency artifacts
         id: dependency-cache
@@ -283,6 +297,7 @@ jobs:
           {
             echo "### Lean cold-source trust build"
             echo "- Cache restore: \`disabled\`"
+            echo "- mathlib public-cache post-update hook: \`disabled\`"
             echo "- Lean threads: \`${LEAN_WORKERS}\`"
             echo "- Dependency OLean files rebuilt: \`${dependency_oleans}\`"
             echo "- Project OLean files rebuilt: \`${project_oleans}\`"
