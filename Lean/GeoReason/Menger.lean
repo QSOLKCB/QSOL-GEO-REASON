@@ -1,5 +1,5 @@
-import Mathlib
-import GeoReason.Trajectory
+import Mathlib.Geometry.Euclidean.Circumcenter
+import Mathlib.Tactic.FieldSimp
 
 namespace GeoReason
 

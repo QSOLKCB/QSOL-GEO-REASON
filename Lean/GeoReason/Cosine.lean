@@ -1,4 +1,4 @@
-import Mathlib
+import Mathlib.Analysis.InnerProductSpace.Basic
 import GeoReason.Trajectory
 
 namespace GeoReason

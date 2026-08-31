@@ -1,4 +1,3 @@
-import Mathlib
 import GeoReason.Trajectory
 
 namespace GeoReason

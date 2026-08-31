@@ -81,11 +81,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          start="$(date +%s)"
-          lake build --wfail
-          stop="$(date +%s)"
-          elapsed="$((stop - start))"
-          echo "Cold source rebuild completed in ${elapsed}s with ${LEAN_WORKERS} Lean threads"
+          test -x /usr/bin/time
+          timing_file="$RUNNER_TEMP/lean-cold-build.time"
+          /usr/bin/time \
+            -f 'cold-source-build wall=%e user=%U sys=%S maxrss_kb=%M' \
+            -o "$timing_file" \
+            lake build --wfail
+          timing="$(cat "$timing_file")"
+          dependency_oleans="$(
+            find .lake/packages -type f -name '*.olean' -print | wc -l | tr -d ' '
+          )"
+          project_oleans="$(
+            find .lake/build -type f -name '*.olean' -print | wc -l | tr -d ' '
+          )"
+          echo "$timing"
+          echo "Cold source rebuild produced ${dependency_oleans} dependency OLean files and ${project_oleans} project OLean files with ${LEAN_WORKERS} Lean threads"
+          {
+            echo "### Lean cold-source trust build"
+            echo "- Lean threads: \`${LEAN_WORKERS}\`"
+            echo "- Dependency OLean files rebuilt: \`${dependency_oleans}\`"
+            echo "- Project OLean files rebuilt: \`${project_oleans}\`"
+            echo "- Timing: \`${timing}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Reject source proof placeholders and explicit axioms
         shell: bash

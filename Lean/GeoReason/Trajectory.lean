@@ -1,4 +1,8 @@
-import Mathlib
+import Lean.Elab.Tactic.Omega
+import Mathlib.Analysis.InnerProductSpace.Basic
+import Mathlib.Analysis.Normed.Operator.LinearIsometry
+import Mathlib.Tactic.Abel
+import Mathlib.Tactic.Linarith.Frontend
 
 namespace GeoReason
 
