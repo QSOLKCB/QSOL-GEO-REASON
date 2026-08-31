@@ -3,7 +3,9 @@
 
 The canonical SHA-256 receipt is authoritative for cache reuse. The XOR-fold
 receipt is an order-independent regression signal only and is never treated as
-cryptographic authority.
+cryptographic authority. Verification may additionally require an external
+reviewed canonical digest, so the cache cannot authenticate itself merely by
+shipping matching artifacts and receipt metadata together.
 """
 
 from __future__ import annotations
@@ -26,14 +28,14 @@ def sha256_file(path: Path) -> str:
 
 
 def manifest_sha256(path: Path) -> str:
-    if not path.is_file():
-        raise SystemExit(f"lake manifest not found: {path}")
+    if not path.is_file() or path.is_symlink():
+        raise SystemExit(f"lake manifest not found/invalid: {path}")
     return sha256_file(path)
 
 
 def collect_records(root: Path) -> list[dict[str, Any]]:
-    if not root.is_dir():
-        raise SystemExit(f"dependency root not found: {root}")
+    if not root.is_dir() or root.is_symlink():
+        raise SystemExit(f"dependency root not found/invalid: {root}")
 
     records: list[dict[str, Any]] = []
     for package in sorted(root.iterdir(), key=lambda p: p.name):
@@ -116,8 +118,35 @@ def snapshot(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def require_external_anchor(args: argparse.Namespace, data: dict[str, Any]) -> None:
+    if args.expected_canonical_sha256 is not None:
+        expected = args.expected_canonical_sha256.lower()
+        actual = str(data["canonical_sha256"]).lower()
+        if actual != expected:
+            raise SystemExit(
+                f"dependency canonical SHA-256 mismatch against reviewed anchor: "
+                f"{actual} != {expected}"
+            )
+    if args.expected_xor_fold_sha256 is not None:
+        expected = args.expected_xor_fold_sha256.lower()
+        actual = str(data["xor_fold_sha256"]).lower()
+        if actual != expected:
+            raise SystemExit(
+                f"dependency XOR-fold mismatch against reviewed regression anchor: "
+                f"{actual} != {expected}"
+            )
+    if args.expected_artifact_count is not None:
+        actual = int(data["artifact_count"])
+        if actual != args.expected_artifact_count:
+            raise SystemExit(
+                f"dependency artifact count mismatch against reviewed anchor: "
+                f"{actual} != {args.expected_artifact_count}"
+            )
+
+
 def cmd_create(args: argparse.Namespace) -> None:
     data = snapshot(args)
+    require_external_anchor(args, data)
     args.receipt.parent.mkdir(parents=True, exist_ok=True)
     args.receipt.write_text(
         json.dumps(data, indent=2, sort_keys=True) + "\n",
@@ -132,8 +161,8 @@ def cmd_create(args: argparse.Namespace) -> None:
 
 
 def cmd_verify(args: argparse.Namespace) -> None:
-    if not args.receipt.is_file():
-        raise SystemExit(f"dependency receipt not found: {args.receipt}")
+    if not args.receipt.is_file() or args.receipt.is_symlink():
+        raise SystemExit(f"dependency receipt not found/invalid: {args.receipt}")
     saved = json.loads(args.receipt.read_text(encoding="utf-8"))
     current = snapshot(args)
 
@@ -172,6 +201,10 @@ def cmd_verify(args: argparse.Namespace) -> None:
             f"first differences: {preview}"
         )
 
+    # This check is intentionally external to the cached receipt itself. A
+    # self-consistent artifact+receipt pair is insufficient provenance.
+    require_external_anchor(args, current)
+
     print(
         "dependency-receipt verified "
         f"files={current['artifact_count']} "
@@ -192,6 +225,9 @@ def parser() -> argparse.ArgumentParser:
         q.add_argument("--lean-archive-sha256", required=True)
         q.add_argument("--mathlib-commit", required=True)
         q.add_argument("--platform", default="linux-x86_64")
+        q.add_argument("--expected-canonical-sha256")
+        q.add_argument("--expected-xor-fold-sha256")
+        q.add_argument("--expected-artifact-count", type=int)
         q.set_defaults(handler=handler)
     return p
 
