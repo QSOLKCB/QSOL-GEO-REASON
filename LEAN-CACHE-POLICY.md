@@ -56,6 +56,31 @@ This mirrors the NEXUS/VORTEX evidence discipline: compact XOR-style receipts
 are useful for fast regression detection, while stronger canonical evidence
 remains authoritative.
 
+## First audited cache seed
+
+The first repository-produced dependency cache was seeded by `lean-phase1`
+run `#61` from PR head
+`d01f21da6bb12194b6c5e5a66ba3b623d5362b3c`.
+
+The seed run rebuilt the dependency closure from pinned source and then passed
+the source-hygiene, recursive-sorry, and positive compiled-axiom gates before
+the dependency cache was saved.
+
+Measured cold-build receipt:
+
+- cold source build wall time: `2501.52 s`;
+- Lean threads: `4` on `4` runner CPUs;
+- dependency-cache artifact records: `37,312`;
+- canonical dependency SHA-256:
+  `91f7181f1657481a8a00a3f4fe67b8d5663951838b5a0a76ef2adbd8b54e66d3`;
+- path-bound XOR-fold regression receipt:
+  `5140247acee0acb36de98fa8192602e09815d27207c38d62a83b818861a0a5a3`;
+- generated `lake-manifest.json` SHA-256:
+  `646d5b171d7b7200f4f85d887ff655c45ee7796019ada4aab7e4ca759f41602b`.
+
+These values document the seed event. Routine reuse remains governed by the
+live receipt verifier rather than by manually comparing this documentation.
+
 ## Scientific and trust boundary
 
 A green verified-cache PR run means:
