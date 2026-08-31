@@ -5,12 +5,12 @@ on:
     branches: ["main"]
     paths:
       - "Lean/**"
+      - "scripts/lean_dependency_receipt.py"
       - "lean-toolchain"
       - "lakefile.lean"
       - "LEAN-FORMALIZATION.md"
+      - "LEAN-CACHE-POLICY.md"
       - ".github/workflows/lean-phase1.yml"
-  push:
-    branches: ["lean-phase1-v0.1.0"]
   workflow_dispatch:
 
 permissions:
@@ -18,10 +18,198 @@ permissions:
 
 jobs:
   build:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
+    timeout-minutes: 120
     env:
       LEAN_VERSION: "4.33.1"
       LEAN_LINUX_SHA256: "890afd185370f85666025b883914ab4f4b339136f8c96167b69cfb62aecaf235"
+      MATHLIB_COMMIT: "0df444a360eaa60ab8c11dca51a86af692955474"
+      CACHE_SCHEMA: "geo-lean-deps-v1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Install pinned Lean distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "x86_64"
+          archive="$RUNNER_TEMP/lean-${LEAN_VERSION}-linux.tar.zst"
+          url="https://github.com/leanprover/lean4/releases/download/v${LEAN_VERSION}/lean-${LEAN_VERSION}-linux.tar.zst"
+          curl --fail --location --proto '=https' --tlsv1.2 "$url" --output "$archive"
+          echo "${LEAN_LINUX_SHA256}  ${archive}" | sha256sum --check --strict
+          tar --zstd -xf "$archive" -C "$RUNNER_TEMP"
+          lean_home="$RUNNER_TEMP/lean-${LEAN_VERSION}-linux"
+          test -x "$lean_home/bin/lean"
+          test -x "$lean_home/bin/lake"
+          echo "$lean_home/bin" >> "$GITHUB_PATH"
+          "$lean_home/bin/lean" --version
+          "$lean_home/bin/lake" --version
+
+      - name: Configure bounded Lean parallelism
+        shell: bash
+        run: |
+          set -euo pipefail
+          cpus="$(nproc)"
+          workers="$cpus"
+          if [ "$workers" -gt 4 ]; then
+            workers=4
+          fi
+          if [ "$workers" -lt 2 ]; then
+            echo "Multicore formal build requires at least 2 runner CPUs; observed ${cpus}" >&2
+            exit 1
+          fi
+          echo "LEAN_NUM_THREADS=${workers}" >> "$GITHUB_ENV"
+          echo "LEAN_WORKERS=${workers}" >> "$GITHUB_ENV"
+          echo "Formal build will use ${workers} Lean threads on ${cpus} runner CPUs"
+
+      - name: Resolve pinned dependency sources and derive cache identity
+        id: dependency-key
+        shell: bash
+        run: |
+          set -euo pipefail
+          lake update
+
+          # lake update may run dependency post-update hooks that populate
+          # public binary caches. The verified-cache lane never mixes those
+          # objects with the cache produced by this repository's cold build.
+          for pkg in .lake/packages/*; do
+            [ -d "$pkg" ] || continue
+            rm -rf "$pkg/.lake/build"
+          done
+          if find .lake/packages -type f \( -name '*.olean' -o -name '*.ilean' \) -print -quit | grep -q .; then
+            echo "Precompiled dependency proof artifact survived source reset" >&2
+            exit 1
+          fi
+
+          manifest_sha="$(sha256sum lake-manifest.json | awk '{print $1}')"
+          key="${CACHE_SCHEMA}-${RUNNER_OS}-x86_64-lean-${LEAN_VERSION}-${LEAN_LINUX_SHA256}-${manifest_sha}"
+          echo "manifest_sha=${manifest_sha}" >> "$GITHUB_OUTPUT"
+          echo "key=${key}" >> "$GITHUB_OUTPUT"
+          echo "Dependency cache identity: ${key}"
+
+      - name: Restore cold-built dependency artifacts
+        id: dependency-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            .lake/packages/*/.lake/build
+            .lean-cache/dependency-receipt.json
+          key: ${{ steps.dependency-key.outputs.key }}
+
+      - name: Verify canonical and XOR dependency receipts
+        if: steps.dependency-cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/lean_dependency_receipt.py verify \
+            --root .lake/packages \
+            --receipt .lean-cache/dependency-receipt.json \
+            --lake-manifest lake-manifest.json \
+            --lean-version "$LEAN_VERSION" \
+            --lean-archive-sha256 "$LEAN_LINUX_SHA256" \
+            --mathlib-commit "$MATHLIB_COMMIT"
+          echo "Verified dependency cache hit; canonical SHA-256 is authoritative and XOR-fold is regression evidence only."
+
+      - name: Cold fallback on first cache miss
+        if: steps.dependency-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x /usr/bin/time
+          timing_file="$RUNNER_TEMP/lean-cache-seed-build.time"
+          /usr/bin/time \
+            -f 'cache-seed-cold-build wall=%e user=%U sys=%S maxrss_kb=%M' \
+            -o "$timing_file" \
+            lake build --wfail
+          timing="$(cat "$timing_file")"
+          echo "$timing"
+          {
+            echo "### Lean verified-cache lane"
+            echo "- Cache: \`miss\`"
+            echo "- Action: cold source reconstruction to seed verified dependency cache"
+            echo "- Lean threads: \`${LEAN_WORKERS}\`"
+            echo "- Timing: \`${timing}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fast project rebuild from verified dependency state
+        if: steps.dependency-cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .lake/build
+          timing_file="$RUNNER_TEMP/lean-fast-project-build.time"
+          /usr/bin/time \
+            -f 'verified-cache-project-build wall=%e user=%U sys=%S maxrss_kb=%M' \
+            -o "$timing_file" \
+            lake build --wfail
+          timing="$(cat "$timing_file")"
+          echo "$timing"
+          {
+            echo "### Lean verified-cache lane"
+            echo "- Cache: \`verified hit\`"
+            echo "- Dependency state: canonical SHA-256 manifest verified"
+            echo "- XOR-fold: regression receipt verified"
+            echo "- GeoReason project build: rebuilt from current source"
+            echo "- Lean threads: \`${LEAN_WORKERS}\`"
+            echo "- Timing: \`${timing}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Reject source proof placeholders and explicit axioms
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE '(^|[^[:alnum:]_])(sorry|admit)([^[:alnum:]_]|$)|^[[:space:]]*axiom[[:space:]]' Lean --exclude='Audit.lean'; then
+            echo "Lean proof placeholder or explicit axiom declaration found" >&2
+            exit 1
+          fi
+
+      - name: Audit compiled theorem dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          lake env lean Lean/GeoReason/Audit.lean 2>&1 | tee /tmp/lean-axiom-audit.log
+          if ! grep -q 'Declarations are sorry-free!' /tmp/lean-axiom-audit.log; then
+            echo "Compiled theorem graph did not report sorry-free" >&2
+            exit 1
+          fi
+          # Defense in depth. The authoritative axiom gate is the in-Lean
+          # allowlist in Audit.lean.
+          if grep -E 'sorryAx|Lean\.ofReduceBool' /tmp/lean-axiom-audit.log; then
+            echo "Known disallowed compiled proof dependency found" >&2
+            exit 1
+          fi
+
+      - name: Create dependency receipt after cold cache seed
+        if: steps.dependency-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/lean_dependency_receipt.py create \
+            --root .lake/packages \
+            --receipt .lean-cache/dependency-receipt.json \
+            --lake-manifest lake-manifest.json \
+            --lean-version "$LEAN_VERSION" \
+            --lean-archive-sha256 "$LEAN_LINUX_SHA256" \
+            --mathlib-commit "$MATHLIB_COMMIT"
+
+      - name: Save audited cold-built dependency cache
+        if: steps.dependency-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            .lake/packages/*/.lake/build
+            .lean-cache/dependency-receipt.json
+          key: ${{ steps.dependency-key.outputs.key }}
+
+  cold-trust:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      LEAN_VERSION: "4.33.1"
+      LEAN_LINUX_SHA256: "890afd185370f85666025b883914ab4f4b339136f8c96167b69cfb62aecaf235"
+      MATHLIB_COMMIT: "0df444a360eaa60ab8c11dca51a86af692955474"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
@@ -57,17 +245,13 @@ jobs:
           fi
           echo "LEAN_NUM_THREADS=${workers}" >> "$GITHUB_ENV"
           echo "LEAN_WORKERS=${workers}" >> "$GITHUB_ENV"
-          echo "Cold source reconstruction will use ${workers} Lean threads on ${cpus} runner CPUs"
+          echo "Cold trust reconstruction will use ${workers} Lean threads on ${cpus} runner CPUs"
 
       - name: Resolve pinned dependencies from source
         shell: bash
         run: |
           set -euo pipefail
           lake update
-          # The trust-boundary build must not consume precompiled dependency
-          # proof artifacts. Remove every dependency build tree after source
-          # resolution so the following `lake build` reconstructs imported
-          # declarations from the pinned source revisions.
           for pkg in .lake/packages/*; do
             [ -d "$pkg" ] || continue
             rm -rf "$pkg/.lake/build"
@@ -98,6 +282,7 @@ jobs:
           echo "Cold source rebuild produced ${dependency_oleans} dependency OLean files and ${project_oleans} project OLean files with ${LEAN_WORKERS} Lean threads"
           {
             echo "### Lean cold-source trust build"
+            echo "- Cache restore: \`disabled\`"
             echo "- Lean threads: \`${LEAN_WORKERS}\`"
             echo "- Dependency OLean files rebuilt: \`${dependency_oleans}\`"
             echo "- Project OLean files rebuilt: \`${project_oleans}\`"
@@ -122,10 +307,22 @@ jobs:
             echo "Compiled theorem graph did not report sorry-free" >&2
             exit 1
           fi
-          # Belt-and-suspenders diagnostics. The authoritative axiom gate is
-          # the in-Lean allowlist in Audit.lean, which rejects every axiom
-          # except propext, Classical.choice, and Quot.sound.
           if grep -E 'sorryAx|Lean\.ofReduceBool' /tmp/lean-axiom-audit.log; then
             echo "Known disallowed compiled proof dependency found" >&2
             exit 1
           fi
+
+      - name: Emit cold-build dependency receipts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/lean_dependency_receipt.py create \
+            --root .lake/packages \
+            --receipt "$RUNNER_TEMP/dependency-receipt.json" \
+            --lake-manifest lake-manifest.json \
+            --lean-version "$LEAN_VERSION" \
+            --lean-archive-sha256 "$LEAN_LINUX_SHA256" \
+            --mathlib-commit "$MATHLIB_COMMIT"
+          {
+            echo "- Dependency receipt: canonical SHA-256 + non-authoritative XOR-fold emitted in log"
+          } >> "$GITHUB_STEP_SUMMARY"
