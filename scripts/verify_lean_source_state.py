@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """Verify a cached Lake dependency source graph against frozen declarations.
 
-The verifier does not trust Git's working-tree status. For every dependency it:
-* checks the exact manifest revision;
-* rejects non-default index flags such as assume-unchanged/skip-worktree;
+The verifier does not trust Git's working-tree status or mutable object
+redirection state. For every dependency it:
+* checks the exact manifest revision with replacement processing disabled;
+* rejects Git replacement refs/grafts and non-default index flags such as
+  assume-unchanged/skip-worktree;
+* requires generated per-package Lake state to be purged before verification;
 * compares tracked file bytes and executable/symlink modes against the pinned
   commit tree; and
 * optionally creates/verifies a receipt binding the current lakefile.lean
   declaration to the frozen lake-manifest.json and dependency commit trees.
 
-Generated Lake build products under .lake are outside this source-state receipt;
-compiled dependency artifacts are verified separately.
+Compiled dependency artifacts are verified separately.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ import subprocess
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-SCHEMA = "GEO-LEAN-SOURCE-RECEIPT-2"
+SCHEMA = "GEO-LEAN-SOURCE-RECEIPT-3"
 
 
 def sha256_file(path: Path) -> str:
@@ -36,11 +38,17 @@ def sha256_file(path: Path) -> str:
 
 
 def run_git(path: Path, *args: str) -> bytes:
+    # Full-SHA object lookups still honor refs/replace unless replacement
+    # processing is disabled. Never inspect the pinned object graph with the
+    # ambient Git replacement machinery enabled.
+    env = os.environ.copy()
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
     proc = subprocess.run(
         ["git", "-C", str(path), *args],
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=env,
     )
     if proc.returncode != 0:
         raise SystemExit(
@@ -91,6 +99,25 @@ def git_blob_oid(data: bytes, algorithm: str) -> str:
     raise SystemExit(f"unsupported Git object format: {algorithm}")
 
 
+def reject_object_redirection(path: Path, package: str) -> None:
+    replace_refs = git_text(
+        path, "for-each-ref", "--format=%(refname)", "refs/replace"
+    )
+    if replace_refs:
+        raise SystemExit(
+            f"Git replacement refs are not allowed in {package}:\n{replace_refs}"
+        )
+
+    # Legacy grafts predate refs/replace and can also substitute ancestry/object
+    # interpretation. Clean Lake clones should never need them.
+    grafts = path / ".git" / "info" / "grafts"
+    if grafts.exists():
+        if grafts.is_symlink() or not grafts.is_file():
+            raise SystemExit(f"invalid Git graft metadata in {package}: {grafts}")
+        if grafts.read_bytes().strip():
+            raise SystemExit(f"Git grafts are not allowed in {package}: {grafts}")
+
+
 def reject_index_flags(path: Path, package: str) -> None:
     # `git ls-files -v` emits normal cached entries as `H path`. Lowercase
     # letters expose assume-unchanged; `S` exposes skip-worktree. Reject every
@@ -111,7 +138,15 @@ def reject_index_flags(path: Path, package: str) -> None:
 
 
 def verify_commit_tree(path: Path, package: str, revision: str) -> str:
+    reject_object_redirection(path, package)
     reject_index_flags(path, package)
+
+    generated_lake = path / ".lake"
+    if generated_lake.exists() or generated_lake.is_symlink():
+        raise SystemExit(
+            f"generated package Lake state must be purged before verification: "
+            f"{generated_lake}"
+        )
 
     object_format = git_text(path, "rev-parse", "--show-object-format")
     tree_oid = git_text(path, "rev-parse", f"{revision}^{{tree}}")
@@ -184,11 +219,12 @@ def verify_commit_tree(path: Path, package: str, revision: str) -> str:
         raise SystemExit(f"dependency commit tree contains no tracked entries: {package}")
 
     # A cache should not inject an untracked Lean/config source that could
-    # shadow an import. Ignore Git/Lake metadata directories only.
+    # shadow an import. Generated .lake state is forbidden above, so only Git
+    # metadata is excluded from this walk.
     for root, dirs, files in os.walk(path, followlinks=False):
         root_path = Path(root)
         rel_root = root_path.relative_to(path)
-        dirs[:] = [d for d in dirs if d not in {".git", ".lake"}]
+        dirs[:] = [d for d in dirs if d != ".git"]
         for filename in files:
             rel = PurePosixPath(*(rel_root.parts + (filename,)))
             if rel in tracked_paths:
