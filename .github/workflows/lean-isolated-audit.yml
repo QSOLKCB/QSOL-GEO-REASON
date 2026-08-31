@@ -176,6 +176,10 @@ jobs:
           sudo install -o root -g root -m 0444 Lean/GeoReason/Audit.lean /opt/qsol-lean-audit/Audit.lean
           echo "PINNED_AUDIT_SHA256=$audit_sha" >> "$GITHUB_ENV"
 
+          # Allow the isolated identities to traverse into the checkout only.
+          # This grants no read/write capability beyond existing directory modes.
+          sudo chmod o+x /home/runner /home/runner/work "$GITHUB_WORKSPACE/.." "$GITHUB_WORKSPACE"
+
           sudo chown -R root:root Lean .lake/packages lakefile.lean lean-toolchain lake-manifest.json
           sudo chmod -R a-w Lean .lake/packages lakefile.lean lean-toolchain lake-manifest.json
 
@@ -305,6 +309,10 @@ jobs:
           audit_sha="$(sha256sum Lean/GeoReason/Audit.lean | awk '{print $1}')"
           sudo install -o root -g root -m 0444 Lean/GeoReason/Audit.lean /opt/qsol-lean-audit/Audit.lean
           echo "PINNED_AUDIT_SHA256=$audit_sha" >> "$GITHUB_ENV"
+
+          # Same traversal-only grant as the verified-cache isolated audit.
+          sudo chmod o+x /home/runner /home/runner/work "$GITHUB_WORKSPACE/.." "$GITHUB_WORKSPACE"
+
           sudo chown -R root:root Lean lakefile.lean lean-toolchain lake-manifest.json .lake/packages
           sudo chmod -R a-w Lean lakefile.lean lean-toolchain lake-manifest.json .lake/packages
           for pkg in .lake/packages/*; do
