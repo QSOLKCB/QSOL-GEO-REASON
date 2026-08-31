@@ -12,8 +12,8 @@ configuration, or mutable object redirection state. For every dependency it:
   commit tree;
 * requires the filesystem outside `.git` to be exactly the tracked commit-tree
   closure, rejecting every untracked file, directory, and symlink; and
-* only after verification restores the frozen manifest-declared `origin` URL so
-  Lake can reuse the authenticated checkout without re-cloning it.
+* only after verification restores a frozen dependency `origin` URL so Lake can
+  reuse the authenticated checkout without re-cloning it.
 
 Compiled dependency artifacts are verified separately.
 """
@@ -31,6 +31,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 SCHEMA = "GEO-LEAN-SOURCE-RECEIPT-3"
+TOP_LEVEL_MATHLIB_URL = "https://github.com/leanprover-community/mathlib4.git"
 SAFE_GIT_CONFIG = (
     b"[core]\n"
     b"\trepositoryformatversion = 0\n"
@@ -128,11 +129,19 @@ def validated_manifest_url(raw: Any, package: str) -> str:
         raise SystemExit(f"git package {package!r} has invalid manifest URL: {raw!r}")
     if any(ch.isspace() for ch in raw) or "\x00" in raw:
         raise SystemExit(f"git package {package!r} has unsafe manifest URL: {raw!r}")
+    if package == "mathlib":
+        normalized = raw[:-4] if raw.endswith(".git") else raw
+        expected_normalized = TOP_LEVEL_MATHLIB_URL[:-4]
+        if normalized != expected_normalized:
+            raise SystemExit(
+                f"mathlib manifest URL does not match reviewed declaration: {raw!r}"
+            )
+        return TOP_LEVEL_MATHLIB_URL
     return raw
 
 
 def restore_manifest_remote(path: Path, package: str, url: str) -> None:
-    """Restore only the frozen manifest-bound origin after source authentication."""
+    """Restore only the frozen dependency origin after source authentication."""
     assert_sanitized_git_metadata(path, package)
     config = path / ".git" / "config"
     remote = (
@@ -468,8 +477,6 @@ def main() -> None:
                     f"current={json.dumps(snapshot, sort_keys=True)}"
                 )
 
-    # Only now, after commit-tree and receipt authentication, restore the exact
-    # manifest-declared origin metadata Lake requires to reuse these checkouts.
     for path, name, url in verified_packages:
         restore_manifest_remote(path, name, url)
 
