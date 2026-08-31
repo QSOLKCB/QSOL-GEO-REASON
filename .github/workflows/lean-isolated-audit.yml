@@ -47,7 +47,16 @@ jobs:
           curl --fail --location --proto '=https' --tlsv1.2 "$url" --output "$archive"
           echo "${LEAN_LINUX_SHA256}  ${archive}" | sha256sum --check --strict
           tar --zstd -xf "$archive" -C "$RUNNER_TEMP"
-          lean_home="$RUNNER_TEMP/lean-${LEAN_VERSION}-linux"
+
+          staging="$RUNNER_TEMP/lean-${LEAN_VERSION}-linux"
+          sudo install -d -o root -g root -m 0755 /opt/qsol-lean
+          lean_home="/opt/qsol-lean/${LEAN_VERSION}"
+          sudo rm -rf "$lean_home"
+          sudo mv "$staging" "$lean_home"
+          sudo chown -R root:root "$lean_home"
+          sudo chmod -R a-w "$lean_home"
+          sudo chmod 0755 /opt/qsol-lean "$lean_home"
+
           test -x "$lean_home/bin/lean"
           test -x "$lean_home/bin/lake"
           lean_sha="$(sha256sum "$lean_home/bin/lean" | awk '{print $1}')"
@@ -56,8 +65,6 @@ jobs:
           echo "PINNED_LEAN_BIN_SHA256=$lean_sha" >> "$GITHUB_ENV"
           echo "PINNED_LAKE_BIN_SHA256=$lake_sha" >> "$GITHUB_ENV"
           echo "$lean_home/bin" >> "$GITHUB_PATH"
-          sudo chown -R root:root "$lean_home"
-          sudo chmod -R a-w "$lean_home"
           "$lean_home/bin/lean" --version
           "$lean_home/bin/lake" --version
 
@@ -255,13 +262,22 @@ jobs:
           curl --fail --location --proto '=https' --tlsv1.2 "$url" --output "$archive"
           echo "${LEAN_LINUX_SHA256}  ${archive}" | sha256sum --check --strict
           tar --zstd -xf "$archive" -C "$RUNNER_TEMP"
-          lean_home="$RUNNER_TEMP/lean-${LEAN_VERSION}-linux"
+
+          staging="$RUNNER_TEMP/lean-${LEAN_VERSION}-linux"
+          sudo install -d -o root -g root -m 0755 /opt/qsol-lean
+          lean_home="/opt/qsol-lean/${LEAN_VERSION}"
+          sudo rm -rf "$lean_home"
+          sudo mv "$staging" "$lean_home"
+          sudo chown -R root:root "$lean_home"
+          sudo chmod -R a-w "$lean_home"
+          sudo chmod 0755 /opt/qsol-lean "$lean_home"
+
+          test -x "$lean_home/bin/lean"
+          test -x "$lean_home/bin/lake"
           echo "LEAN_HOME=$lean_home" >> "$GITHUB_ENV"
           echo "PINNED_LEAN_BIN_SHA256=$(sha256sum "$lean_home/bin/lean" | awk '{print $1}')" >> "$GITHUB_ENV"
           echo "PINNED_LAKE_BIN_SHA256=$(sha256sum "$lean_home/bin/lake" | awk '{print $1}')" >> "$GITHUB_ENV"
           echo "$lean_home/bin" >> "$GITHUB_PATH"
-          sudo chown -R root:root "$lean_home"
-          sudo chmod -R a-w "$lean_home"
 
       - name: Resolve and verify pinned dependency sources
         shell: bash
