@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Verify a cached Lake dependency source graph against frozen declarations.
 
-The verifier does not trust Git's working-tree status or mutable object
-redirection state. For every dependency it:
+The verifier does not trust Git's working-tree status, cached repository
+configuration, or mutable object redirection state. For every dependency it:
+* sanitizes local Git configuration/hooks using filesystem operations only;
 * checks the exact manifest revision with replacement processing disabled;
-* rejects Git replacement refs/grafts and non-default index flags such as
-  assume-unchanged/skip-worktree;
+* rejects Git replacement refs/grafts/object alternates and non-default index
+  flags such as assume-unchanged/skip-worktree;
 * requires generated per-package Lake state to be purged before verification;
 * compares tracked file bytes and executable/symlink modes against the pinned
   commit tree; and
-* optionally creates/verifies a receipt binding the current lakefile.lean
-  declaration to the frozen lake-manifest.json and dependency commit trees.
+* requires the filesystem outside `.git` to be exactly the tracked commit-tree
+  closure, rejecting every untracked file, directory, and symlink.
 
 Compiled dependency artifacts are verified separately.
 """
@@ -21,12 +22,20 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 SCHEMA = "GEO-LEAN-SOURCE-RECEIPT-3"
+SAFE_GIT_CONFIG = (
+    b"[core]\n"
+    b"\trepositoryformatversion = 0\n"
+    b"\tfilemode = true\n"
+    b"\tbare = false\n"
+    b"\tlogallrefupdates = true\n"
+)
 
 
 def sha256_file(path: Path) -> str:
@@ -37,14 +46,116 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def remove_path_no_follow(path: Path) -> None:
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(st.st_mode) and not stat.S_ISLNK(st.st_mode):
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def sanitize_git_metadata(path: Path, package: str) -> None:
+    """Remove repository-configured executable surfaces before any Git call."""
+    git_dir = path / ".git"
+    if not git_dir.is_dir() or git_dir.is_symlink():
+        raise SystemExit(f"dependency package lacks ordinary .git metadata: {path}")
+
+    # These can redirect repository/object interpretation outside the cached
+    # package. Reject rather than normalize them so source identity stays clear.
+    for forbidden in (
+        git_dir / "commondir",
+        git_dir / "objects" / "info" / "alternates",
+        git_dir / "objects" / "info" / "http-alternates",
+        git_dir / "modules",
+    ):
+        if forbidden.is_symlink() or forbidden.exists():
+            raise SystemExit(
+                f"forbidden Git metadata in {package}: {forbidden.relative_to(path)}"
+            )
+
+    replace_dir = git_dir / "refs" / "replace"
+    if replace_dir.is_symlink() or replace_dir.exists():
+        raise SystemExit(f"Git replacement-ref directory is not allowed in {package}")
+
+    packed_refs = git_dir / "packed-refs"
+    if packed_refs.is_symlink():
+        raise SystemExit(f"symlinked packed-refs is not allowed in {package}")
+    if packed_refs.is_file():
+        for raw_line in packed_refs.read_bytes().splitlines():
+            line = raw_line.strip()
+            if line and not line.startswith((b"#", b"^")) and b" refs/replace/" in line:
+                raise SystemExit(f"packed Git replacement ref is not allowed in {package}")
+
+    grafts = git_dir / "info" / "grafts"
+    if grafts.is_symlink():
+        raise SystemExit(f"symlinked Git graft metadata in {package}: {grafts}")
+    if grafts.is_file() and grafts.read_bytes().strip():
+        raise SystemExit(f"Git grafts are not allowed in {package}: {grafts}")
+
+    # Do not execute or parse cached local configuration to decide whether it is
+    # safe. Remove executable/configurable surfaces without following symlinks,
+    # then install the exact inert config expected by the verifier.
+    remove_path_no_follow(git_dir / "hooks")
+    remove_path_no_follow(git_dir / "config.worktree")
+    remove_path_no_follow(git_dir / "config")
+
+    config = git_dir / "config"
+    fd = os.open(
+        config,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        os.write(fd, SAFE_GIT_CONFIG)
+    finally:
+        os.close(fd)
+
+
+def assert_sanitized_git_metadata(path: Path, package: str) -> None:
+    git_dir = path / ".git"
+    config = git_dir / "config"
+    if config.is_symlink() or not config.is_file():
+        raise SystemExit(f"sanitized Git config missing/invalid in {package}")
+    if config.read_bytes() != SAFE_GIT_CONFIG:
+        raise SystemExit(f"sanitized Git config mismatch in {package}")
+    for forbidden in (git_dir / "hooks", git_dir / "config.worktree"):
+        if forbidden.is_symlink() or forbidden.exists():
+            raise SystemExit(f"Git executable/config state survived sanitization: {forbidden}")
+
+
 def run_git(path: Path, *args: str) -> bytes:
-    # Full-SHA object lookups still honor refs/replace unless replacement
-    # processing is disabled. Never inspect the pinned object graph with the
-    # ambient Git replacement machinery enabled.
+    # Every Git command gets command-scope overrides as defense in depth. The
+    # local repo config has already been replaced by SAFE_GIT_CONFIG without
+    # executing Git, and global/system configs are disabled here as well.
     env = os.environ.copy()
-    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    env.update(
+        {
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
+    command = [
+        "git",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "core.untrackedCache=false",
+        "-c",
+        "submodule.recurse=false",
+        "-C",
+        str(path),
+        *args,
+    ]
     proc = subprocess.run(
-        ["git", "-C", str(path), *args],
+        command,
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -63,10 +174,7 @@ def git_text(path: Path, *args: str) -> str:
 
 
 def safe_relpath(raw: bytes, package: str) -> PurePosixPath:
-    try:
-        text = raw.decode("utf-8", "surrogateescape")
-    except UnicodeDecodeError as exc:
-        raise SystemExit(f"invalid tracked path in {package}: {exc}") from exc
+    text = raw.decode("utf-8", "surrogateescape")
     rel = PurePosixPath(text)
     if rel.is_absolute() or not rel.parts or any(part in ("", "..") for part in rel.parts):
         raise SystemExit(f"unsafe tracked path in {package}: {text!r}")
@@ -100,28 +208,16 @@ def git_blob_oid(data: bytes, algorithm: str) -> str:
 
 
 def reject_object_redirection(path: Path, package: str) -> None:
-    replace_refs = git_text(
-        path, "for-each-ref", "--format=%(refname)", "refs/replace"
-    )
+    # The filesystem-only sanitizer already rejects these. Recheck with Git
+    # replacement processing disabled so any later mutation also fails closed.
+    replace_refs = git_text(path, "for-each-ref", "--format=%(refname)", "refs/replace")
     if replace_refs:
         raise SystemExit(
             f"Git replacement refs are not allowed in {package}:\n{replace_refs}"
         )
 
-    # Legacy grafts predate refs/replace and can also substitute ancestry/object
-    # interpretation. Clean Lake clones should never need them.
-    grafts = path / ".git" / "info" / "grafts"
-    if grafts.exists():
-        if grafts.is_symlink() or not grafts.is_file():
-            raise SystemExit(f"invalid Git graft metadata in {package}: {grafts}")
-        if grafts.read_bytes().strip():
-            raise SystemExit(f"Git grafts are not allowed in {package}: {grafts}")
-
 
 def reject_index_flags(path: Path, package: str) -> None:
-    # `git ls-files -v` emits normal cached entries as `H path`. Lowercase
-    # letters expose assume-unchanged; `S` exposes skip-worktree. Reject every
-    # non-H state rather than rely on Git status, which can honor those bits.
     raw = run_git(path, "ls-files", "-v", "-z")
     for entry in raw.split(b"\0"):
         if not entry:
@@ -137,15 +233,71 @@ def reject_index_flags(path: Path, package: str) -> None:
             )
 
 
+def add_parent_dirs(rel: PurePosixPath, tracked_dirs: set[PurePosixPath]) -> None:
+    for count in range(1, len(rel.parts)):
+        tracked_dirs.add(PurePosixPath(*rel.parts[:count]))
+
+
+def verify_worktree_closure(
+    path: Path,
+    package: str,
+    tracked_paths: set[PurePosixPath],
+    tracked_dirs: set[PurePosixPath],
+) -> None:
+    """Reject every filesystem entry outside the pinned tree, except root .git."""
+    stack: list[tuple[Path, PurePosixPath | None]] = [(path, None)]
+    while stack:
+        directory, rel_dir = stack.pop()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if rel_dir is None and entry.name == ".git":
+                    continue
+                rel = (
+                    PurePosixPath(entry.name)
+                    if rel_dir is None
+                    else rel_dir / entry.name
+                )
+                try:
+                    st = entry.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    raise SystemExit(f"worktree entry vanished during verification: {package}:{rel}")
+
+                if stat.S_ISLNK(st.st_mode):
+                    if rel not in tracked_paths:
+                        raise SystemExit(
+                            f"untracked worktree symlink is not allowed in {package}: {rel}"
+                        )
+                    continue
+
+                if stat.S_ISDIR(st.st_mode):
+                    if rel not in tracked_dirs:
+                        raise SystemExit(
+                            f"untracked worktree directory is not allowed in {package}: {rel}"
+                        )
+                    stack.append((Path(entry.path), rel))
+                    continue
+
+                if stat.S_ISREG(st.st_mode):
+                    if rel not in tracked_paths:
+                        raise SystemExit(
+                            f"untracked worktree file is not allowed in {package}: {rel}"
+                        )
+                    continue
+
+                raise SystemExit(
+                    f"unsupported worktree entry type in {package}: {rel}"
+                )
+
+
 def verify_commit_tree(path: Path, package: str, revision: str) -> str:
+    assert_sanitized_git_metadata(path, package)
     reject_object_redirection(path, package)
     reject_index_flags(path, package)
 
     generated_lake = path / ".lake"
     if generated_lake.exists() or generated_lake.is_symlink():
         raise SystemExit(
-            f"generated package Lake state must be purged before verification: "
-            f"{generated_lake}"
+            f"generated package Lake state must be purged before verification: {generated_lake}"
         )
 
     object_format = git_text(path, "rev-parse", "--show-object-format")
@@ -154,6 +306,7 @@ def verify_commit_tree(path: Path, package: str, revision: str) -> str:
 
     checked_parents: set[Path] = set()
     tracked_paths: set[PurePosixPath] = set()
+    tracked_dirs: set[PurePosixPath] = set()
     tracked_files = 0
 
     for record in raw.split(b"\0"):
@@ -170,19 +323,15 @@ def verify_commit_tree(path: Path, package: str, revision: str) -> str:
         oid = oid_b.decode("ascii").lower()
         rel = safe_relpath(raw_path, package)
         tracked_paths.add(rel)
+        add_parent_dirs(rel, tracked_dirs)
         ensure_no_symlink_parents(path, rel, checked_parents)
         work = path.joinpath(*rel.parts)
 
+        # Gitlinks create a second unverified worktree/object database inside the
+        # dependency. None are required by the frozen manifest, so reject them
+        # rather than introduce another trust surface.
         if kind == "commit" and mode == "160000":
-            if not work.is_dir() or work.is_symlink():
-                raise SystemExit(f"gitlink worktree missing/invalid in {package}: {rel}")
-            sub_head = git_text(work, "rev-parse", "HEAD").lower()
-            if sub_head != oid:
-                raise SystemExit(
-                    f"gitlink revision mismatch in {package}:{rel}: {sub_head} != {oid}"
-                )
-            tracked_files += 1
-            continue
+            raise SystemExit(f"gitlink/submodule is not allowed in {package}: {rel}")
 
         if kind != "blob" or mode not in {"100644", "100755", "120000"}:
             raise SystemExit(
@@ -218,22 +367,7 @@ def verify_commit_tree(path: Path, package: str, revision: str) -> str:
     if tracked_files == 0:
         raise SystemExit(f"dependency commit tree contains no tracked entries: {package}")
 
-    # A cache should not inject an untracked Lean/config source that could
-    # shadow an import. Generated .lake state is forbidden above, so only Git
-    # metadata is excluded from this walk.
-    for root, dirs, files in os.walk(path, followlinks=False):
-        root_path = Path(root)
-        rel_root = root_path.relative_to(path)
-        dirs[:] = [d for d in dirs if d != ".git"]
-        for filename in files:
-            rel = PurePosixPath(*(rel_root.parts + (filename,)))
-            if rel in tracked_paths:
-                continue
-            if filename.endswith(".lean") or filename in {"lakefile.lean", "lean-toolchain"}:
-                raise SystemExit(
-                    f"untracked dependency source/config file is not allowed in {package}: {rel}"
-                )
-
+    verify_worktree_closure(path, package, tracked_paths, tracked_dirs)
     return tree_oid.lower()
 
 
@@ -264,15 +398,11 @@ def main() -> None:
     if not args.root.is_dir() or args.root.is_symlink():
         raise SystemExit(f"dependency source root missing/invalid: {args.root}")
     if not args.dependency_declaration.is_file() or args.dependency_declaration.is_symlink():
-        raise SystemExit(
-            f"dependency declaration missing/invalid: {args.dependency_declaration}"
-        )
+        raise SystemExit(f"dependency declaration missing/invalid: {args.dependency_declaration}")
     if args.write_receipt and args.receipt is None:
         raise SystemExit("--write-receipt requires --receipt")
 
-    manifest_sha, packages = load_manifest(
-        args.lake_manifest, args.expected_manifest_sha256
-    )
+    manifest_sha, packages = load_manifest(args.lake_manifest, args.expected_manifest_sha256)
     declaration_sha = sha256_file(args.dependency_declaration)
 
     summaries: list[dict[str, str]] = []
@@ -291,14 +421,16 @@ def main() -> None:
         if not path.is_dir() or path.is_symlink():
             raise SystemExit(f"dependency package directory invalid: {path}")
         git_dir = path / ".git"
-        if not git_dir.exists() or git_dir.is_symlink():
+        if not git_dir.is_dir() or git_dir.is_symlink():
             raise SystemExit(f"dependency package lacks ordinary .git metadata: {path}")
+
+        # This is deliberately the first operation touching repository metadata.
+        # It executes no Git command and cannot follow a cached config/hook link.
+        sanitize_git_metadata(path, name)
 
         head = git_text(path, "rev-parse", "HEAD").lower()
         if head != revision.lower():
-            raise SystemExit(
-                f"dependency revision mismatch for {name}: {head} != {revision}"
-            )
+            raise SystemExit(f"dependency revision mismatch for {name}: {head} != {revision}")
         git_text(path, "cat-file", "-e", f"{revision}^{{commit}}")
         tree = verify_commit_tree(path, name, revision)
         summaries.append({"name": name, "revision": revision.lower(), "tree": tree})
