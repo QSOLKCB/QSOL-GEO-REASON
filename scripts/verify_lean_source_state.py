@@ -12,8 +12,9 @@ configuration, or mutable object redirection state. For every dependency it:
   commit tree;
 * requires the filesystem outside `.git` to be exactly the tracked commit-tree
   closure, rejecting every untracked file, directory, and symlink; and
-* only after verification restores a frozen dependency `origin` URL so Lake can
-  reuse the authenticated checkout without re-cloning it.
+* only after verification restores a frozen dependency `origin` URL as
+  read-only metadata so isolated Lake identities can inspect it without being
+  able to modify it.
 
 Compiled dependency artifacts are verified separately.
 """
@@ -141,7 +142,7 @@ def validated_manifest_url(raw: Any, package: str) -> str:
 
 
 def restore_manifest_remote(path: Path, package: str, url: str) -> None:
-    """Restore only the frozen dependency origin after source authentication."""
+    """Restore the frozen origin as immutable metadata readable by Lake."""
     assert_sanitized_git_metadata(path, package)
     config = path / ".git" / "config"
     remote = (
@@ -160,6 +161,7 @@ def restore_manifest_remote(path: Path, package: str, url: str) -> None:
         os.write(fd, remote)
     finally:
         os.close(fd)
+    os.chmod(config, 0o444, follow_symlinks=False)
 
 
 def run_git(path: Path, *args: str) -> bytes:
@@ -485,7 +487,7 @@ def main() -> None:
         f"git_packages={checked} "
         f"lakefile_sha256={declaration_sha} "
         f"lake_manifest_sha256={manifest_sha} "
-        "manifest_remotes=restored"
+        "manifest_remotes=restored-readonly"
     )
 
 
