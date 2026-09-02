@@ -159,61 +159,57 @@ jobs:
             --expected-xor-fold-sha256 "$EXPECTED_BUILD_XOR_SHA256" \
             --expected-artifact-count "$EXPECTED_BUILD_ARTIFACT_COUNT"
 
-      - name: Materialize deterministic ProofWidgets Lake hash marker
-        shell: bash
-        run: |
-          set -euo pipefail
-          lock_file=".lake/packages/proofwidgets/widget/package-lock.json"
-          hash_file="${lock_file}.hash"
-          test -f "$lock_file"
-          test ! -L "$lock_file"
-          marker_script="$RUNNER_TEMP/cache-proofwidgets-lock.lean"
-          cat > "$marker_script" <<'EOF'
-          import Lake
-          open Lake
-          def main : IO Unit :=
-            cacheFileHash ".lake/packages/proofwidgets/widget/package-lock.json" (text := true)
-          EOF
-          "$LEAN_HOME/bin/lake" env "$LEAN_HOME/bin/lean" --run "$marker_script"
-          test -f "$hash_file"
-          test ! -L "$hash_file"
-          chmod 0444 "$hash_file"
-          echo "Materialized deterministic Lake hash marker for verified ProofWidgets package-lock.json."
-
-      - name: Prime Lake configuration before privilege drop
-        shell: bash
-        run: |
-          set -euo pipefail
-          "$LEAN_HOME/bin/lake" env "$LEAN_HOME/bin/lean" --version
-
-      - name: Freeze audit inputs and prepare unprivileged identities
+      - name: Freeze reviewed inputs and prepare isolated identities
         shell: bash
         run: |
           set -euo pipefail
           sudo useradd --system --no-create-home --shell /usr/sbin/nologin qsolbuild 2>/dev/null || true
           sudo useradd --system --no-create-home --shell /usr/sbin/nologin qsolaudit 2>/dev/null || true
+
           sudo install -d -o root -g root -m 0555 /opt/qsol-lean-audit
           audit_sha="$(sha256sum Lean/GeoReason/Audit.lean | awk '{print $1}')"
           sudo install -o root -g root -m 0444 Lean/GeoReason/Audit.lean /opt/qsol-lean-audit/Audit.lean
           echo "PINNED_AUDIT_SHA256=$audit_sha" >> "$GITHUB_ENV"
 
-          # Allow the isolated identities to traverse into the checkout only.
-          # This grants no read/write capability beyond existing directory modes.
+          # Allow isolated identities to traverse into the checkout only.
           sudo chmod o+x /home/runner /home/runner/work "$GITHUB_WORKSPACE/.." "$GITHUB_WORKSPACE"
 
+          # Freeze every reviewed theorem/config/dependency input before any
+          # project Lake configuration is elaborated.
           sudo chown -R root:root Lean .lake/packages lakefile.lean lean-toolchain lake-manifest.json
           sudo chmod -R a-w Lean .lake/packages lakefile.lean lean-toolchain lake-manifest.json
-
-          sudo mkdir -p .lake/build
-          sudo chown -R qsolbuild:qsolbuild .lake/build
+          sudo chown root:root .lake
           sudo chmod 0755 .lake
-          sudo chmod 0755 .lake/build
+
           sudo install -d -o qsolbuild -g qsolbuild -m 0700 /tmp/qsolbuild-home
           sudo install -d -o qsolaudit -g qsolaudit -m 0700 /tmp/qsolaudit-home
 
-          # Lake needs to inspect authenticated remote.origin.url after the
-          # privilege drop. The verifier publishes those configs as 0444:
-          # readable by build/audit identities, immutable to both.
+          # Lake stores compiled package configurations in workspace .lake/config.
+          # Only the non-sudo build identity may populate that generated area.
+          sudo rm -rf .lake/config .lake/build
+          sudo install -d -o qsolbuild -g qsolbuild -m 0700 .lake/config
+
+          # Pre-create the one deterministic ProofWidgets marker that must live
+          # beside tracked source. qsolbuild can write this file only, not its
+          # root-owned parent directory or any tracked dependency input.
+          lock_file="$GITHUB_WORKSPACE/.lake/packages/proofwidgets/widget/package-lock.json"
+          hash_file="${lock_file}.hash"
+          test -f "$lock_file"
+          test ! -L "$lock_file"
+          sudo install -o qsolbuild -g qsolbuild -m 0600 /dev/null "$hash_file"
+
+          marker_script="/opt/qsol-lean-audit/cache-proofwidgets-lock.lean"
+          cat <<EOF | sudo tee "$marker_script" >/dev/null
+          import Lake
+          open Lake
+          def main : IO Unit :=
+            cacheFileHash "$lock_file" (text := true)
+          EOF
+          sudo chown root:root "$marker_script"
+          sudo chmod 0444 "$marker_script"
+
+          # Lake must be able to inspect authenticated remote.origin.url after
+          # the privilege drop, while neither isolated identity may change it.
           config_count=0
           while IFS= read -r -d '' config; do
             config_count="$((config_count + 1))"
@@ -231,15 +227,72 @@ jobs:
           done < <(find .lake/packages -type f -path '*/.git/config' -print0)
           test "$config_count" -gt 0
 
+      - name: Materialize ProofWidgets marker after input freeze
+        shell: bash
+        run: |
+          set -euo pipefail
+          marker_script="/opt/qsol-lean-audit/cache-proofwidgets-lock.lean"
+          hash_file="$GITHUB_WORKSPACE/.lake/packages/proofwidgets/widget/package-lock.json.hash"
+          (
+            cd /opt/qsol-lean-audit
+            sudo -u qsolbuild env -i \
+              HOME=/tmp/qsolbuild-home \
+              PATH="$LEAN_HOME/bin:/usr/bin:/bin" \
+              "$LEAN_HOME/bin/lean" --run "$marker_script"
+          )
+          test -f "$hash_file"
+          test ! -L "$hash_file"
+          sudo chown root:root "$hash_file"
+          sudo chmod 0444 "$hash_file"
+          echo "Materialized ProofWidgets Lake hash without evaluating project lakefile.lean."
+
+      - name: Prime Lake configuration under build-only privileges
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -u qsolbuild env -i \
+            HOME=/tmp/qsolbuild-home \
+            PATH="$LEAN_HOME/bin:/usr/bin:/bin" \
+            LEAN_NUM_THREADS="$LEAN_WORKERS" \
+            MATHLIB_NO_CACHE_ON_UPDATE=1 \
+            "$LEAN_HOME/bin/lake" env "$LEAN_HOME/bin/lean" --version
+
+      - name: Freeze generated Lake configuration and open build output
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d .lake/config
+          sudo chown -R root:root .lake/config
+          sudo find .lake/config -type d -exec chmod 0555 {} +
+          sudo find .lake/config -type f -exec chmod 0444 {} +
+
+          # Any compile-time side effects from configuration elaboration are
+          # discarded from the project output surface before the real build.
+          sudo rm -rf .lake/build
+          sudo install -d -o qsolbuild -g qsolbuild -m 0755 .lake/build
+
+          test "$(sha256sum /opt/qsol-lean-audit/Audit.lean | awk '{print $1}')" = "$PINNED_AUDIT_SHA256"
+          test "$(sha256sum "$LEAN_HOME/bin/lean" | awk '{print $1}')" = "$PINNED_LEAN_BIN_SHA256"
+          test "$(sha256sum "$LEAN_HOME/bin/lake" | awk '{print $1}')" = "$PINNED_LAKE_BIN_SHA256"
+          if sudo -u qsolbuild test -w Lean/GeoReason/Audit.lean; then
+            echo "Build identity can write reviewed audit source" >&2
+            exit 1
+          fi
+          if sudo -u qsolbuild test -w lakefile.lean; then
+            echo "Build identity can write reviewed Lake declaration" >&2
+            exit 1
+          fi
+
       - name: Rebuild GeoReason with build-only privileges
         shell: bash
         run: |
           set -euo pipefail
           timing_file="/tmp/qsolbuild-home/lean-isolated-project-build.time"
-          sudo -u qsolbuild env \
+          sudo -u qsolbuild env -i \
             HOME=/tmp/qsolbuild-home \
             PATH="$LEAN_HOME/bin:/usr/bin:/bin" \
             LEAN_NUM_THREADS="$LEAN_WORKERS" \
+            MATHLIB_NO_CACHE_ON_UPDATE=1 \
             /usr/bin/time -f 'isolated-project-build wall=%e user=%U sys=%S maxrss_kb=%M' -o "$timing_file" \
             "$LEAN_HOME/bin/lake" build --wfail
           sudo cat "$timing_file"
@@ -267,10 +320,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo -u qsolaudit env \
+          sudo -u qsolaudit env -i \
             HOME=/tmp/qsolaudit-home \
             PATH="$LEAN_HOME/bin:/usr/bin:/bin" \
             LEAN_NUM_THREADS=1 \
+            MATHLIB_NO_CACHE_ON_UPDATE=1 \
             "$LEAN_HOME/bin/lake" env "$LEAN_HOME/bin/lean" /opt/qsol-lean-audit/Audit.lean \
             2>&1 | tee /tmp/lean-isolated-audit.log
           if ! grep -q 'Declarations are sorry-free!' /tmp/lean-isolated-audit.log; then
@@ -281,7 +335,7 @@ jobs:
             echo "Known disallowed compiled proof dependency found" >&2
             exit 1
           fi
-          echo "Protected audit/toolchain remained outside the build identity's writable surface." >> "$GITHUB_STEP_SUMMARY"
+          echo "Protected audit/toolchain remained outside every Lake-capable identity's writable surface." >> "$GITHUB_STEP_SUMMARY"
 
   isolated-cold-trust:
     if: github.event_name == 'workflow_dispatch'
@@ -338,27 +392,6 @@ jobs:
             --lake-manifest lake-manifest.json \
             --expected-manifest-sha256 "$EXPECTED_LAKE_MANIFEST_SHA256" \
             --dependency-declaration lakefile.lean
-          "$LEAN_HOME/bin/lake" env "$LEAN_HOME/bin/lean" --version
-
-      - name: Materialize deterministic ProofWidgets Lake hash marker
-        shell: bash
-        run: |
-          set -euo pipefail
-          lock_file=".lake/packages/proofwidgets/widget/package-lock.json"
-          hash_file="${lock_file}.hash"
-          test -f "$lock_file"
-          test ! -L "$lock_file"
-          marker_script="$RUNNER_TEMP/cache-proofwidgets-lock.lean"
-          cat > "$marker_script" <<'EOF'
-          import Lake
-          open Lake
-          def main : IO Unit :=
-            cacheFileHash ".lake/packages/proofwidgets/widget/package-lock.json" (text := true)
-          EOF
-          "$LEAN_HOME/bin/lake" env "$LEAN_HOME/bin/lean" --run "$marker_script"
-          test -f "$hash_file"
-          test ! -L "$hash_file"
-          chmod 0444 "$hash_file"
 
       - name: Prepare cold-build and audit privilege boundaries
         shell: bash
@@ -376,15 +409,35 @@ jobs:
 
           sudo chown -R root:root Lean lakefile.lean lean-toolchain lake-manifest.json .lake/packages
           sudo chmod -R a-w Lean lakefile.lean lean-toolchain lake-manifest.json .lake/packages
+          sudo chown root:root .lake
+          sudo chmod 0755 .lake
+
           for pkg in .lake/packages/*; do
             [ -d "$pkg" ] || continue
             sudo mkdir -p "$pkg/.lake"
             sudo chown -R qsolbuild:qsolbuild "$pkg/.lake"
           done
-          sudo mkdir -p .lake/build
-          sudo chown -R qsolbuild:qsolbuild .lake/build
+          sudo rm -rf .lake/config .lake/build
+          sudo install -d -o qsolbuild -g qsolbuild -m 0700 .lake/config
+          sudo install -d -o qsolbuild -g qsolbuild -m 0755 .lake/build
           sudo install -d -o qsolbuild -g qsolbuild -m 0700 /tmp/qsolbuild-home
           sudo install -d -o qsolaudit -g qsolaudit -m 0700 /tmp/qsolaudit-home
+
+          lock_file="$GITHUB_WORKSPACE/.lake/packages/proofwidgets/widget/package-lock.json"
+          hash_file="${lock_file}.hash"
+          test -f "$lock_file"
+          test ! -L "$lock_file"
+          sudo install -o qsolbuild -g qsolbuild -m 0600 /dev/null "$hash_file"
+
+          marker_script="/opt/qsol-lean-audit/cache-proofwidgets-lock.lean"
+          cat <<EOF | sudo tee "$marker_script" >/dev/null
+          import Lake
+          open Lake
+          def main : IO Unit :=
+            cacheFileHash "$lock_file" (text := true)
+          EOF
+          sudo chown root:root "$marker_script"
+          sudo chmod 0444 "$marker_script"
 
           config_count=0
           while IFS= read -r -d '' config; do
@@ -406,14 +459,47 @@ jobs:
           cpus="$(nproc)"; workers="$cpus"; if [ "$workers" -gt 4 ]; then workers=4; fi
           echo "LEAN_WORKERS=$workers" >> "$GITHUB_ENV"
 
+      - name: Materialize cold ProofWidgets marker after input freeze
+        shell: bash
+        run: |
+          set -euo pipefail
+          marker_script="/opt/qsol-lean-audit/cache-proofwidgets-lock.lean"
+          hash_file="$GITHUB_WORKSPACE/.lake/packages/proofwidgets/widget/package-lock.json.hash"
+          (
+            cd /opt/qsol-lean-audit
+            sudo -u qsolbuild env -i \
+              HOME=/tmp/qsolbuild-home \
+              PATH="$LEAN_HOME/bin:/usr/bin:/bin" \
+              "$LEAN_HOME/bin/lean" --run "$marker_script"
+          )
+          test -f "$hash_file"
+          test ! -L "$hash_file"
+          sudo chown root:root "$hash_file"
+          sudo chmod 0444 "$hash_file"
+
+      - name: Prime cold Lake configuration under build-only privileges
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -u qsolbuild env -i \
+            HOME=/tmp/qsolbuild-home \
+            PATH="$LEAN_HOME/bin:/usr/bin:/bin" \
+            LEAN_NUM_THREADS="$LEAN_WORKERS" \
+            MATHLIB_NO_CACHE_ON_UPDATE=1 \
+            "$LEAN_HOME/bin/lake" env "$LEAN_HOME/bin/lean" --version
+          sudo chown -R root:root .lake/config
+          sudo find .lake/config -type d -exec chmod 0555 {} +
+          sudo find .lake/config -type f -exec chmod 0444 {} +
+
       - name: Reconstruct formalization with build-only privileges
         shell: bash
         run: |
           set -euo pipefail
-          sudo -u qsolbuild env \
+          sudo -u qsolbuild env -i \
             HOME=/tmp/qsolbuild-home \
             PATH="$LEAN_HOME/bin:/usr/bin:/bin" \
             LEAN_NUM_THREADS="$LEAN_WORKERS" \
+            MATHLIB_NO_CACHE_ON_UPDATE=1 \
             "$LEAN_HOME/bin/lake" build --wfail
 
       - name: Freeze cold outputs and authenticate dependency closure
@@ -440,10 +526,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo -u qsolaudit env \
+          sudo -u qsolaudit env -i \
             HOME=/tmp/qsolaudit-home \
             PATH="$LEAN_HOME/bin:/usr/bin:/bin" \
             LEAN_NUM_THREADS=1 \
+            MATHLIB_NO_CACHE_ON_UPDATE=1 \
             "$LEAN_HOME/bin/lake" env "$LEAN_HOME/bin/lean" /opt/qsol-lean-audit/Audit.lean \
             2>&1 | tee /tmp/lean-isolated-cold-audit.log
           grep -q 'Declarations are sorry-free!' /tmp/lean-isolated-cold-audit.log
