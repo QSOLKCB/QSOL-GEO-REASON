@@ -63,6 +63,14 @@ esac
 sudo rm -rf "$protected_base"
 sudo install -d -o root -g root -m 0555 "$protected_base"
 
+# Lean resolves a top-level module package such as GeoReason from one search
+# root. Keep the one-shot compiler roots for isolation/provenance, but publish
+# each frozen object into this single root-owned package tree for subsequent
+# imports and the final audit.
+assembled_root="$protected_base/assembled"
+sudo install -d -o root -g root -m 0555 "$assembled_root"
+test ! -L "$assembled_root"
+
 compile_protected_module() {
   label="$1"
   source_file="$2"
@@ -122,6 +130,27 @@ compile_protected_module() {
       exit 1
     fi
   done
+
+  # Publish the frozen object into the single package root Lean requires for
+  # GeoReason lookup. Publication is root-only, copy-based, hash-checked, and
+  # never gives qsolbuild/qsolcompile/qsolaudit a writable assembled surface.
+  assembled_file="$assembled_root/$output_rel"
+  assembled_dir="$(dirname "$assembled_file")"
+  sudo install -d -o root -g root -m 0555 "$assembled_dir"
+  sudo test ! -L "$assembled_dir"
+  sudo test ! -e "$assembled_file"
+  sudo install -o root -g root -m 0444 "$output_file" "$assembled_file"
+  sudo test -f "$assembled_file"
+  sudo test ! -L "$assembled_file"
+  test "$(sudo sha256sum "$output_file" | awk '{print $1}')" = \
+       "$(sudo sha256sum "$assembled_file" | awk '{print $1}')"
+
+  for identity in qsolbuild qsolcompile qsolaudit; do
+    if sudo -u "$identity" test -w "$assembled_file"; then
+      echo "$identity can write assembled protected module: $assembled_file" >&2
+      exit 1
+    fi
+  done
 }
 
 trajectory_root="$protected_base/00-trajectory"
@@ -140,30 +169,30 @@ compile_protected_module \
   "01-cosine" \
   "$source_root/GeoReason/Cosine.lean" \
   "GeoReason/Cosine.olean" \
-  "$trajectory_root:$dependency_lean_path"
+  "$assembled_root:$dependency_lean_path"
 
 compile_protected_module \
   "02-menger" \
   "$source_root/GeoReason/Menger.lean" \
   "GeoReason/Menger.olean" \
-  "$cosine_root:$trajectory_root:$dependency_lean_path"
+  "$assembled_root:$dependency_lean_path"
 
 compile_protected_module \
   "03-arclength" \
   "$source_root/GeoReason/ArcLength.lean" \
   "GeoReason/ArcLength.olean" \
-  "$menger_root:$cosine_root:$trajectory_root:$dependency_lean_path"
+  "$assembled_root:$dependency_lean_path"
 
 compile_protected_module \
   "04-georeason" \
   "$source_root/GeoReason.lean" \
   "GeoReason.olean" \
-  "$arclength_root:$menger_root:$cosine_root:$trajectory_root:$dependency_lean_path"
+  "$assembled_root:$dependency_lean_path"
 
-# The audit path contains only independently recompiled project modules plus
-# the already authenticated dependency closure. The qsolbuild project tree is
-# never eligible for import by the final protected audit.
-final_lean_path="$geo_root:$arclength_root:$menger_root:$cosine_root:$trajectory_root:$dependency_lean_path"
+# The final audit path contains only the assembled source-bound project graph
+# plus the already authenticated dependency closure. The qsolbuild project tree
+# is never eligible for import by the final protected audit.
+final_lean_path="$assembled_root:$dependency_lean_path"
 tmp_audit_path="$(mktemp)"
 printf '%s\n' "$final_lean_path" > "$tmp_audit_path"
 sudo install -o root -g root -m 0444 "$tmp_audit_path" "$audit_path_file"
@@ -177,6 +206,7 @@ fi
 IFS=: read -r -a audit_paths < "$audit_path_file"
 for path in "${audit_paths[@]}"; do
   test -d "$path"
+  test ! -L "$path"
   sudo -u qsolaudit test -r "$path"
   for identity in qsolbuild qsolcompile qsolaudit; do
     if sudo -u "$identity" test -w "$path"; then
@@ -192,6 +222,12 @@ test -f "$menger_root/GeoReason/Menger.olean"
 test -f "$arclength_root/GeoReason/ArcLength.olean"
 test -f "$geo_root/GeoReason.olean"
 
+test -f "$assembled_root/GeoReason/Trajectory.olean"
+test -f "$assembled_root/GeoReason/Cosine.olean"
+test -f "$assembled_root/GeoReason/Menger.olean"
+test -f "$assembled_root/GeoReason/ArcLength.olean"
+test -f "$assembled_root/GeoReason.olean"
+
 test "$(sha256sum "$lean_bin" | awk '{print $1}')" = "$PINNED_LEAN_BIN_SHA256"
 test "$(sha256sum "$audit_root/Audit.lean" | awk '{print $1}')" = "$PINNED_AUDIT_SHA256"
 
@@ -199,4 +235,4 @@ find "$protected_base" -type f -name '*.olean' -print0 \
   | sort -z \
   | xargs -0 sha256sum
 
-echo "Protected GeoReason recompilation excluded qsolbuild project objects from the audit path."
+echo "Protected GeoReason recompilation assembled one source-bound package root and excluded qsolbuild project objects from the audit path."
