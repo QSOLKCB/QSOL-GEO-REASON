@@ -60,11 +60,13 @@ private def auditTargets (env : Environment) : IO Unit :=
         | _ => throwError "protected audit declaration {target} is not a theorem"
 
         let axioms ← Lean.collectAxioms target
-        for axiom in axioms do
-          unless allowedAxioms.contains axiom do
-            throwError "{target} depends on disallowed axiom {axiom}"
+        for ax in axioms do
+          unless allowedAxioms.contains ax do
+            throwError "{target} depends on disallowed axiom {ax}"
 
-        IO.println s!"'{target}' depends on axioms: {axioms}"
+        IO.println s!"audited theorem {target}"
+        for ax in axioms do
+          IO.println s!"  allowed axiom: {ax}"
 
 unsafe def main : IO Unit := do
   Lean.withImportModules #[{ module := `GeoReason : Lean.Import }] {} fun env => do
