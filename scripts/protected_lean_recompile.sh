@@ -107,8 +107,11 @@ compile_protected_module() {
   # of that elaboration to survive into the next module's writable root.
   sudo pkill -KILL -u qsolcompile 2>/dev/null || true
 
-  test -f "$output_file"
-  test ! -L "$output_file"
+  # The runner intentionally cannot traverse the fresh 0700 compiler-owned
+  # root. Verify the emitted object through the privileged boundary, then
+  # immediately transfer the entire root to read-only root ownership.
+  sudo test -f "$output_file"
+  sudo test ! -L "$output_file"
   sudo chown -R root:root "$module_root"
   sudo find "$module_root" -type d -exec chmod 0555 {} +
   sudo find "$module_root" -type f -exec chmod 0444 {} +
