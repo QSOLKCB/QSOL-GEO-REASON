@@ -307,6 +307,48 @@ jobs:
           test "$(sha256sum "$LEAN_HOME/bin/lean" | awk '{print $1}')" = "$PINNED_LEAN_BIN_SHA256"
           test "$(sha256sum "$LEAN_HOME/bin/lake" | awk '{print $1}')" = "$PINNED_LAKE_BIN_SHA256"
 
+      - name: Freeze direct Lean audit module path
+        shell: bash
+        run: |
+          set -euo pipefail
+          audit_path="/opt/qsol-lean-audit/lean-path"
+          tmp_path="$(mktemp)"
+          project_lib="$GITHUB_WORKSPACE/.lake/build/lib/lean"
+          test -d "$project_lib"
+          test ! -L "$project_lib"
+          printf '%s' "$project_lib" > "$tmp_path"
+
+          dependency_libs=0
+          for pkg in "$GITHUB_WORKSPACE"/.lake/packages/*; do
+            [ -d "$pkg" ] || continue
+            test ! -L "$pkg"
+            lib="$pkg/.lake/build/lib/lean"
+            [ -d "$lib" ] || continue
+            test ! -L "$pkg/.lake"
+            test ! -L "$pkg/.lake/build"
+            test ! -L "$pkg/.lake/build/lib"
+            test ! -L "$lib"
+            printf ':%s' "$lib" >> "$tmp_path"
+            dependency_libs="$((dependency_libs + 1))"
+          done
+          test "$dependency_libs" -gt 0
+          printf '\n' >> "$tmp_path"
+
+          sudo install -o root -g root -m 0444 "$tmp_path" "$audit_path"
+          rm -f "$tmp_path"
+          test "$(sha256sum /opt/qsol-lean-audit/Audit.lean | awk '{print $1}')" = "$PINNED_AUDIT_SHA256"
+          test "$(sha256sum "$LEAN_HOME/bin/lean" | awk '{print $1}')" = "$PINNED_LEAN_BIN_SHA256"
+
+          IFS=: read -r -a audit_paths < "$audit_path"
+          for path in "${audit_paths[@]}"; do
+            test -d "$path"
+            sudo -u qsolaudit test -r "$path"
+            if sudo -u qsolaudit test -w "$path"; then
+              echo "Audit identity can write direct Lean module path: $path" >&2
+              exit 1
+            fi
+          done
+
       - name: Reject project proof placeholders and explicit axioms
         shell: bash
         run: |
@@ -320,12 +362,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          audit_lean_path="$(cat /opt/qsol-lean-audit/lean-path)"
+          test -n "$audit_lean_path"
           sudo -u qsolaudit env -i \
             HOME=/tmp/qsolaudit-home \
             PATH="$LEAN_HOME/bin:/usr/bin:/bin" \
+            LEAN_PATH="$audit_lean_path" \
             LEAN_NUM_THREADS=1 \
-            MATHLIB_NO_CACHE_ON_UPDATE=1 \
-            "$LEAN_HOME/bin/lake" env "$LEAN_HOME/bin/lean" /opt/qsol-lean-audit/Audit.lean \
+            "$LEAN_HOME/bin/lean" /opt/qsol-lean-audit/Audit.lean \
             2>&1 | tee /tmp/lean-isolated-audit.log
           if ! grep -q 'Declarations are sorry-free!' /tmp/lean-isolated-audit.log; then
             echo "Protected compiled theorem graph did not report sorry-free" >&2
@@ -378,39 +422,95 @@ jobs:
           echo "PINNED_LAKE_BIN_SHA256=$(sha256sum "$lean_home/bin/lake" | awk '{print $1}')" >> "$GITHUB_ENV"
           echo "$lean_home/bin" >> "$GITHUB_PATH"
 
-      - name: Resolve and verify pinned dependency sources
-        shell: bash
-        run: |
-          set -euo pipefail
-          lake update
-          for pkg in .lake/packages/*; do
-            [ -d "$pkg" ] || continue
-            rm -rf "$pkg/.lake"
-          done
-          python3 scripts/verify_lean_source_state.py \
-            --root .lake/packages \
-            --lake-manifest lake-manifest.json \
-            --expected-manifest-sha256 "$EXPECTED_LAKE_MANIFEST_SHA256" \
-            --dependency-declaration lakefile.lean
-
-      - name: Prepare cold-build and audit privilege boundaries
+      - name: Freeze cold reviewed inputs before dependency resolution
         shell: bash
         run: |
           set -euo pipefail
           sudo useradd --system --no-create-home --shell /usr/sbin/nologin qsolbuild 2>/dev/null || true
           sudo useradd --system --no-create-home --shell /usr/sbin/nologin qsolaudit 2>/dev/null || true
+
           sudo install -d -o root -g root -m 0555 /opt/qsol-lean-audit
           audit_sha="$(sha256sum Lean/GeoReason/Audit.lean | awk '{print $1}')"
           sudo install -o root -g root -m 0444 Lean/GeoReason/Audit.lean /opt/qsol-lean-audit/Audit.lean
           echo "PINNED_AUDIT_SHA256=$audit_sha" >> "$GITHUB_ENV"
 
-          # Same traversal-only grant as the verified-cache isolated audit.
+          # Allow isolated identities to traverse into the checkout, but make
+          # the checkout root itself non-writable before any project Lake code
+          # is evaluated.
           sudo chmod o+x /home/runner /home/runner/work "$GITHUB_WORKSPACE/.." "$GITHUB_WORKSPACE"
+          sudo chown -R root:root Lean scripts lakefile.lean lean-toolchain
+          sudo chmod -R a-w Lean scripts lakefile.lean lean-toolchain
 
-          sudo chown -R root:root Lean lakefile.lean lean-toolchain lake-manifest.json .lake/packages
-          sudo chmod -R a-w Lean lakefile.lean lean-toolchain lake-manifest.json .lake/packages
+          sudo rm -rf .lake lake-manifest.json
+          sudo install -d -o qsolbuild -g qsolbuild -m 0700 .lake
+          sudo install -o qsolbuild -g qsolbuild -m 0600 /dev/null lake-manifest.json
+          sudo install -d -o qsolbuild -g qsolbuild -m 0700 /tmp/qsolbuild-home
+          sudo install -d -o qsolaudit -g qsolaudit -m 0700 /tmp/qsolaudit-home
+
+          sudo chown root:root "$GITHUB_WORKSPACE"
+          sudo chmod 0555 "$GITHUB_WORKSPACE"
+
+          for input in \
+            Lean/GeoReason/Audit.lean \
+            lakefile.lean \
+            lean-toolchain \
+            scripts/verify_lean_source_state.py \
+            scripts/lean_dependency_receipt.py; do
+            if sudo -u qsolbuild test -w "$input"; then
+              echo "Cold resolver can write reviewed input before lake update: $input" >&2
+              exit 1
+            fi
+          done
+          sudo -u qsolbuild test -w .lake
+          sudo -u qsolbuild test -w lake-manifest.json
+
+      - name: Resolve and verify pinned dependency sources under isolated identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -u qsolbuild env -i \
+            HOME=/tmp/qsolbuild-home \
+            PATH="$LEAN_HOME/bin:/usr/bin:/bin" \
+            MATHLIB_NO_CACHE_ON_UPDATE=1 \
+            "$LEAN_HOME/bin/lake" update
+
+          test -d .lake
+          test ! -L .lake
+          test -d .lake/packages
+          test ! -L .lake/packages
+          test "$(realpath .lake/packages)" = "$GITHUB_WORKSPACE/.lake/packages"
+          test -f lake-manifest.json
+          test ! -L lake-manifest.json
+          actual_manifest_sha="$(sha256sum lake-manifest.json | awk '{print $1}')"
+          test "$actual_manifest_sha" = "$EXPECTED_LAKE_MANIFEST_SHA256"
+
+          for pkg in .lake/packages/*; do
+            [ -d "$pkg" ] || continue
+            test ! -L "$pkg"
+            sudo rm -rf "$pkg/.lake"
+          done
+
+          sudo -u qsolbuild env -i \
+            HOME=/tmp/qsolbuild-home \
+            PATH=/usr/bin:/bin \
+            /usr/bin/python3 scripts/verify_lean_source_state.py \
+              --root .lake/packages \
+              --lake-manifest lake-manifest.json \
+              --expected-manifest-sha256 "$EXPECTED_LAKE_MANIFEST_SHA256" \
+              --dependency-declaration lakefile.lean
+
+          sudo chown -R root:root .lake/packages lake-manifest.json
+          sudo chmod -R a-w .lake/packages lake-manifest.json
           sudo chown root:root .lake
           sudo chmod 0755 .lake
+
+      - name: Prepare cold-build and audit privilege boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(sha256sum /opt/qsol-lean-audit/Audit.lean | awk '{print $1}')" = "$PINNED_AUDIT_SHA256"
+          test "$(sha256sum "$LEAN_HOME/bin/lean" | awk '{print $1}')" = "$PINNED_LEAN_BIN_SHA256"
+          test "$(sha256sum "$LEAN_HOME/bin/lake" | awk '{print $1}')" = "$PINNED_LAKE_BIN_SHA256"
 
           for pkg in .lake/packages/*; do
             [ -d "$pkg" ] || continue
@@ -522,16 +622,57 @@ jobs:
           test "$(sha256sum "$LEAN_HOME/bin/lean" | awk '{print $1}')" = "$PINNED_LEAN_BIN_SHA256"
           test "$(sha256sum "$LEAN_HOME/bin/lake" | awk '{print $1}')" = "$PINNED_LAKE_BIN_SHA256"
 
+      - name: Freeze direct cold Lean audit module path
+        shell: bash
+        run: |
+          set -euo pipefail
+          audit_path="/opt/qsol-lean-audit/lean-path"
+          tmp_path="$(mktemp)"
+          project_lib="$GITHUB_WORKSPACE/.lake/build/lib/lean"
+          test -d "$project_lib"
+          test ! -L "$project_lib"
+          printf '%s' "$project_lib" > "$tmp_path"
+
+          dependency_libs=0
+          for pkg in "$GITHUB_WORKSPACE"/.lake/packages/*; do
+            [ -d "$pkg" ] || continue
+            test ! -L "$pkg"
+            lib="$pkg/.lake/build/lib/lean"
+            [ -d "$lib" ] || continue
+            test ! -L "$pkg/.lake"
+            test ! -L "$pkg/.lake/build"
+            test ! -L "$pkg/.lake/build/lib"
+            test ! -L "$lib"
+            printf ':%s' "$lib" >> "$tmp_path"
+            dependency_libs="$((dependency_libs + 1))"
+          done
+          test "$dependency_libs" -gt 0
+          printf '\n' >> "$tmp_path"
+
+          sudo install -o root -g root -m 0444 "$tmp_path" "$audit_path"
+          rm -f "$tmp_path"
+          IFS=: read -r -a audit_paths < "$audit_path"
+          for path in "${audit_paths[@]}"; do
+            test -d "$path"
+            sudo -u qsolaudit test -r "$path"
+            if sudo -u qsolaudit test -w "$path"; then
+              echo "Audit identity can write direct cold Lean module path: $path" >&2
+              exit 1
+            fi
+          done
+
       - name: Run protected cold compiled-theorem audit
         shell: bash
         run: |
           set -euo pipefail
+          audit_lean_path="$(cat /opt/qsol-lean-audit/lean-path)"
+          test -n "$audit_lean_path"
           sudo -u qsolaudit env -i \
             HOME=/tmp/qsolaudit-home \
             PATH="$LEAN_HOME/bin:/usr/bin:/bin" \
+            LEAN_PATH="$audit_lean_path" \
             LEAN_NUM_THREADS=1 \
-            MATHLIB_NO_CACHE_ON_UPDATE=1 \
-            "$LEAN_HOME/bin/lake" env "$LEAN_HOME/bin/lean" /opt/qsol-lean-audit/Audit.lean \
+            "$LEAN_HOME/bin/lean" /opt/qsol-lean-audit/Audit.lean \
             2>&1 | tee /tmp/lean-isolated-cold-audit.log
           grep -q 'Declarations are sorry-free!' /tmp/lean-isolated-cold-audit.log
           if grep -E 'sorryAx|Lean\.ofReduceBool' /tmp/lean-isolated-cold-audit.log; then exit 1; fi
