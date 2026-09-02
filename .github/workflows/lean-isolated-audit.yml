@@ -190,6 +190,26 @@ jobs:
           sudo install -d -o qsolbuild -g qsolbuild -m 0700 /tmp/qsolbuild-home
           sudo install -d -o qsolaudit -g qsolaudit -m 0700 /tmp/qsolaudit-home
 
+          # Lake needs to inspect authenticated remote.origin.url after the
+          # privilege drop. The verifier publishes those configs as 0444:
+          # readable by build/audit identities, immutable to both.
+          config_count=0
+          while IFS= read -r -d '' config; do
+            config_count="$((config_count + 1))"
+            test "$(stat -c '%a' "$config")" = "444"
+            sudo -u qsolbuild test -r "$config"
+            sudo -u qsolaudit test -r "$config"
+            if sudo -u qsolbuild test -w "$config"; then
+              echo "Build identity can write verified Git config: $config" >&2
+              exit 1
+            fi
+            if sudo -u qsolaudit test -w "$config"; then
+              echo "Audit identity can write verified Git config: $config" >&2
+              exit 1
+            fi
+          done < <(find .lake/packages -type f -path '*/.git/config' -print0)
+          test "$config_count" -gt 0
+
       - name: Rebuild GeoReason with build-only privileges
         shell: bash
         run: |
@@ -324,6 +344,24 @@ jobs:
           sudo chown -R qsolbuild:qsolbuild .lake/build
           sudo install -d -o qsolbuild -g qsolbuild -m 0700 /tmp/qsolbuild-home
           sudo install -d -o qsolaudit -g qsolaudit -m 0700 /tmp/qsolaudit-home
+
+          config_count=0
+          while IFS= read -r -d '' config; do
+            config_count="$((config_count + 1))"
+            test "$(stat -c '%a' "$config")" = "444"
+            sudo -u qsolbuild test -r "$config"
+            sudo -u qsolaudit test -r "$config"
+            if sudo -u qsolbuild test -w "$config"; then
+              echo "Build identity can write verified Git config: $config" >&2
+              exit 1
+            fi
+            if sudo -u qsolaudit test -w "$config"; then
+              echo "Audit identity can write verified Git config: $config" >&2
+              exit 1
+            fi
+          done < <(find .lake/packages -type f -path '*/.git/config' -print0)
+          test "$config_count" -gt 0
+
           cpus="$(nproc)"; workers="$cpus"; if [ "$workers" -gt 4 ]; then workers=4; fi
           echo "LEAN_WORKERS=$workers" >> "$GITHUB_ENV"
 
