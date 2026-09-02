@@ -20,6 +20,7 @@ env:
   EXPECTED_BUILD_ARTIFACT_COUNT: "37312"
   SOURCE_CACHE_SCHEMA: "geo-lean-source-v3"
   BUILD_CACHE_SCHEMA: "geo-lean-deps-v1"
+  PROTECTED_AUDIT_MARKER: "QSOL_PROTECTED_AUDIT_COMPLETE targets=12 theorem_kinds=verified axiom_allowlist=verified project_initializers=not_executed"
 
 jobs:
   isolated-audit:
@@ -168,8 +169,11 @@ jobs:
 
           sudo install -d -o root -g root -m 0555 /opt/qsol-lean-audit
           audit_sha="$(sha256sum Lean/GeoReason/Audit.lean | awk '{print $1}')"
+          receipt_sha="$(sha256sum .lean-cache/dependency-receipt.json | awk '{print $1}')"
           sudo install -o root -g root -m 0444 Lean/GeoReason/Audit.lean /opt/qsol-lean-audit/Audit.lean
+          sudo install -o root -g root -m 0444 .lean-cache/dependency-receipt.json /opt/qsol-lean-audit/dependency-receipt.json
           echo "PINNED_AUDIT_SHA256=$audit_sha" >> "$GITHUB_ENV"
+          echo "PINNED_DEPENDENCY_RECEIPT_SHA256=$receipt_sha" >> "$GITHUB_ENV"
 
           # Allow isolated identities to traverse into the checkout only.
           sudo chmod o+x /home/runner /home/runner/work "$GITHUB_WORKSPACE/.." "$GITHUB_WORKSPACE"
@@ -298,13 +302,33 @@ jobs:
             "$LEAN_HOME/bin/lake" build --wfail
           sudo cat "$timing_file"
 
-      - name: Freeze outputs and verify protected audit/toolchain
+      - name: Terminate build descendants, freeze outputs, and verify protected inputs
         shell: bash
         run: |
           set -euo pipefail
+          terminate_qsolbuild() {
+            sudo pkill -TERM -u qsolbuild 2>/dev/null || true
+            for _ in 1 2 3 4 5; do
+              if ! sudo pgrep -u qsolbuild >/dev/null 2>&1; then
+                return 0
+              fi
+              sleep 1
+            done
+            sudo pkill -KILL -u qsolbuild 2>/dev/null || true
+            sleep 1
+            if sudo pgrep -u qsolbuild >/dev/null 2>&1; then
+              echo "qsolbuild descendant survived termination boundary" >&2
+              exit 1
+            fi
+          }
+          terminate_qsolbuild
+
+          # Killing the identity closes every writable descriptor before mode
+          # changes freeze the project object graph.
           sudo chown -R root:root .lake/build
           sudo chmod -R a-w .lake/build
           test "$(sha256sum /opt/qsol-lean-audit/Audit.lean | awk '{print $1}')" = "$PINNED_AUDIT_SHA256"
+          test "$(sha256sum /opt/qsol-lean-audit/dependency-receipt.json | awk '{print $1}')" = "$PINNED_DEPENDENCY_RECEIPT_SHA256"
           test "$(sha256sum "$LEAN_HOME/bin/lean" | awk '{print $1}')" = "$PINNED_LEAN_BIN_SHA256"
           test "$(sha256sum "$LEAN_HOME/bin/lake" | awk '{print $1}')" = "$PINNED_LAKE_BIN_SHA256"
 
@@ -318,6 +342,26 @@ jobs:
           fi
           bash scripts/protected_lean_recompile.sh
 
+      - name: Reverify frozen dependency closure after protected compilation
+        shell: bash
+        run: |
+          set -euo pipefail
+          if sudo pgrep -u qsolbuild >/dev/null 2>&1; then
+            echo "qsolbuild process exists after protected recompilation" >&2
+            exit 1
+          fi
+          test "$(sha256sum /opt/qsol-lean-audit/dependency-receipt.json | awk '{print $1}')" = "$PINNED_DEPENDENCY_RECEIPT_SHA256"
+          python3 scripts/lean_dependency_receipt.py verify \
+            --root .lake/packages \
+            --receipt /opt/qsol-lean-audit/dependency-receipt.json \
+            --lake-manifest lake-manifest.json \
+            --lean-version "$LEAN_VERSION" \
+            --lean-archive-sha256 "$LEAN_LINUX_SHA256" \
+            --mathlib-commit "$MATHLIB_COMMIT" \
+            --expected-canonical-sha256 "$EXPECTED_BUILD_CANONICAL_SHA256" \
+            --expected-xor-fold-sha256 "$EXPECTED_BUILD_XOR_SHA256" \
+            --expected-artifact-count "$EXPECTED_BUILD_ARTIFACT_COUNT"
+
       - name: Reject project proof placeholders and explicit axioms
         shell: bash
         run: |
@@ -327,7 +371,7 @@ jobs:
             exit 1
           fi
 
-      - name: Run protected compiled-theorem audit as read-only identity
+      - name: Run non-initializing protected theorem audit as read-only identity
         shell: bash
         run: |
           set -euo pipefail
@@ -338,17 +382,14 @@ jobs:
             PATH="$LEAN_HOME/bin:/usr/bin:/bin" \
             LEAN_PATH="$audit_lean_path" \
             LEAN_NUM_THREADS=1 \
-            "$LEAN_HOME/bin/lean" /opt/qsol-lean-audit/Audit.lean \
+            "$LEAN_HOME/bin/lean" --run /opt/qsol-lean-audit/Audit.lean \
             2>&1 | tee /tmp/lean-isolated-audit.log
-          if ! grep -q 'Declarations are sorry-free!' /tmp/lean-isolated-audit.log; then
-            echo "Protected compiled theorem graph did not report sorry-free" >&2
+          if ! grep -Fxq "$PROTECTED_AUDIT_MARKER" /tmp/lean-isolated-audit.log; then
+            echo "Non-initializing protected audit completion marker missing" >&2
             exit 1
           fi
-          if grep -E 'sorryAx|Lean\.ofReduceBool' /tmp/lean-isolated-audit.log; then
-            echo "Known disallowed compiled proof dependency found" >&2
-            exit 1
-          fi
-          echo "Protected audit/toolchain and source-bound project objects remained outside qsolbuild's writable surface." >> "$GITHUB_STEP_SUMMARY"
+          echo "Protected audit imported GeoReason with loadExts=false; project initializers were not executed." >> "$GITHUB_STEP_SUMMARY"
+          echo "qsolbuild descendants were terminated before object freeze and the dependency closure was reverified afterward." >> "$GITHUB_STEP_SUMMARY"
 
   isolated-cold-trust:
     if: github.event_name == 'workflow_dispatch'
@@ -369,6 +410,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test "$(uname -m)" = "x86_64"
           archive="$RUNNER_TEMP/lean-${LEAN_VERSION}-linux.tar.zst"
           url="https://github.com/leanprover/lean4/releases/download/v${LEAN_VERSION}/lean-${LEAN_VERSION}-linux.tar.zst"
           curl --fail --location --proto '=https' --tlsv1.2 "$url" --output "$archive"
@@ -526,7 +568,13 @@ jobs:
           done < <(find .lake/packages -type f -path '*/.git/config' -print0)
           test "$config_count" -gt 0
 
-          cpus="$(nproc)"; workers="$cpus"; if [ "$workers" -gt 4 ]; then workers=4; fi
+          cpus="$(nproc)"
+          workers="$cpus"
+          if [ "$workers" -gt 4 ]; then workers=4; fi
+          if [ "$workers" -lt 2 ]; then
+            echo "Cold formal build requires at least 2 runner CPUs; observed ${cpus}" >&2
+            exit 1
+          fi
           echo "LEAN_WORKERS=$workers" >> "$GITHUB_ENV"
 
       - name: Materialize cold ProofWidgets marker after input freeze
@@ -572,15 +620,36 @@ jobs:
             MATHLIB_NO_CACHE_ON_UPDATE=1 \
             "$LEAN_HOME/bin/lake" build --wfail
 
-      - name: Freeze cold outputs and authenticate dependency closure
+      - name: Terminate build descendants, freeze cold outputs, and authenticate dependency closure
         shell: bash
         run: |
           set -euo pipefail
+          terminate_qsolbuild() {
+            sudo pkill -TERM -u qsolbuild 2>/dev/null || true
+            for _ in 1 2 3 4 5; do
+              if ! sudo pgrep -u qsolbuild >/dev/null 2>&1; then
+                return 0
+              fi
+              sleep 1
+            done
+            sudo pkill -KILL -u qsolbuild 2>/dev/null || true
+            sleep 1
+            if sudo pgrep -u qsolbuild >/dev/null 2>&1; then
+              echo "qsolbuild descendant survived cold freeze boundary" >&2
+              exit 1
+            fi
+          }
+          terminate_qsolbuild
+
+          # Mode changes are applied only after every qsolbuild process has
+          # exited, so no writable descriptor can survive the freeze.
           sudo chown -R root:root .lake/build .lake/packages
           sudo chmod -R a-w .lake/build .lake/packages
+
+          receipt_tmp="$RUNNER_TEMP/dependency-receipt.json"
           python3 scripts/lean_dependency_receipt.py create \
             --root .lake/packages \
-            --receipt "$RUNNER_TEMP/dependency-receipt.json" \
+            --receipt "$receipt_tmp" \
             --lake-manifest lake-manifest.json \
             --lean-version "$LEAN_VERSION" \
             --lean-archive-sha256 "$LEAN_LINUX_SHA256" \
@@ -588,6 +657,10 @@ jobs:
             --expected-canonical-sha256 "$EXPECTED_BUILD_CANONICAL_SHA256" \
             --expected-xor-fold-sha256 "$EXPECTED_BUILD_XOR_SHA256" \
             --expected-artifact-count "$EXPECTED_BUILD_ARTIFACT_COUNT"
+          receipt_sha="$(sha256sum "$receipt_tmp" | awk '{print $1}')"
+          sudo install -o root -g root -m 0444 "$receipt_tmp" /opt/qsol-lean-audit/cold-dependency-receipt.json
+          echo "PINNED_COLD_DEPENDENCY_RECEIPT_SHA256=$receipt_sha" >> "$GITHUB_ENV"
+
           test "$(sha256sum /opt/qsol-lean-audit/Audit.lean | awk '{print $1}')" = "$PINNED_AUDIT_SHA256"
           test "$(sha256sum "$LEAN_HOME/bin/lean" | awk '{print $1}')" = "$PINNED_LEAN_BIN_SHA256"
           test "$(sha256sum "$LEAN_HOME/bin/lake" | awk '{print $1}')" = "$PINNED_LAKE_BIN_SHA256"
@@ -602,7 +675,36 @@ jobs:
           fi
           bash scripts/protected_lean_recompile.sh
 
-      - name: Run protected cold compiled-theorem audit
+      - name: Reverify frozen cold dependency closure after protected compilation
+        shell: bash
+        run: |
+          set -euo pipefail
+          if sudo pgrep -u qsolbuild >/dev/null 2>&1; then
+            echo "qsolbuild process exists after protected cold recompilation" >&2
+            exit 1
+          fi
+          test "$(sha256sum /opt/qsol-lean-audit/cold-dependency-receipt.json | awk '{print $1}')" = "$PINNED_COLD_DEPENDENCY_RECEIPT_SHA256"
+          python3 scripts/lean_dependency_receipt.py verify \
+            --root .lake/packages \
+            --receipt /opt/qsol-lean-audit/cold-dependency-receipt.json \
+            --lake-manifest lake-manifest.json \
+            --lean-version "$LEAN_VERSION" \
+            --lean-archive-sha256 "$LEAN_LINUX_SHA256" \
+            --mathlib-commit "$MATHLIB_COMMIT" \
+            --expected-canonical-sha256 "$EXPECTED_BUILD_CANONICAL_SHA256" \
+            --expected-xor-fold-sha256 "$EXPECTED_BUILD_XOR_SHA256" \
+            --expected-artifact-count "$EXPECTED_BUILD_ARTIFACT_COUNT"
+
+      - name: Reject cold project proof placeholders and explicit axioms
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE '(^|[^[:alnum:]_])(sorry|admit)([^[:alnum:]_]|$)|^[[:space:]]*axiom[[:space:]]' Lean --exclude='Audit.lean'; then
+            echo "Lean proof placeholder or explicit axiom declaration found" >&2
+            exit 1
+          fi
+
+      - name: Run non-initializing protected cold theorem audit
         shell: bash
         run: |
           set -euo pipefail
@@ -613,7 +715,10 @@ jobs:
             PATH="$LEAN_HOME/bin:/usr/bin:/bin" \
             LEAN_PATH="$audit_lean_path" \
             LEAN_NUM_THREADS=1 \
-            "$LEAN_HOME/bin/lean" /opt/qsol-lean-audit/Audit.lean \
+            "$LEAN_HOME/bin/lean" --run /opt/qsol-lean-audit/Audit.lean \
             2>&1 | tee /tmp/lean-isolated-cold-audit.log
-          grep -q 'Declarations are sorry-free!' /tmp/lean-isolated-cold-audit.log
-          if grep -E 'sorryAx|Lean\.ofReduceBool' /tmp/lean-isolated-cold-audit.log; then exit 1; fi
+          if ! grep -Fxq "$PROTECTED_AUDIT_MARKER" /tmp/lean-isolated-cold-audit.log; then
+            echo "Non-initializing protected cold audit completion marker missing" >&2
+            exit 1
+          fi
+          echo "Release-grade cold authority completed with no project initializer execution and a post-freeze dependency revalidation." >> "$GITHUB_STEP_SUMMARY"
