@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -euxo pipefail
 
 : "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}"
 : "${LEAN_HOME:?LEAN_HOME is required}"
