@@ -159,6 +159,27 @@ jobs:
             --expected-xor-fold-sha256 "$EXPECTED_BUILD_XOR_SHA256" \
             --expected-artifact-count "$EXPECTED_BUILD_ARTIFACT_COUNT"
 
+      - name: Materialize deterministic ProofWidgets Lake hash marker
+        shell: bash
+        run: |
+          set -euo pipefail
+          lock_file=".lake/packages/proofwidgets/widget/package-lock.json"
+          hash_file="${lock_file}.hash"
+          test -f "$lock_file"
+          test ! -L "$lock_file"
+          marker_script="$RUNNER_TEMP/cache-proofwidgets-lock.lean"
+          cat > "$marker_script" <<'EOF'
+          import Lake
+          open Lake
+          def main : IO Unit :=
+            cacheFileHash ".lake/packages/proofwidgets/widget/package-lock.json" (text := true)
+          EOF
+          "$LEAN_HOME/bin/lake" env "$LEAN_HOME/bin/lean" --run "$marker_script"
+          test -f "$hash_file"
+          test ! -L "$hash_file"
+          chmod 0444 "$hash_file"
+          echo "Materialized deterministic Lake hash marker for verified ProofWidgets package-lock.json."
+
       - name: Prime Lake configuration before privilege drop
         shell: bash
         run: |
@@ -318,6 +339,26 @@ jobs:
             --expected-manifest-sha256 "$EXPECTED_LAKE_MANIFEST_SHA256" \
             --dependency-declaration lakefile.lean
           "$LEAN_HOME/bin/lake" env "$LEAN_HOME/bin/lean" --version
+
+      - name: Materialize deterministic ProofWidgets Lake hash marker
+        shell: bash
+        run: |
+          set -euo pipefail
+          lock_file=".lake/packages/proofwidgets/widget/package-lock.json"
+          hash_file="${lock_file}.hash"
+          test -f "$lock_file"
+          test ! -L "$lock_file"
+          marker_script="$RUNNER_TEMP/cache-proofwidgets-lock.lean"
+          cat > "$marker_script" <<'EOF'
+          import Lake
+          open Lake
+          def main : IO Unit :=
+            cacheFileHash ".lake/packages/proofwidgets/widget/package-lock.json" (text := true)
+          EOF
+          "$LEAN_HOME/bin/lake" env "$LEAN_HOME/bin/lean" --run "$marker_script"
+          test -f "$hash_file"
+          test ! -L "$hash_file"
+          chmod 0444 "$hash_file"
 
       - name: Prepare cold-build and audit privilege boundaries
         shell: bash
