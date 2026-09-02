@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euxo pipefail
+set -euo pipefail
 
 : "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}"
 : "${LEAN_HOME:?LEAN_HOME is required}"
@@ -19,13 +19,13 @@ test "$(sha256sum "$lean_bin" | awk '{print $1}')" = "$PINNED_LEAN_BIN_SHA256"
 test "$(sha256sum "$audit_root/Audit.lean" | awk '{print $1}')" = "$PINNED_AUDIT_SHA256"
 
 # The compiler identity exists only for direct, source-bound project
-# recompilation.  It never evaluates the project lakefile and owns no reviewed
+# recompilation. It never evaluates the project lakefile and owns no reviewed
 # source, dependency artifact, protected audit input, or prior module root.
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin qsolcompile 2>/dev/null || true
 sudo rm -rf /tmp/qsolcompile-home
 sudo install -d -o qsolcompile -g qsolcompile -m 0700 /tmp/qsolcompile-home
 
-# Build a dependency-only search path.  In particular, the project output made
+# Build a dependency-only search path. In particular, the project output made
 # by qsolbuild is deliberately excluded from the protected theorem audit.
 tmp_dependency_path="$(mktemp)"
 : > "$tmp_dependency_path"
@@ -82,7 +82,7 @@ compile_protected_module() {
     exit 1
   fi
 
-  # Give this compiler invocation one fresh output root.  Prior roots are
+  # Give this compiler invocation one fresh output root. Prior roots are
   # already root-owned/read-only, so later module elaboration cannot replace
   # earlier reviewed objects.
   sudo install -d -o qsolcompile -g qsolcompile -m 0700 "$module_root" "$output_dir"
@@ -99,10 +99,10 @@ compile_protected_module() {
     "$lean_bin" \
       -R "$source_root" \
       -DwarningAsError=true \
-      "$source_file" \
-      -o "$output_file"
+      -o "$output_file" \
+      "$source_file"
 
-  # A reviewed module may perform compile-time IO.  Do not allow descendants
+  # A reviewed module may perform compile-time IO. Do not allow descendants
   # of that elaboration to survive into the next module's writable root.
   sudo pkill -KILL -u qsolcompile 2>/dev/null || true
 
@@ -157,7 +157,7 @@ compile_protected_module \
   "$arclength_root:$menger_root:$cosine_root:$trajectory_root:$dependency_lean_path"
 
 # The audit path contains only independently recompiled project modules plus
-# the already authenticated dependency closure.  The qsolbuild project tree is
+# the already authenticated dependency closure. The qsolbuild project tree is
 # never eligible for import by the final protected audit.
 final_lean_path="$geo_root:$arclength_root:$menger_root:$cosine_root:$trajectory_root:$dependency_lean_path"
 tmp_audit_path="$(mktemp)"
