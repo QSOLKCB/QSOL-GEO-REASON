@@ -174,10 +174,11 @@ jobs:
           # Allow isolated identities to traverse into the checkout only.
           sudo chmod o+x /home/runner /home/runner/work "$GITHUB_WORKSPACE/.." "$GITHUB_WORKSPACE"
 
-          # Freeze every reviewed theorem/config/dependency input before any
-          # project Lake configuration is elaborated.
-          sudo chown -R root:root Lean .lake/packages lakefile.lean lean-toolchain lake-manifest.json
-          sudo chmod -R a-w Lean .lake/packages lakefile.lean lean-toolchain lake-manifest.json
+          # Freeze every reviewed theorem/config/dependency input and the
+          # protected recompilation helper before any project Lake
+          # configuration is elaborated.
+          sudo chown -R root:root Lean scripts .lake/packages lakefile.lean lean-toolchain lake-manifest.json
+          sudo chmod -R a-w Lean scripts .lake/packages lakefile.lean lean-toolchain lake-manifest.json
           sudo chown root:root .lake
           sudo chmod 0755 .lake
 
@@ -307,47 +308,15 @@ jobs:
           test "$(sha256sum "$LEAN_HOME/bin/lean" | awk '{print $1}')" = "$PINNED_LEAN_BIN_SHA256"
           test "$(sha256sum "$LEAN_HOME/bin/lake" | awk '{print $1}')" = "$PINNED_LAKE_BIN_SHA256"
 
-      - name: Freeze direct Lean audit module path
+      - name: Recompile reviewed GeoReason modules inside protected audit boundary
         shell: bash
         run: |
           set -euo pipefail
-          audit_path="/opt/qsol-lean-audit/lean-path"
-          tmp_path="$(mktemp)"
-          project_lib="$GITHUB_WORKSPACE/.lake/build/lib/lean"
-          test -d "$project_lib"
-          test ! -L "$project_lib"
-          printf '%s' "$project_lib" > "$tmp_path"
-
-          dependency_libs=0
-          for pkg in "$GITHUB_WORKSPACE"/.lake/packages/*; do
-            [ -d "$pkg" ] || continue
-            test ! -L "$pkg"
-            lib="$pkg/.lake/build/lib/lean"
-            [ -d "$lib" ] || continue
-            test ! -L "$pkg/.lake"
-            test ! -L "$pkg/.lake/build"
-            test ! -L "$pkg/.lake/build/lib"
-            test ! -L "$lib"
-            printf ':%s' "$lib" >> "$tmp_path"
-            dependency_libs="$((dependency_libs + 1))"
-          done
-          test "$dependency_libs" -gt 0
-          printf '\n' >> "$tmp_path"
-
-          sudo install -o root -g root -m 0444 "$tmp_path" "$audit_path"
-          rm -f "$tmp_path"
-          test "$(sha256sum /opt/qsol-lean-audit/Audit.lean | awk '{print $1}')" = "$PINNED_AUDIT_SHA256"
-          test "$(sha256sum "$LEAN_HOME/bin/lean" | awk '{print $1}')" = "$PINNED_LEAN_BIN_SHA256"
-
-          IFS=: read -r -a audit_paths < "$audit_path"
-          for path in "${audit_paths[@]}"; do
-            test -d "$path"
-            sudo -u qsolaudit test -r "$path"
-            if sudo -u qsolaudit test -w "$path"; then
-              echo "Audit identity can write direct Lean module path: $path" >&2
-              exit 1
-            fi
-          done
+          if sudo -u qsolbuild test -w scripts/protected_lean_recompile.sh; then
+            echo "qsolbuild can write protected recompilation helper" >&2
+            exit 1
+          fi
+          bash scripts/protected_lean_recompile.sh
 
       - name: Reject project proof placeholders and explicit axioms
         shell: bash
@@ -379,7 +348,7 @@ jobs:
             echo "Known disallowed compiled proof dependency found" >&2
             exit 1
           fi
-          echo "Protected audit/toolchain remained outside every Lake-capable identity's writable surface." >> "$GITHUB_STEP_SUMMARY"
+          echo "Protected audit/toolchain and source-bound project objects remained outside qsolbuild's writable surface." >> "$GITHUB_STEP_SUMMARY"
 
   isolated-cold-trust:
     if: github.event_name == 'workflow_dispatch'
@@ -455,7 +424,8 @@ jobs:
             lakefile.lean \
             lean-toolchain \
             scripts/verify_lean_source_state.py \
-            scripts/lean_dependency_receipt.py; do
+            scripts/lean_dependency_receipt.py \
+            scripts/protected_lean_recompile.sh; do
             if sudo -u qsolbuild test -w "$input"; then
               echo "Cold resolver can write reviewed input before lake update: $input" >&2
               exit 1
@@ -622,44 +592,15 @@ jobs:
           test "$(sha256sum "$LEAN_HOME/bin/lean" | awk '{print $1}')" = "$PINNED_LEAN_BIN_SHA256"
           test "$(sha256sum "$LEAN_HOME/bin/lake" | awk '{print $1}')" = "$PINNED_LAKE_BIN_SHA256"
 
-      - name: Freeze direct cold Lean audit module path
+      - name: Recompile reviewed GeoReason modules inside protected cold audit boundary
         shell: bash
         run: |
           set -euo pipefail
-          audit_path="/opt/qsol-lean-audit/lean-path"
-          tmp_path="$(mktemp)"
-          project_lib="$GITHUB_WORKSPACE/.lake/build/lib/lean"
-          test -d "$project_lib"
-          test ! -L "$project_lib"
-          printf '%s' "$project_lib" > "$tmp_path"
-
-          dependency_libs=0
-          for pkg in "$GITHUB_WORKSPACE"/.lake/packages/*; do
-            [ -d "$pkg" ] || continue
-            test ! -L "$pkg"
-            lib="$pkg/.lake/build/lib/lean"
-            [ -d "$lib" ] || continue
-            test ! -L "$pkg/.lake"
-            test ! -L "$pkg/.lake/build"
-            test ! -L "$pkg/.lake/build/lib"
-            test ! -L "$lib"
-            printf ':%s' "$lib" >> "$tmp_path"
-            dependency_libs="$((dependency_libs + 1))"
-          done
-          test "$dependency_libs" -gt 0
-          printf '\n' >> "$tmp_path"
-
-          sudo install -o root -g root -m 0444 "$tmp_path" "$audit_path"
-          rm -f "$tmp_path"
-          IFS=: read -r -a audit_paths < "$audit_path"
-          for path in "${audit_paths[@]}"; do
-            test -d "$path"
-            sudo -u qsolaudit test -r "$path"
-            if sudo -u qsolaudit test -w "$path"; then
-              echo "Audit identity can write direct cold Lean module path: $path" >&2
-              exit 1
-            fi
-          done
+          if sudo -u qsolbuild test -w scripts/protected_lean_recompile.sh; then
+            echo "qsolbuild can write protected recompilation helper" >&2
+            exit 1
+          fi
+          bash scripts/protected_lean_recompile.sh
 
       - name: Run protected cold compiled-theorem audit
         shell: bash
