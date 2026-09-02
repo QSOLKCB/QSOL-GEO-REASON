@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeu -o pipefail
+trap 'status=$?; echo "protected-recompile failure status=${status} line=${LINENO} command=${BASH_COMMAND}" >&2; exit "$status"' ERR
 
 : "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}"
 : "${LEAN_HOME:?LEAN_HOME is required}"
