@@ -93,13 +93,19 @@ class CaptureRound5RegressionTests(unittest.TestCase):
         )
         patterns = (
             schema["properties"]["run_id"]["pattern"],
-            schema["$defs"]["backend"]["properties"]["device"]["pattern"],
             schema["$defs"]["step"]["properties"]["step_id"]["pattern"],
             schema["$defs"]["step"]["properties"]["text"]["pattern"],
         )
         for pattern in patterns:
             self.assertIsNone(re.search(pattern, "   \t"))
             self.assertIsNotNone(re.search(pattern, "value"))
+
+        device_options = schema["$defs"]["backend"]["properties"]["device"]["oneOf"]
+        device_patterns = [option["pattern"] for option in device_options]
+        self.assertFalse(any(re.fullmatch(pattern, "   \t") for pattern in device_patterns))
+        self.assertTrue(any(re.fullmatch(pattern, "cpu") for pattern in device_patterns))
+        self.assertTrue(any(re.fullmatch(pattern, "cuda:0") for pattern in device_patterns))
+        self.assertFalse(any(re.fullmatch(pattern, "cuda") for pattern in device_patterns))
 
 
 if __name__ == "__main__":
