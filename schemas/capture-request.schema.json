@@ -57,7 +57,12 @@
         "name": {"const": "huggingface-pytorch"},
         "local_files_only": {"const": true},
         "trust_remote_code": {"const": false},
-        "device": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "device": {
+          "oneOf": [
+            {"type": "string", "pattern": "^cuda:[0-9]+$"},
+            {"type": "string", "minLength": 1, "pattern": "^(?!cuda(?::|$))\\S+$"}
+          ]
+        },
         "dtype": {"enum": ["float32", "float16", "bfloat16"]},
         "quantization": {"const": "none"}
       }
@@ -85,7 +90,10 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["mode", "seed"],
-      "properties": {"mode": {"enum": ["required", "best_effort"]}, "seed": {"type": "integer", "minimum": 0}}
+      "properties": {
+        "mode": {"enum": ["required", "best_effort"]},
+        "seed": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615}
+      }
     },
     "generationParameters": {
       "type": "object",
