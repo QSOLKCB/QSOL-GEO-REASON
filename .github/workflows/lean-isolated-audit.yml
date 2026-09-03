@@ -190,7 +190,10 @@ jobs:
             2>&1 | tee /tmp/qsol-isolated-source-update.log
           update_pipeline=("${PIPESTATUS[@]}")
           set -e
-          test "${update_pipeline[1]}" -eq 0
+          if [ "${update_pipeline[1]}" -ne 0 ]; then
+            echo "tee failed while recording isolated Lake source resolution" >&2
+            exit 1
+          fi
           update_status="${update_pipeline[0]}"
           case "$update_status" in
             0|1) ;;
@@ -203,13 +206,53 @@ jobs:
           # No source byte or generated object is trusted until every resolver
           # descendant is gone and every inherited descriptor is closed.
           terminate_qsolresolve
-          test -d .lake/packages
-          test ! -L .lake
-          test ! -L .lake/packages
-          test "$(realpath .lake/packages)" = "$GITHUB_WORKSPACE/.lake/packages"
-          test -f lake-manifest.json
-          test ! -L lake-manifest.json
-          test "$(sha256sum lake-manifest.json | awk '{print $1}')" = "$EXPECTED_LAKE_MANIFEST_SHA256"
+
+          fail_isolated_source() {
+            echo "isolated source resolution: $*" >&2
+            exit 1
+          }
+
+          # qsolresolve owns these outputs as 0700/0600 while Lake is running.
+          # After the identity is gone, transfer ownership to root and expose a
+          # read-only verification surface before the runner touches it.
+          sudo test -d .lake || fail_isolated_source ".lake missing after lake update"
+          if sudo test -L .lake; then
+            fail_isolated_source ".lake is a symlink"
+          fi
+          sudo test -d .lake/packages || fail_isolated_source ".lake/packages missing after lake update"
+          if sudo test -L .lake/packages; then
+            fail_isolated_source ".lake/packages is a symlink"
+          fi
+          sudo test -f lake-manifest.json || fail_isolated_source "lake-manifest.json not written"
+          if sudo test -L lake-manifest.json; then
+            fail_isolated_source "lake-manifest.json is a symlink"
+          fi
+
+          sudo chown -R root:root .lake
+          sudo chown root:root lake-manifest.json
+          sudo find .lake -type d -exec chmod 0555 {} +
+          sudo find .lake -type f -exec chmod a-w,a+r {} +
+          sudo chmod 0555 .lake
+          sudo chmod 0444 lake-manifest.json
+
+          [ -d .lake/packages ] || fail_isolated_source ".lake/packages is not visible after ownership transfer"
+          [ ! -L .lake ] || fail_isolated_source ".lake became a symlink after ownership transfer"
+          [ ! -L .lake/packages ] || fail_isolated_source ".lake/packages became a symlink after ownership transfer"
+          actual_packages_path="$(realpath .lake/packages)"
+          [ "$actual_packages_path" = "$GITHUB_WORKSPACE/.lake/packages" ] || \
+            fail_isolated_source ".lake/packages resolves outside workspace: $actual_packages_path"
+          [ -f lake-manifest.json ] || fail_isolated_source "lake-manifest.json is not readable after ownership transfer"
+          [ ! -L lake-manifest.json ] || fail_isolated_source "lake-manifest.json became a symlink after ownership transfer"
+
+          actual_manifest_sha="$(sha256sum lake-manifest.json | awk '{print $1}')"
+          if [ "$actual_manifest_sha" != "$EXPECTED_LAKE_MANIFEST_SHA256" ]; then
+            echo "isolated source resolution: lake-manifest.json SHA-256 mismatch" >&2
+            echo "  expected: $EXPECTED_LAKE_MANIFEST_SHA256" >&2
+            echo "  actual:   $actual_manifest_sha" >&2
+            echo "--- generated lake-manifest.json ---" >&2
+            cat lake-manifest.json >&2
+            exit 1
+          fi
 
           for pkg in .lake/packages/*; do
             [ -d "$pkg" ] || continue
@@ -614,7 +657,10 @@ jobs:
             2>&1 | tee /tmp/qsol-cold-source-update.log
           update_pipeline=("${PIPESTATUS[@]}")
           set -e
-          test "${update_pipeline[1]}" -eq 0
+          if [ "${update_pipeline[1]}" -ne 0 ]; then
+            echo "tee failed while recording cold Lake source resolution" >&2
+            exit 1
+          fi
           update_status="${update_pipeline[0]}"
           case "$update_status" in
             0|1) ;;
@@ -628,14 +674,53 @@ jobs:
           # the dedicated resolver identity before validating or freezing any
           # source checkout or manifest byte.
           terminate_qsolresolve
-          test -d .lake
-          test ! -L .lake
-          test -d .lake/packages
-          test ! -L .lake/packages
-          test "$(realpath .lake/packages)" = "$GITHUB_WORKSPACE/.lake/packages"
-          test -f lake-manifest.json
-          test ! -L lake-manifest.json
-          test "$(sha256sum lake-manifest.json | awk '{print $1}')" = "$EXPECTED_LAKE_MANIFEST_SHA256"
+
+          fail_cold_source() {
+            echo "cold source resolution: $*" >&2
+            exit 1
+          }
+
+          # Revoke qsolresolve ownership before any runner-side verification.
+          # The source tree becomes root-owned/read-only immediately after all
+          # resolver descendants and inherited descriptors are gone.
+          sudo test -d .lake || fail_cold_source ".lake missing after lake update"
+          if sudo test -L .lake; then
+            fail_cold_source ".lake is a symlink"
+          fi
+          sudo test -d .lake/packages || fail_cold_source ".lake/packages missing after lake update"
+          if sudo test -L .lake/packages; then
+            fail_cold_source ".lake/packages is a symlink"
+          fi
+          sudo test -f lake-manifest.json || fail_cold_source "lake-manifest.json not written"
+          if sudo test -L lake-manifest.json; then
+            fail_cold_source "lake-manifest.json is a symlink"
+          fi
+
+          sudo chown -R root:root .lake
+          sudo chown root:root lake-manifest.json
+          sudo find .lake -type d -exec chmod 0555 {} +
+          sudo find .lake -type f -exec chmod a-w,a+r {} +
+          sudo chmod 0555 .lake
+          sudo chmod 0444 lake-manifest.json
+
+          [ -d .lake/packages ] || fail_cold_source ".lake/packages is not visible after ownership transfer"
+          [ ! -L .lake ] || fail_cold_source ".lake became a symlink after ownership transfer"
+          [ ! -L .lake/packages ] || fail_cold_source ".lake/packages became a symlink after ownership transfer"
+          actual_packages_path="$(realpath .lake/packages)"
+          [ "$actual_packages_path" = "$GITHUB_WORKSPACE/.lake/packages" ] || \
+            fail_cold_source ".lake/packages resolves outside workspace: $actual_packages_path"
+          [ -f lake-manifest.json ] || fail_cold_source "lake-manifest.json is not readable after ownership transfer"
+          [ ! -L lake-manifest.json ] || fail_cold_source "lake-manifest.json became a symlink after ownership transfer"
+
+          actual_manifest_sha="$(sha256sum lake-manifest.json | awk '{print $1}')"
+          if [ "$actual_manifest_sha" != "$EXPECTED_LAKE_MANIFEST_SHA256" ]; then
+            echo "cold source resolution: lake-manifest.json SHA-256 mismatch" >&2
+            echo "  expected: $EXPECTED_LAKE_MANIFEST_SHA256" >&2
+            echo "  actual:   $actual_manifest_sha" >&2
+            echo "--- generated lake-manifest.json ---" >&2
+            cat lake-manifest.json >&2
+            exit 1
+          fi
 
           for pkg in .lake/packages/*; do
             [ -d "$pkg" ] || continue
