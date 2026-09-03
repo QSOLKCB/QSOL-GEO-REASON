@@ -2,7 +2,7 @@
 
 **Experimental research framework for measuring, perturbing, simulating, and eventually training geometric reasoning flows in local language-model representation spaces.**
 
-> Status: **Phase 1 complete / mathematical kernel freeze candidate**. The repository contains a deterministic geometry reference instrument, an exact mathematical specification, and frozen `SIMULATION` evidence. It still makes **no empirical claim about any language model**.
+> Status: **immutable Phase 1 numerical release complete; separate Lean 4 proof layer implemented in PR #3 and pending final exact-head acceptance/merge**. The repository still makes **no empirical claim about any language model**.
 
 ## Research question
 
@@ -32,7 +32,7 @@ The project therefore treats the following distinctions as foundational:
 - replication status is not an evidence class;
 - matching output tokens is not proof of hidden-state equivalence;
 - exact mathematical semantics are not the same thing as one floating-point implementation;
-- a benchmark win is not automatically a reasoning improvement;
+- a benchmark win is not automatically a reasoning improvement; and
 - a smaller parameter count is not, by itself, evidence of greater reasoning efficiency.
 
 The primary normative rules are frozen in [`INVARIANTS.md`](INVARIANTS.md) and [`SCIENTIFIC-CONTRACT.md`](SCIENTIFIC-CONTRACT.md). [`MATH-SPEC.md`](MATH-SPEC.md) is normative for the Phase 1 exact mathematical semantics, subject to those higher-level contracts.
@@ -47,7 +47,9 @@ The primary normative rules are frozen in [`INVARIANTS.md`](INVARIANTS.md) and [
 | [`INVARIANTS.md`](INVARIANTS.md) | Human + AI | Non-negotiable epistemic and experimental invariants |
 | [`SCIENTIFIC-CONTRACT.md`](SCIENTIFIC-CONTRACT.md) | Human + AI | Evidence classes, replication status, operational definitions, provenance, and experiment rules |
 | [`MATH-SPEC.md`](MATH-SPEC.md) | Human + AI + Lean | Exact Phase 1 definitions, transformation laws, numerical boundary, and formal theorem targets |
-| [`ROADMAP.md`](ROADMAP.md) | Human + AI | Staged research programme |
+| [`LEAN-FORMALIZATION.md`](LEAN-FORMALIZATION.md) | Human + AI + Lean | Frozen release target, theorem coverage, proof environment, and formal evidence boundary |
+| [`LEAN-CACHE-POLICY.md`](LEAN-CACHE-POLICY.md) | Human + AI | Workflow authority, cache integrity, process isolation, and cold-reconstruction semantics |
+| [`ROADMAP.md`](ROADMAP.md) | Human + AI | Staged research programme and current phase status |
 | [`protocols/GEO-SIM-001.md`](protocols/GEO-SIM-001.md) | Human + AI | Phase 1 synthetic conformance protocol |
 | [`PHASE-1-REPORT.md`](PHASE-1-REPORT.md) | Human + AI | Frozen Phase 1 evidence summary and hashes |
 
@@ -67,7 +69,7 @@ Zhou et al. study **post-hoc representation geometry in fixed, trained models**.
 
 QSOL-GEO-REASON therefore distinguishes:
 
-- **reproduction**: testing whether the reported geometric patterns can be recovered under a frozen local-model protocol;
+- **reproduction**: testing whether the reported geometric patterns can be recovered under a frozen local-model protocol; and
 - **extension**: adding controls, perturbations, cross-model exposure audits, output-behaviour comparisons, training interventions, serving-equivalence studies, or mechanistic tests that go beyond the cited work.
 
 An extension result must not be attributed to the cited paper unless that result is actually established there.
@@ -86,7 +88,7 @@ Phase 1 validates the measurement machinery **before any model hidden state is t
 
 The exact semantics are defined in [`MATH-SPEC.md`](MATH-SPEC.md). Stable identifiers `GEO-MATH-001` through `GEO-MATH-011` define trajectories, finite differences, path length, the project cosine convention, alignment, Menger curvature, transformation laws, undefined cases, and the exact/numerical boundary.
 
-`GEO-LEAN-TGT-001` through `GEO-LEAN-TGT-012` record theorem targets for a later Lean 4 formalization against an immutable release.
+The exact mathematical and numerical kernel was published as immutable release `v0.1.0 — Phase 1 Mathematical Kernel` at commit `1b5ab8b4543b20cdb6d439f7ad215c08e698188f`. Pull request #3 implements `GEO-LEAN-TGT-001` through `GEO-LEAN-TGT-012` against that frozen identity as a separate formal evidence layer. The Lean layer remains a candidate until PR #3 passes final exact-head review and is merged.
 
 The frozen numerical protocol is [`GEO-SIM-001`](protocols/GEO-SIM-001.md). It provides:
 
@@ -101,11 +103,13 @@ The frozen numerical protocol is [`GEO-SIM-001`](protocols/GEO-SIM-001.md). It p
 - derivation of metrics and comparisons from the exact emitted coordinate arrays;
 - scale-aware **14-significant-digit** ordinary output normalization;
 - canonical JSON and SHA-256 evidence binding;
-- frozen reference fixtures with full metadata-identity and byte-for-byte replay verification;
+- frozen reference fixtures with full metadata-identity and byte-for-byte replay verification; and
 - CI on Python 3.11, 3.12, and 3.13.
 
 Frozen identities:
 
+- release: `v0.1.0 — Phase 1 Mathematical Kernel`
+- release commit: `1b5ab8b4543b20cdb6d439f7ad215c08e698188f`
 - protocol: `GEO-SIM-001`
 - implementation / mathematical-kernel revision: `5f45b5e69bcab890a757fffa491cf787f92a5bea`
 - recipe SHA-256: `763edeb96a1eec8d87a90d200f8c03a3e2131ec924b558e26492640a342dbbeb`
@@ -134,21 +138,25 @@ The hardened suite contains **48 unit tests** before the cross-version CI matrix
 
 ## Release and Lean handoff
 
-The intended Phase 1 closure is:
+The Phase 1 handoff now has this actual state:
 
 ```text
-exact-head Codex approval
+PR #2 exact-head review and merge
         ↓
-merge PR #2
+immutable v0.1.0 release at 1b5ab8b…
         ↓
-freeze immutable Phase 1 release/tag
+PR #3 Lean 4 formalization of all twelve frozen targets
         ↓
-formalize MATH-SPEC in Lean 4 against that frozen identity
+current gate: exact-head review, protected CI, then merge PR #3
 ```
 
-Lean is intended to prove the exact-real mathematics, not to retroactively certify CPython floating point, JSON, SHA-256, Git provenance, or LLM semantics. A formal implementation-refinement proof would be a separate future result.
+The immutable numerical release is historical evidence and will not be rewritten. The formalization is additive evidence stored on a later branch and commit lineage.
 
-Once a release is frozen, later mathematical changes must create a new release identity rather than rewriting the frozen target under the Lean development.
+The sole release-grade cold proof authority is the manually dispatched `lean-isolated-audit / isolated-cold-trust` job. The routine `lean-phase1` workflow is pull-request-only and carries no competing cold-trust authority. The protected theorem audit imports the source-bound GeoReason object graph without executing project initializers and emits its completion record only after all twelve theorem-kind and axiom-allowlist checks pass.
+
+Lean proves the exact-real mathematics, not CPython floating point, JSON, SHA-256, Git provenance, serving behaviour, or LLM semantics. An implementation-refinement proof would be a separate result.
+
+If later work discovers a mathematical defect, the correction must receive a new release identity rather than rewriting `v0.1.0` under the formal development.
 
 ## Evidence classes and replication
 
@@ -169,15 +177,15 @@ See [`ROADMAP.md`](ROADMAP.md) for the full programme.
 
 ## Non-claims
 
-Phase 1 does **not** claim that:
+Phase 1 and its Lean proof layer do **not** claim that:
 
 - latent or representation geometry is the mechanism of reasoning;
 - any LLM has been observed to produce the synthetic structures in the fixture;
 - smooth trajectories imply correct reasoning;
 - curvature, velocity, or other geometric quantities have a unique cognitive interpretation;
 - matching outputs across serving engines imply matching hidden-state geometry;
-- a future Lean proof of the exact mathematical contract automatically proves the Python implementation;
-- geometric reasoning makes small models equivalent to larger models;
+- the exact Lean proof layer automatically proves the Python/IEEE-754 implementation;
+- geometric reasoning makes small models equivalent to larger models; or
 - any cited external performance claim has been independently reproduced here.
 
 ## License

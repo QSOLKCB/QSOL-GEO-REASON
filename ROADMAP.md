@@ -30,13 +30,13 @@ A later phase may prototype early, but its scientific claims must not outrun the
 
 **Evidence gate:** none. Phase 0 creates no empirical claim.
 
-**Candidate delivery:** PR #1.
+**Delivery:** PR #1.
 
 ---
 
 ## Phase 1 — Deterministic geometry reference simulation
 
-**Status:** **implementation and frozen `SIMULATION` evidence complete in PR #2 candidate branch; exact-head review/release gate still pending.**
+**Status:** **immutable numerical release complete; all twelve Lean theorem targets implemented in PR #3 as a separate candidate proof layer; final exact-head review and merge of PR #3 remain pending.**
 
 **Goal:** prove that the measurement machinery can recover known geometry before touching model hidden states, while freezing the exact mathematical semantics before later model work depends on them.
 
@@ -63,7 +63,9 @@ A later phase may prototype early, but its scientific claims must not outrun the
 - [x] Hash-bind simulation recipe, implementation revision, and result artifacts.
 - [x] Mark every generated result record `evidence_class: SIMULATION`.
 
-**Evidence gate:** **PASS on the current frozen candidate** — numerical recovery of known synthetic properties within the preregistered tolerances in `GEO-SIM-001`, plus metadata-consistent byte-identical frozen replay across Python 3.11, 3.12, and 3.13.
+**Evidence gate:** **PASS on immutable release `v0.1.0`** — numerical recovery of known synthetic properties within the preregistered tolerances in `GEO-SIM-001`, plus metadata-consistent byte-identical frozen replay across Python 3.11, 3.12, and 3.13.
+
+**Immutable release commit:** `1b5ab8b4543b20cdb6d439f7ad215c08e698188f`.
 
 **Bound implementation / mathematical kernel:** `5f45b5e69bcab890a757fffa491cf787f92a5bea`.
 
@@ -73,19 +75,24 @@ A later phase may prototype early, but its scientific claims must not outrun the
 
 **Non-claim:** successful completion says nothing about real LLM reasoning.
 
-**Candidate delivery:** PR #2.
+**Numerical delivery:** PR #2, merged and published as immutable `v0.1.0`.
 
 ### Phase 1 release/formalization gate
 
-The Phase 1 implementation is not considered permanently frozen until the review/release handoff is complete.
+The numerical kernel is frozen. The Lean work is additive evidence and must not alter that release identity.
 
-- [ ] Obtain a fresh Codex review on the exact PR #2 head with no unresolved correctness findings.
+- [x] Obtain a fresh Codex review on the exact PR #2 head with no unresolved correctness findings.
 - [x] Confirm the Python 3.11/3.12/3.13 conformance matrix on the latest frozen candidate.
-- [ ] Merge PR #2 without changing the reviewed mathematical semantics.
-- [ ] Create an immutable Phase 1 release/tag bound to the merged source and record its exact commit identity.
-- [ ] Treat that immutable tag as the target for the first Lean 4 formalization.
-- [ ] Formalize `GEO-MATH-*` definitions and `GEO-LEAN-TGT-*` theorems without silently strengthening the release claims.
-- [ ] Keep Lean proofs as a separate formal evidence layer; do not claim they automatically prove CPython/IEEE-754 execution.
+- [x] Merge PR #2 without changing the reviewed mathematical semantics.
+- [x] Create immutable Phase 1 release `v0.1.0` and bind it to commit `1b5ab8b4543b20cdb6d439f7ad215c08e698188f`.
+- [x] Treat that immutable release as the target for the first Lean 4 formalization.
+- [x] Implement all twelve `GEO-LEAN-TGT-*` theorem targets in PR #3 without silently strengthening the release claims.
+- [x] Keep Lean proofs as a separate formal evidence layer; do not claim they automatically prove CPython/IEEE-754 execution.
+- [ ] Obtain a fresh Codex review on the exact PR #3 head with no unresolved correctness findings.
+- [ ] Pass the exact-head routine, protected isolated, and immutable numerical reference checks for PR #3.
+- [ ] Merge PR #3 without rewriting or retagging immutable `v0.1.0`.
+
+The sole release-grade cold proof authority is `lean-isolated-audit / isolated-cold-trust`. The routine `lean-phase1` workflow is pull-request-only and cannot serve as a competing manual cold-trust lane.
 
 If the Lean work discovers a mathematical defect in the frozen specification, preserve the frozen release as historical evidence, amend the mathematical contract in a new release, and reprove affected theorem targets against the new identity.
 
@@ -284,7 +291,7 @@ Only begin confirmatory work after Phases 4–6 identify a reproducible candidat
 
 - targeted geometry changes but controlled reasoning does not improve;
 - reasoning gains are matched by a non-geometric control;
-- gains disappear under held-out carriers/logics;
+- gains disappear under held-out carriers/logics; and
 - gains are explained by added parameters or compute.
 
 **Claim ceiling:** `INTERVENTION`.
@@ -335,7 +342,7 @@ These are deliberately not assumed to be useful until earlier evidence warrants 
 - [ ] geometric regularization during pretraining rather than fine-tuning;
 - [ ] latent-step reasoning without explicit textual intermediate steps;
 - [ ] formal verification beyond the Phase 1 exact-math kernel where it reduces real ambiguity;
-- [ ] advanced MoE expert-paging or bandwidth-adaptive serving beyond what Phase 2 equivalence testing justifies;
+- [ ] advanced MoE expert-paging or bandwidth-adaptive serving beyond what Phase 2 equivalence testing justifies; and
 - [ ] integration with other QSOL repositories only after this repository has stable interfaces and evidence classes.
 
 ## Roadmap completion rule

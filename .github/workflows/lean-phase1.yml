@@ -1,0 +1,348 @@
+name: lean-phase1
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "Lean/**"
+      - "scripts/lean_dependency_receipt.py"
+      - "scripts/verify_lean_source_state.py"
+      - "scripts/verify_lean_source_purity.py"
+      - "scripts/protected_lean_recompile.sh"
+      - "lean-toolchain"
+      - "lakefile.lean"
+      - "LEAN-FORMALIZATION.md"
+      - "LEAN-CACHE-POLICY.md"
+      - ".github/workflows/lean-phase1.yml"
+
+permissions:
+  contents: read
+
+# This workflow is the performance-oriented verified-cache PR lane only.
+# Release-grade cold reconstruction is owned exclusively by the isolated
+# workflow's manually dispatched `isolated-cold-trust` job.
+env:
+  MATHLIB_NO_CACHE_ON_UPDATE: "1"
+  EXPECTED_LAKE_MANIFEST_SHA256: "646d5b171d7b7200f4f85d887ff655c45ee7796019ada4aab7e4ca759f41602b"
+  EXPECTED_LEAN_TOOLCHAIN_SHA256: "3aac669c7a910ec2389f4e4f921b605adf6ebf2d1e0c9b9cd0be4d33f3f5db71"
+  EXPECTED_BUILD_CANONICAL_SHA256: "91f7181f1657481a8a00a3f4fe67b8d5663951838b5a0a76ef2adbd8b54e66d3"
+  EXPECTED_BUILD_XOR_SHA256: "5140247acee0acb36de98fa8192602e09815d27207c38d62a83b818861a0a5a3"
+  EXPECTED_BUILD_ARTIFACT_COUNT: "37312"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      LEAN_VERSION: "4.33.1"
+      LEAN_LINUX_SHA256: "890afd185370f85666025b883914ab4f4b339136f8c96167b69cfb62aecaf235"
+      MATHLIB_COMMIT: "0df444a360eaa60ab8c11dca51a86af692955474"
+      SOURCE_CACHE_SCHEMA: "geo-lean-source-v3"
+      BUILD_CACHE_SCHEMA: "geo-lean-deps-v1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Verify declarative production Lean source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_lean_source_purity.py --root Lean --self-test
+
+      - name: Verify declared Lean toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime_decl_sha="$(printf 'leanprover/lean4:v%s\n' "$LEAN_VERSION" | sha256sum | awk '{print $1}')"
+          test "$runtime_decl_sha" = "$EXPECTED_LEAN_TOOLCHAIN_SHA256"
+          echo "${EXPECTED_LEAN_TOOLCHAIN_SHA256}  lean-toolchain" | sha256sum --check --strict
+          echo "Repository lean-toolchain is bound to audited Lean v${LEAN_VERSION}."
+
+      - name: Install pinned Lean distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "x86_64"
+          archive="$RUNNER_TEMP/lean-${LEAN_VERSION}-linux.tar.zst"
+          url="https://github.com/leanprover/lean4/releases/download/v${LEAN_VERSION}/lean-${LEAN_VERSION}-linux.tar.zst"
+          curl --fail --location --proto '=https' --tlsv1.2 "$url" --output "$archive"
+          echo "${LEAN_LINUX_SHA256}  ${archive}" | sha256sum --check --strict
+          tar --zstd -xf "$archive" -C "$RUNNER_TEMP"
+          lean_home="$RUNNER_TEMP/lean-${LEAN_VERSION}-linux"
+          test -x "$lean_home/bin/lean"
+          test -x "$lean_home/bin/lake"
+          echo "$lean_home/bin" >> "$GITHUB_PATH"
+          "$lean_home/bin/lean" --version
+          "$lean_home/bin/lake" --version
+
+      - name: Configure bounded Lean parallelism
+        shell: bash
+        run: |
+          set -euo pipefail
+          cpus="$(nproc)"
+          workers="$cpus"
+          if [ "$workers" -gt 4 ]; then
+            workers=4
+          fi
+          if [ "$workers" -lt 2 ]; then
+            echo "Multicore formal build requires at least 2 runner CPUs; observed ${cpus}" >&2
+            exit 1
+          fi
+          echo "LEAN_NUM_THREADS=${workers}" >> "$GITHUB_ENV"
+          echo "LEAN_WORKERS=${workers}" >> "$GITHUB_ENV"
+          echo "Formal build will use ${workers} Lean threads on ${cpus} runner CPUs"
+
+      - name: Derive declaration-bound source cache identity
+        id: source-key
+        shell: bash
+        run: |
+          set -euo pipefail
+          declaration_sha="$(sha256sum lakefile.lean | awk '{print $1}')"
+          toolchain_sha="$(sha256sum lean-toolchain | awk '{print $1}')"
+          test "$toolchain_sha" = "$EXPECTED_LEAN_TOOLCHAIN_SHA256"
+          key="${SOURCE_CACHE_SCHEMA}-${RUNNER_OS}-x86_64-lean-${LEAN_VERSION}-${LEAN_LINUX_SHA256}-${toolchain_sha}-${declaration_sha}-${EXPECTED_LAKE_MANIFEST_SHA256}"
+          echo "declaration_sha=${declaration_sha}" >> "$GITHUB_OUTPUT"
+          echo "toolchain_sha=${toolchain_sha}" >> "$GITHUB_OUTPUT"
+          echo "key=${key}" >> "$GITHUB_OUTPUT"
+          echo "Pinned source cache identity: ${key}"
+
+      - name: Restore pinned dependency source state
+        id: source-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            .lake/packages
+            lake-manifest.json
+            .lean-cache/source-receipt.json
+          key: ${{ steps.source-key.outputs.key }}
+
+      - name: Purge restored generated package Lake state
+        if: steps.source-cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for pkg in .lake/packages/*; do
+            [ -d "$pkg" ] || continue
+            rm -rf "$pkg/.lake"
+          done
+          if find .lake/packages -mindepth 2 -maxdepth 2 -name .lake -print -quit | grep -q .; then
+            echo "Generated package Lake state survived purge" >&2
+            exit 1
+          fi
+
+      - name: Verify restored pinned dependency source state
+        if: steps.source-cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_lean_source_state.py \
+            --root .lake/packages \
+            --lake-manifest lake-manifest.json \
+            --expected-manifest-sha256 "$EXPECTED_LAKE_MANIFEST_SHA256" \
+            --dependency-declaration lakefile.lean \
+            --receipt .lean-cache/source-receipt.json
+          echo "Verified declaration-bound pinned dependency source cache hit."
+
+      - name: Resolve pinned dependency sources on first source-cache miss
+        if: steps.source-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          started="$(date +%s)"
+          lake update
+
+          # Source-cache seeds contain only source/Git state. Generated Lake
+          # configuration and proof objects are regenerated after verification.
+          for pkg in .lake/packages/*; do
+            [ -d "$pkg" ] || continue
+            rm -rf "$pkg/.lake"
+          done
+          if find .lake/packages -mindepth 2 -maxdepth 2 -name .lake -print -quit | grep -q .; then
+            echo "Generated package Lake state survived source reset" >&2
+            exit 1
+          fi
+
+          python3 scripts/verify_lean_source_state.py \
+            --root .lake/packages \
+            --lake-manifest lake-manifest.json \
+            --expected-manifest-sha256 "$EXPECTED_LAKE_MANIFEST_SHA256" \
+            --dependency-declaration lakefile.lean \
+            --receipt .lean-cache/source-receipt.json \
+            --write-receipt
+          elapsed="$(( $(date +%s) - started ))"
+          echo "Pinned source resolution completed in ${elapsed}s"
+          {
+            echo "### Lean dependency source state"
+            echo "- Source cache: \`miss\`"
+            echo "- Action: resolved exact pinned git revisions"
+            echo "- lean-toolchain SHA-256: \`${{ steps.source-key.outputs.toolchain_sha }}\`"
+            echo "- lakefile SHA-256: \`${{ steps.source-key.outputs.declaration_sha }}\`"
+            echo "- tracked bytes/modes: \`verified against commit trees with replacement refs disabled\`"
+            echo "- generated package Lake state: \`purged before verification/cache save\`"
+            echo "- mathlib public-cache post-update hook: \`disabled\`"
+            echo "- elapsed: \`${elapsed}s\`"
+            echo "- lake manifest SHA-256: \`${EXPECTED_LAKE_MANIFEST_SHA256}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save verified pinned dependency source state
+        if: steps.source-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            .lake/packages
+            lake-manifest.json
+            .lean-cache/source-receipt.json
+          key: ${{ steps.source-key.outputs.key }}
+
+      - name: Derive audited build-artifact cache identity
+        id: build-key
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_manifest_sha="$(sha256sum lake-manifest.json | awk '{print $1}')"
+          test "$actual_manifest_sha" = "$EXPECTED_LAKE_MANIFEST_SHA256"
+          key="${BUILD_CACHE_SCHEMA}-${RUNNER_OS}-x86_64-lean-${LEAN_VERSION}-${LEAN_LINUX_SHA256}-${actual_manifest_sha}"
+          echo "key=${key}" >> "$GITHUB_OUTPUT"
+          echo "Audited build cache identity: ${key}"
+
+      - name: Restore cold-built dependency artifacts
+        id: dependency-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            .lake/packages/*/.lake/build
+            .lean-cache/dependency-receipt.json
+          key: ${{ steps.build-key.outputs.key }}
+
+      - name: Verify canonical and XOR dependency receipts
+        if: steps.dependency-cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/lean_dependency_receipt.py verify \
+            --root .lake/packages \
+            --receipt .lean-cache/dependency-receipt.json \
+            --lake-manifest lake-manifest.json \
+            --lean-version "$LEAN_VERSION" \
+            --lean-archive-sha256 "$LEAN_LINUX_SHA256" \
+            --mathlib-commit "$MATHLIB_COMMIT" \
+            --expected-canonical-sha256 "$EXPECTED_BUILD_CANONICAL_SHA256" \
+            --expected-xor-fold-sha256 "$EXPECTED_BUILD_XOR_SHA256" \
+            --expected-artifact-count "$EXPECTED_BUILD_ARTIFACT_COUNT"
+          echo "Verified dependency build cache against external reviewed canonical anchor; XOR-fold remains regression evidence only."
+
+      - name: Cold fallback on first build-cache miss
+        if: steps.dependency-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x /usr/bin/time
+          timing_file="$RUNNER_TEMP/lean-cache-seed-build.time"
+          /usr/bin/time \
+            -f 'cache-seed-cold-build wall=%e user=%U sys=%S maxrss_kb=%M' \
+            -o "$timing_file" \
+            lake build --wfail
+          timing="$(cat "$timing_file")"
+          echo "$timing"
+          {
+            echo "### Lean verified-cache lane"
+            echo "- Build cache: \`miss\`"
+            echo "- Action: performance fallback reconstruction; release-grade authority remains the isolated cold job"
+            echo "- Lean threads: \`${LEAN_WORKERS}\`"
+            echo "- Timing: \`${timing}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fast project rebuild from verified dependency state
+        if: steps.dependency-cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .lake/build
+          timing_file="$RUNNER_TEMP/lean-fast-project-build.time"
+          /usr/bin/time \
+            -f 'verified-cache-project-build wall=%e user=%U sys=%S maxrss_kb=%M' \
+            -o "$timing_file" \
+            lake build --wfail
+          timing="$(cat "$timing_file")"
+          echo "$timing"
+          {
+            echo "### Lean verified-cache lane"
+            echo "- Source state: \`verified ${SOURCE_CACHE_SCHEMA}\`"
+            echo "- Build cache: \`verified hit\`"
+            echo "- Dependency source bytes/modes: \`commit-tree verified with Git replacements disabled\`"
+            echo "- Dependency artifact canonical SHA-256: \`${EXPECTED_BUILD_CANONICAL_SHA256}\`"
+            echo "- XOR-fold: \`reviewed regression anchor matched\`"
+            echo "- GeoReason project build: rebuilt from current source"
+            echo "- Lean threads: \`${LEAN_WORKERS}\`"
+            echo "- Timing: \`${timing}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Reject source proof placeholders, explicit axioms, and executable source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_lean_source_purity.py --root Lean --self-test
+          if grep -RInE '(^|[^[:alnum:]_])(sorry|admit)([^[:alnum:]_]|$)|^[[:space:]]*axiom[[:space:]]' Lean --exclude='Audit.lean'; then
+            echo "Lean proof placeholder or explicit axiom declaration found" >&2
+            exit 1
+          fi
+
+      - name: Audit compiled theorem dependencies without project initializers
+        shell: bash
+        run: |
+          set -euo pipefail
+          lean_bin="$(command -v lean)"
+          project_lib="$GITHUB_WORKSPACE/.lake/build/lib/lean"
+          test -x "$lean_bin"
+          test -d "$project_lib"
+
+          lean_path="$project_lib"
+          dependency_libs=0
+          for pkg in "$GITHUB_WORKSPACE"/.lake/packages/*; do
+            [ -d "$pkg" ] || continue
+            lib="$pkg/.lake/build/lib/lean"
+            [ -d "$lib" ] || continue
+            lean_path="$lean_path:$lib"
+            dependency_libs="$((dependency_libs + 1))"
+          done
+          test "$dependency_libs" -gt 0
+
+          audit_home="$RUNNER_TEMP/lean-routine-audit-home"
+          mkdir -p "$audit_home"
+          env -i \
+            HOME="$audit_home" \
+            PATH="$(dirname "$lean_bin"):/usr/bin:/bin" \
+            LEAN_PATH="$lean_path" \
+            LEAN_NUM_THREADS=1 \
+            "$lean_bin" --run Lean/GeoReason/Audit.lean \
+            2>&1 | tee /tmp/lean-axiom-audit.log
+
+          marker='QSOL_PROTECTED_AUDIT_COMPLETE targets=12 theorem_kinds=verified axiom_allowlist=verified project_initializers=not_executed'
+          if ! grep -Fxq "$marker" /tmp/lean-axiom-audit.log; then
+            echo "Protected audit completion marker missing" >&2
+            exit 1
+          fi
+
+      - name: Create dependency receipt after cold build-cache miss
+        if: steps.dependency-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/lean_dependency_receipt.py create \
+            --root .lake/packages \
+            --receipt .lean-cache/dependency-receipt.json \
+            --lake-manifest lake-manifest.json \
+            --lean-version "$LEAN_VERSION" \
+            --lean-archive-sha256 "$LEAN_LINUX_SHA256" \
+            --mathlib-commit "$MATHLIB_COMMIT" \
+            --expected-canonical-sha256 "$EXPECTED_BUILD_CANONICAL_SHA256" \
+            --expected-xor-fold-sha256 "$EXPECTED_BUILD_XOR_SHA256" \
+            --expected-artifact-count "$EXPECTED_BUILD_ARTIFACT_COUNT"
+
+      - name: Save externally anchored cold-built dependency cache
+        if: steps.dependency-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            .lake/packages/*/.lake/build
+            .lean-cache/dependency-receipt.json
+          key: ${{ steps.build-key.outputs.key }}

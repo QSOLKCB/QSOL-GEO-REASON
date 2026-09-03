@@ -6,6 +6,12 @@ QSOL-GEO-REASON is a research repository for testing whether reasoning in local 
 
 The repository is intentionally **hypothesis-neutral**. A null result is a valid result.
 
+## Current project state
+
+The deterministic Phase 1 numerical kernel is frozen in immutable release `v0.1.0` at commit `1b5ab8b4543b20cdb6d439f7ad215c08e698188f`.
+
+Pull request #3 implements all twelve `GEO-LEAN-TGT-*` targets as a separate Lean 4 evidence layer against that frozen identity. The proof layer remains a candidate until the exact PR head passes final review and is merged. Do not describe PR #3 as merged or rewrite the immutable release to include later Lean files.
+
 ## Read order for AI agents
 
 Before proposing or modifying experiments, read in this order:
@@ -14,19 +20,20 @@ Before proposing or modifying experiments, read in this order:
 2. `SCIENTIFIC-CONTRACT.md`
 3. `MATH-SPEC.md` for geometry and mathematical semantics
 4. `ROADMAP.md`
-5. this file
-6. `README.md`
-7. relevant implementation, protocol, schema, fixture, and result files
+5. `LEAN-FORMALIZATION.md` and `LEAN-CACHE-POLICY.md` for the Phase 1 proof layer
+6. this file
+7. `README.md`
+8. relevant implementation, protocol, schema, fixture, and result files
 
-`INVARIANTS.md` and `SCIENTIFIC-CONTRACT.md` are the primary normative files. `MATH-SPEC.md` is normative for Phase 1 exact mathematical semantics and future formalization targets, but cannot weaken the primary contracts.
+`INVARIANTS.md` and `SCIENTIFIC-CONTRACT.md` are the primary normative files. `MATH-SPEC.md` is normative for Phase 1 exact mathematical semantics and formalization targets, but cannot weaken the primary contracts.
 
 ## Exact mathematics versus implementation
 
-`MATH-SPEC.md` defines the exact-real mathematical objects. The Python implementation is a finite-precision conformance instrument.
+`MATH-SPEC.md` defines the exact-real mathematical objects. The Python implementation is a finite-precision conformance instrument. The Lean 4 development proves the exact mathematical statements only.
 
-Do not claim that a future Lean 4 proof of the mathematical specification proves the Python/IEEE-754 implementation, JSON serialization, SHA-256, Git provenance, or LLM behavior. Those require separate evidence.
+Do not claim that the Lean proof layer proves the Python/IEEE-754 implementation, JSON serialization, SHA-256, Git provenance, serving behaviour, or LLM behaviour. Those require separate evidence or an explicit refinement proof.
 
-Stable IDs `GEO-MATH-*` and `GEO-LEAN-TGT-*` should be preserved across discussion and formalization.
+Stable IDs `GEO-MATH-*` and `GEO-LEAN-TGT-*` must be preserved across discussion and formalization.
 
 ## Core objects
 
@@ -112,7 +119,7 @@ Every empirical run must record, at minimum:
 - normalization and projection transforms;
 - geometric metrics;
 - comparison/alignment procedure;
-- preregistered primary outcomes when confirmatory;
+- preregistered primary outcomes when confirmatory; and
 - output artifact hashes.
 
 ### Exposure assessment shape
@@ -147,17 +154,23 @@ Do not:
 - turn an undefined metric into an ordinary numerical zero;
 - treat a reasoning benchmark score alone as proof of geometric reasoning;
 - hide negative results;
-- collapse carrier similarity, logical similarity, answer correctness, and trajectory similarity into one label;
+- collapse carrier similarity, logical similarity, answer correctness, and trajectory similarity into one label; or
 - use the term “causal” for ordinary observational correlations.
+
+## Lean workflow authority
+
+`lean-phase1` is a pull-request-only verified-cache regression lane. It is not a release-grade cold authority.
+
+The sole release-grade cold proof authority is the manually dispatched `lean-isolated-audit / isolated-cold-trust` job. That job freezes reviewed inputs before project Lake evaluation, reconstructs dependencies without cache restore, terminates the build identity before freezing objects, recompiles the reviewed GeoReason modules under a separate identity, revalidates the dependency closure, and runs a non-initializing theorem audit.
+
+The protected audit imports `GeoReason` through `Lean.withImportModules` with `loadExts := false`; project `initialize` actions are not executed in the audit process. Its exact success record is emitted only after all twelve target declarations are verified as theorems and their transitive axioms are confined to `propext`, `Classical.choice`, and `Quot.sound`.
 
 ## Expected repository evolution
 
-The intended progression is:
+The intended overall progression remains:
 
-`contract -> exact math -> simulation -> canonical instrumentation -> serving-equivalence validation -> observational dataset -> perturbation -> cross-model replication -> geometric training intervention -> ablation / falsification -> release/formalization`
+`contract -> exact math -> simulation -> canonical instrumentation -> serving-equivalence validation -> observational dataset -> perturbation -> cross-model replication -> geometric training intervention -> ablation / falsification -> release`
 
-This is a research workflow, not a claim ladder. Replication remains orthogonal to evidence class.
+Phase 1 has completed its immutable numerical release. Its separate Lean proof layer is currently at the final PR #3 acceptance gate. This is still a research workflow, not a claim ladder, and replication remains orthogonal to evidence class.
 
-After the Phase 1 mathematical kernel receives a green exact-head review, the intended handoff is to freeze an immutable release/tag and formalize `MATH-SPEC.md` in Lean 4 against that exact frozen identity.
-
-Do not skip directly from the foundation stage to capability claims.
+Do not skip directly from the foundation and formal-instrument stages to capability claims.
