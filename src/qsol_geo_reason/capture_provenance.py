@@ -82,6 +82,10 @@ def _validate_nullable_boolean(value: Any, where: str) -> None:
         raise CaptureContractError(f"{where} must be boolean or null")
 
 
+def _env_flag_enabled(value: Any) -> bool:
+    return isinstance(value, str) and value.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
 def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Mapping[str, Any]) -> None:
     """Mirror the production run-manifest schema's field types and domains."""
     nonempty_strings = (
@@ -96,19 +100,23 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
     nullable_strings = (
         "tokenizers_version", "huggingface_hub_version", "attention_implementation",
         "cpu_machine", "cpu_processor", "cpu_instruction_flags", "omp_num_threads",
-        "mkl_num_threads", "cuda_device_name", "cuda_device_capability",
-        "cuda_build_version", "nvidia_driver_version", "float32_matmul_precision",
-        "nvidia_tf32_override", "torch_allow_tf32_cublas_override",
+        "mkl_num_threads", "cuda_device_name", "cuda_device_capability", "cuda_device_uuid",
+        "cuda_visible_devices", "cuda_build_version", "nvidia_driver_version",
+        "float32_matmul_precision", "nvidia_tf32_override", "torch_allow_tf32_cublas_override",
         "cublas_workspace_config", "mps_mac_model", "mps_cpu_brand", "mps_macos_version",
+        "mps_fallback_env", "mps_fast_math_env",
     )
     for field in nullable_strings:
         _validate_nullable_string(observed.get(field), f"production backend field {field}")
 
-    for field in ("torch_num_threads", "torch_num_interop_threads", "cudnn_version"):
+    for field in ("torch_num_threads", "torch_num_interop_threads", "cudnn_version", "cuda_resolved_device_index"):
         _validate_nullable_integer(observed.get(field), f"production backend field {field}")
-    for field in ("cuda_matmul_allow_tf32", "cudnn_allow_tf32"):
+    for field in (
+        "cuda_matmul_allow_tf32", "cudnn_allow_tf32", "sdpa_flash_enabled",
+        "sdpa_mem_efficient_enabled", "sdpa_math_enabled", "sdpa_cudnn_enabled",
+    ):
         _validate_nullable_boolean(observed.get(field), f"production backend field {field}")
-    for field in ("mps_device_active", "mps_built", "mps_available"):
+    for field in ("mps_device_active", "mps_built", "mps_available", "autocast_disabled"):
         if not isinstance(observed.get(field), bool):
             raise CaptureContractError(f"production backend field {field} must be boolean")
 
@@ -138,6 +146,39 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
         ):
             raise CaptureContractError("observed_hidden_state_dtypes has an invalid layer dtype set")
 
+    device = request["backend"]["device"]
+    cuda_active = device.startswith("cuda:")
+    expected_cuda_index = int(device.split(":", 1)[1]) if cuda_active else None
+    if observed.get("cuda_resolved_device_index") != expected_cuda_index:
+        raise CaptureContractError("cuda_resolved_device_index does not match the explicit request device")
+    attention = observed.get("attention_implementation")
+    sdpa_fields = {
+        "sdpa_flash_enabled": observed.get("sdpa_flash_enabled"),
+        "sdpa_mem_efficient_enabled": observed.get("sdpa_mem_efficient_enabled"),
+        "sdpa_math_enabled": observed.get("sdpa_math_enabled"),
+        "sdpa_cudnn_enabled": observed.get("sdpa_cudnn_enabled"),
+    }
+    if cuda_active and attention == "sdpa":
+        if sdpa_fields["sdpa_flash_enabled"] is not False:
+            raise CaptureContractError("canonical CUDA SDPA requires Flash SDPA disabled")
+        if sdpa_fields["sdpa_mem_efficient_enabled"] is not False:
+            raise CaptureContractError("canonical CUDA SDPA requires memory-efficient SDPA disabled")
+        if sdpa_fields["sdpa_math_enabled"] is not True:
+            raise CaptureContractError("canonical CUDA SDPA requires math SDPA enabled")
+        if sdpa_fields["sdpa_cudnn_enabled"] is True:
+            raise CaptureContractError("canonical CUDA SDPA requires cuDNN SDPA disabled")
+    elif any(value is not None for value in sdpa_fields.values()):
+        raise CaptureContractError("SDPA policy fields must be null outside the canonical CUDA SDPA lane")
+
+    mps_active = device.startswith("mps")
+    if observed.get("mps_device_active") is not mps_active:
+        raise CaptureContractError("mps_device_active does not match the requested device")
+    if mps_active:
+        if _env_flag_enabled(observed.get("mps_fallback_env")):
+            raise CaptureContractError("canonical MPS provenance forbids fallback enablement")
+        if _env_flag_enabled(observed.get("mps_fast_math_env")):
+            raise CaptureContractError("canonical MPS provenance forbids fast-math enablement")
+
 
 def _validate_backend_metadata(observed: Mapping[str, Any], request: Mapping[str, Any], evidence_class: str) -> None:
     required = _PRODUCTION_BACKEND_KEYS if evidence_class == "OBSERVATION" else _SIMULATION_BACKEND_KEYS
@@ -164,7 +205,8 @@ def _validate_backend_metadata(observed: Mapping[str, Any], request: Mapping[str
             "model_reports_quantized": False, "offloading": "none",
             "pool_accumulation_dtype": "float64", "pool_accumulation_device": "cpu",
             "hidden_state_capture_strategy": "selective_forward_hooks",
-            "snapshot_authentication": "sha256_all_snapshot_files",
+            "snapshot_authentication": "sha256_all_snapshot_files_pre_and_post_load",
+            "autocast_disabled": True,
         }
         for key, value in production_constants.items():
             if observed.get(key) != value:
