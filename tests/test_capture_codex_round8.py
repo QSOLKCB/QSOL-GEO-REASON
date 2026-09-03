@@ -149,7 +149,8 @@ class CaptureRound8RegressionTests(unittest.TestCase):
         schema = json.loads(
             (ROOT / "schemas" / "capture-request.schema.json").read_text(encoding="utf-8")
         )
-        cuda_pattern = schema["$defs"]["backend"]["properties"]["device"]["oneOf"][0]["pattern"]
+        branches = schema["$defs"]["backend"]["properties"]["device"]["oneOf"]
+        cuda_pattern = next(branch["pattern"] for branch in branches if "pattern" in branch)
         self.assertEqual(cuda_pattern, "^cuda:[0-9]+$")
 
     def test_boolean_step_and_layer_indices_are_rejected(self):
