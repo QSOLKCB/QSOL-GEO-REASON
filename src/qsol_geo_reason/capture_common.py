@@ -10,6 +10,7 @@ CAPTURE_PROTOCOL_ID = "GEO-CAP-001"
 CAPTURE_SCHEMA_VERSION = "1.0.0"
 _CAPTURE_PHASE = "replayed_prefix"
 _PRODUCTION_BACKEND = "huggingface-pytorch"
+_SIMULATION_BACKEND = "software-simulation"
 _ALLOWED_DTYPES = {"float32", "float16", "bfloat16"}
 _ALLOWED_CONTEXT_MODES = {"cumulative", "isolated"}
 _ALLOWED_POOLING_MODES = {"last_token", "step_mean", "context_mean", "bounded_context_mean"}
@@ -142,7 +143,13 @@ def _require_hf_repo_id(value: Any, where: str) -> str:
     if len(parts) != 2:
         raise CaptureContractError(f"{where} must have canonical 'namespace/repository' form")
     for part in parts:
-        if not _HF_REPO_COMPONENT.fullmatch(part) or part in {".", ".."} or part.endswith((".", "-")):
+        if (
+            not _HF_REPO_COMPONENT.fullmatch(part)
+            or part in {".", ".."}
+            or part.endswith((".", "-"))
+            or "--" in part
+            or ".." in part
+        ):
             raise CaptureContractError(f"{where} must have canonical 'namespace/repository' form")
     return text
 
