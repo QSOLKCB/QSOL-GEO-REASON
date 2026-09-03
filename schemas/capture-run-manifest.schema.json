@@ -44,8 +44,8 @@
     "shaMap": {"type": "object", "minProperties": 1, "additionalProperties": {"$ref": "#/$defs/sha256"}},
     "device": {
       "oneOf": [
-        {"type": "string", "pattern": "^cuda:[0-9]+$"},
-        {"type": "string", "minLength": 1, "pattern": "^(?!cuda(?::|$))\\S+$"}
+        {"enum": ["cpu", "mps"]},
+        {"type": "string", "pattern": "^cuda:[0-9]+$"}
       ]
     },
     "model": {
