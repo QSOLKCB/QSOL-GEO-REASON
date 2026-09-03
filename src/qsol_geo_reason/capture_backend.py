@@ -40,6 +40,8 @@ class HuggingFacePyTorchBackend:
         self._dtype_name = backend["dtype"]
         self._determinism_mode = determinism["mode"]
         self._applied_seed = determinism["seed"]
+        self._model_identifier = model_cfg["identifier"]
+        self._tokenizer_identifier = model_cfg["tokenizer_identifier"]
 
         torch.manual_seed(self._applied_seed)
         if torch.cuda.is_available():
@@ -75,11 +77,20 @@ class HuggingFacePyTorchBackend:
         self._model.eval()
 
     def assert_execution_request(self, request: Mapping[str, Any]) -> None:
-        """Refuse reuse when the request seed differs from the applied backend seed."""
+        """Refuse reuse when construction-bound request identity differs."""
         seed = request["determinism"]["seed"]
         if seed != self._applied_seed:
             raise CaptureContractError(
                 f"backend applied seed {self._applied_seed} does not match execution request seed {seed}"
+            )
+        model_cfg = request["model"]
+        if model_cfg["identifier"] != self._model_identifier:
+            raise CaptureContractError(
+                "backend model repository identity does not match execution request"
+            )
+        if model_cfg["tokenizer_identifier"] != self._tokenizer_identifier:
+            raise CaptureContractError(
+                "backend tokenizer repository identity does not match execution request"
             )
 
     def _force_sdpa_math_policy(self) -> None:
