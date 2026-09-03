@@ -38,7 +38,7 @@
       "type": "string",
       "minLength": 3,
       "maxLength": 96,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$"
+      "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9_])?/[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9_])?$"
     },
     "model": {
       "type": "object",
@@ -98,14 +98,54 @@
       "additionalProperties": {"type": "null"}
     },
     "backendObserved": {
+      "oneOf": [
+        {"$ref": "#/$defs/backendObservedProduction"},
+        {"$ref": "#/$defs/backendObservedSimulation"}
+      ]
+    },
+    "backendObservedSimulation": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "observed_model_commit",
+        "observed_tokenizer_commit",
+        "device",
+        "dtype",
+        "quantization",
+        "local_files_only",
+        "trust_remote_code",
+        "use_cache",
+        "capture_phase",
+        "kv_cache_reuse",
+        "determinism_mode"
+      ],
+      "properties": {
+        "name": {"const": "huggingface-pytorch"},
+        "observed_model_commit": {"$ref": "#/$defs/gitSha"},
+        "observed_tokenizer_commit": {"$ref": "#/$defs/gitSha"},
+        "device": {"type": "string", "minLength": 1},
+        "dtype": {"type": "string", "minLength": 1},
+        "quantization": {"const": "none"},
+        "local_files_only": {"const": true},
+        "trust_remote_code": {"const": false},
+        "use_cache": {"const": false},
+        "capture_phase": {"const": "replayed_prefix"},
+        "kv_cache_reuse": {"const": false},
+        "determinism_mode": {"enum": ["required", "best_effort"]}
+      }
+    },
+    "backendObservedProduction": {
+      "type": "object",
+      "additionalProperties": false,
       "required": [
         "name",
         "python_version",
         "platform",
         "torch_version",
         "transformers_version",
+        "tokenizers_version",
+        "huggingface_hub_version",
         "model_class",
         "tokenizer_class",
         "observed_model_commit",
@@ -130,6 +170,10 @@
         "dtype",
         "observed_hidden_state_dtypes",
         "pool_accumulation_dtype",
+        "pool_accumulation_device",
+        "hidden_state_capture_strategy",
+        "hidden_state_block_path",
+        "hidden_state_count",
         "quantization",
         "offloading",
         "local_files_only",
@@ -181,6 +225,10 @@
           }
         },
         "pool_accumulation_dtype": {"const": "float64"},
+        "pool_accumulation_device": {"const": "cpu"},
+        "hidden_state_capture_strategy": {"const": "selective_forward_hooks"},
+        "hidden_state_block_path": {"enum": ["layers", "h", "decoder.layers", "transformer.h", "gpt_neox.layers"]},
+        "hidden_state_count": {"type": "integer", "minimum": 2},
         "quantization": {"const": "none"},
         "offloading": {"const": "none"},
         "local_files_only": {"const": true},

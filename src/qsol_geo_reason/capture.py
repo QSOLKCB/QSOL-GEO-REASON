@@ -44,13 +44,118 @@ _ALLOWED_EVIDENCE = {"SIMULATION", "OBSERVATION"}
 _LOADING_INFO_KEYS = ("missing_keys", "unexpected_keys", "mismatched_keys", "error_msgs")
 _HF_REPO_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _LAYER_INDEX_SEMANTICS = (
-    "indices address the backend outputs.hidden_states tuple; "
-    "index 0 is the pre-block embedding state when supplied by the model"
+    "indices address the canonical decoder hidden-state sequence: index 0 is "
+    "the input to decoder block 0; indices 1..N-1 are inputs to subsequent "
+    "decoder blocks; index N is the final base-model hidden state"
 )
 _STEP_SPAN_SEMANTICS = (
     "changed_token_span begins at the longest common token-ID prefix "
     "between the baseline context and the current rendered context"
 )
+_BLOCK_CONTAINER_PATHS = (
+    "layers",
+    "h",
+    "decoder.layers",
+    "transformer.h",
+    "gpt_neox.layers",
+)
+_MANIFEST_KEYS = {
+    "schema_version",
+    "protocol_id",
+    "run_id",
+    "repository_commit",
+    "request_sha256",
+    "model",
+    "backend_request",
+    "backend_observed",
+    "capture",
+    "determinism",
+    "generation_parameters",
+    "run_manifest_id",
+    "artifacts",
+    "manifest_sha256",
+}
+_TRAJECTORY_KEYS = {
+    "schema_version",
+    "protocol_id",
+    "evidence_class",
+    "replication_status",
+    "run_id",
+    "run_manifest_id",
+    "repository_commit",
+    "representation_definition",
+    "steps",
+    "trajectory_sha256",
+}
+_REPRESENTATION_KEYS = {
+    "context_mode",
+    "phase",
+    "layers",
+    "layer_index_semantics",
+    "pooling",
+    "step_span_semantics",
+}
+_ARTIFACT_KEYS = {"capture_request_sha256", "captured_trajectory_sha256"}
+_SIMULATION_BACKEND_KEYS = {
+    "name",
+    "observed_model_commit",
+    "observed_tokenizer_commit",
+    "device",
+    "dtype",
+    "quantization",
+    "local_files_only",
+    "trust_remote_code",
+    "use_cache",
+    "capture_phase",
+    "kv_cache_reuse",
+    "determinism_mode",
+}
+_PRODUCTION_BACKEND_KEYS = {
+    "name",
+    "python_version",
+    "platform",
+    "torch_version",
+    "transformers_version",
+    "tokenizers_version",
+    "huggingface_hub_version",
+    "model_class",
+    "tokenizer_class",
+    "observed_model_commit",
+    "observed_tokenizer_commit",
+    "checkpoint_loading_clean",
+    "quantization_config_present",
+    "model_reports_quantized",
+    "attention_implementation",
+    "device",
+    "cpu_machine",
+    "cpu_processor",
+    "cpu_instruction_flags",
+    "torch_num_threads",
+    "torch_num_interop_threads",
+    "omp_num_threads",
+    "mkl_num_threads",
+    "cuda_device_name",
+    "cuda_device_capability",
+    "cuda_build_version",
+    "cudnn_version",
+    "nvidia_driver_version",
+    "dtype",
+    "observed_hidden_state_dtypes",
+    "pool_accumulation_dtype",
+    "pool_accumulation_device",
+    "hidden_state_capture_strategy",
+    "hidden_state_block_path",
+    "hidden_state_count",
+    "quantization",
+    "offloading",
+    "local_files_only",
+    "trust_remote_code",
+    "use_cache",
+    "capture_phase",
+    "kv_cache_reuse",
+    "deterministic_algorithms_enabled",
+    "determinism_mode",
+}
 
 
 class CaptureContractError(ValueError):
@@ -649,6 +754,19 @@ def _validate_backend_identity(
         )
 
 
+def _validate_backend_metadata_shape(
+    observed_backend: Mapping[str, Any], evidence_class: str
+) -> None:
+    required = (
+        _PRODUCTION_BACKEND_KEYS if evidence_class == "OBSERVATION" else _SIMULATION_BACKEND_KEYS
+    )
+    _require_exact_keys(
+        observed_backend,
+        required=set(required),
+        where=f"{evidence_class.lower()} backend_observed",
+    )
+
+
 def _cpu_hardware_metadata(torch_module: Any) -> dict[str, Any]:
     cpu_model: str | None = platform.processor() or None
     cpu_flags: str | None = None
@@ -689,6 +807,72 @@ def _cpu_hardware_metadata(torch_module: Any) -> dict[str, Any]:
         "omp_num_threads": os.environ.get("OMP_NUM_THREADS"),
         "mkl_num_threads": os.environ.get("MKL_NUM_THREADS"),
     }
+
+
+def _get_dotted_attr(root: Any, path: str) -> Any:
+    value = root
+    for component in path.split("."):
+        value = getattr(value, component, None)
+        if value is None:
+            return None
+    return value
+
+
+def _config_hidden_layer_count(config: Any) -> int:
+    for name in ("num_hidden_layers", "n_layer", "num_layers"):
+        value = getattr(config, name, None)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    raise CaptureContractError(
+        "canonical selective hidden-state capture requires an explicit positive layer count in model config"
+    )
+
+
+def _resolve_hidden_state_layout(model: Any) -> tuple[Any, str, Any]:
+    """Resolve one unambiguous decoder-block sequence for selective capture."""
+
+    base_model = getattr(model, "base_model", None)
+    if base_model is None:
+        raise CaptureContractError("model does not expose a canonical base_model")
+    expected = _config_hidden_layer_count(getattr(model, "config", None))
+    candidates: list[tuple[str, Any]] = []
+    seen: set[int] = set()
+    for path in _BLOCK_CONTAINER_PATHS:
+        blocks = _get_dotted_attr(base_model, path)
+        if blocks is None:
+            continue
+        try:
+            length = len(blocks)
+            blocks[0]
+        except (TypeError, IndexError, KeyError):
+            continue
+        if length != expected or id(blocks) in seen:
+            continue
+        seen.add(id(blocks))
+        candidates.append((path, blocks))
+    if len(candidates) != 1:
+        found = [path for path, _ in candidates]
+        raise CaptureContractError(
+            "canonical selective hidden-state capture requires exactly one recognized "
+            f"decoder block sequence of length {expected}; candidates={found!r}"
+        )
+    path, blocks = candidates[0]
+    return base_model, path, blocks
+
+
+def _extract_hidden_tensor(value: Any) -> Any:
+    if value is None:
+        return None
+    hidden = getattr(value, "last_hidden_state", None)
+    if hidden is not None:
+        return hidden
+    if isinstance(value, Mapping) and value.get("last_hidden_state") is not None:
+        return value["last_hidden_state"]
+    if isinstance(value, (tuple, list)) and value:
+        return _extract_hidden_tensor(value[0])
+    if hasattr(value, "ndim") and hasattr(value, "shape") and hasattr(value, "detach"):
+        return value
+    return None
 
 
 class HuggingFacePyTorchBackend:
@@ -753,6 +937,10 @@ class HuggingFacePyTorchBackend:
                 "canonical capture forbids checkpoint/config quantization; detected: "
                 + ", ".join(quantization)
             )
+        self._base_model, self._block_path, self._blocks = _resolve_hidden_state_layout(
+            self._model
+        )
+        self._hidden_state_count = len(self._blocks) + 1
         self._checkpoint_loading_clean = True
         self._model.to(self._device)
         self._model.eval()
@@ -765,6 +953,73 @@ class HuggingFacePyTorchBackend:
         )
         return [int(token_id) for token_id in encoded["input_ids"]]
 
+    def _pool_tensor_record(
+        self,
+        tensor: Any,
+        *,
+        layer_index: int,
+        token_count: int,
+        pool_span: tuple[int, int],
+    ) -> Mapping[str, Any]:
+        """Pool one selected state on CPU with bounded float64 temporary memory."""
+
+        torch = self._torch
+        if tensor is None:
+            raise CaptureContractError(f"selective hook for layer {layer_index} produced no tensor")
+        if tensor.ndim == 3:
+            if int(tensor.shape[0]) != 1:
+                raise CaptureContractError(
+                    f"layer {layer_index} hidden-state batch dimension must be 1"
+                )
+            matrix = tensor[0]
+        elif tensor.ndim == 2:
+            matrix = tensor
+        else:
+            raise CaptureContractError(
+                f"layer {layer_index} hidden-state rank {tensor.ndim} is unsupported"
+            )
+        if int(matrix.shape[0]) != token_count or int(matrix.shape[1]) < 1:
+            raise CaptureContractError(
+                f"layer {layer_index} hidden-state shape is incompatible with token capture"
+            )
+        start, end = pool_span
+        if start < 0 or end > token_count or start >= end:
+            raise CaptureContractError("backend received an invalid pool span")
+
+        observed_dtype = str(matrix.dtype).removeprefix("torch.")
+        self._observed_hidden_state_dtypes.setdefault(layer_index, set()).add(
+            observed_dtype
+        )
+        dimension = int(matrix.shape[1])
+
+        if end - start == 1:
+            # Move to CPU before the float64 conversion. This is required for
+            # MPS, which does not support float64 tensors on-device.
+            pooled = matrix[start].detach().to(device="cpu").to(dtype=torch.float64)
+        else:
+            accumulator = torch.zeros(dimension, dtype=torch.float64, device="cpu")
+            chunk_tokens = 256
+            for chunk_start in range(start, end, chunk_tokens):
+                chunk_end = min(end, chunk_start + chunk_tokens)
+                chunk = (
+                    matrix[chunk_start:chunk_end]
+                    .detach()
+                    .to(device="cpu")
+                    .to(dtype=torch.float64)
+                )
+                accumulator.add_(chunk.sum(dim=0, dtype=torch.float64))
+            pooled = accumulator / (end - start)
+
+        if not bool(torch.isfinite(pooled).all().item()):
+            raise CaptureContractError(
+                f"layer {layer_index} pooled representation contains non-finite values"
+            )
+        return {
+            "vector": pooled.tolist(),
+            "vector_dimension": dimension,
+            "observed_dtype": observed_dtype,
+        }
+
     def hidden_states(
         self,
         input_ids: Sequence[int],
@@ -772,57 +1027,82 @@ class HuggingFacePyTorchBackend:
         *,
         pool_span: tuple[int, int],
     ) -> Mapping[int, Mapping[str, Any]]:
-        """Pool requested tensors before any Python-object expansion."""
+        """Capture only requested states with hooks; never retain the full tuple."""
 
         torch = self._torch
-        start, end = pool_span
-        if start < 0 or end > len(input_ids) or start >= end:
-            raise CaptureContractError("backend received an invalid pool span")
-        ids = torch.tensor([list(input_ids)], dtype=torch.long, device=self._device)
-        mask = torch.ones_like(ids)
-        with torch.inference_mode():
-            output = self._model(
-                input_ids=ids,
-                attention_mask=mask,
-                output_hidden_states=True,
-                use_cache=False,
-                return_dict=True,
+        requested = tuple(layer_indices)
+        if any(index < 0 or index >= self._hidden_state_count for index in requested):
+            bad = next(
+                index
+                for index in requested
+                if index < 0 or index >= self._hidden_state_count
             )
-        states = output.hidden_states
-        if states is None:
-            raise CaptureContractError("model did not return hidden_states")
+            raise CaptureContractError(
+                f"requested layer {bad} outside backend hidden-state range "
+                f"[0, {self._hidden_state_count - 1}]"
+            )
 
         selected: dict[int, Mapping[str, Any]] = {}
-        for layer_index in layer_indices:
-            if layer_index < 0 or layer_index >= len(states):
+        handles: list[Any] = []
+        token_count = len(input_ids)
+
+        def capture(layer_index: int, value: Any) -> None:
+            if layer_index in selected:
                 raise CaptureContractError(
-                    f"requested layer {layer_index} outside backend hidden_states range "
-                    f"[0, {len(states) - 1}]"
+                    f"selective hidden-state hook for layer {layer_index} fired more than once"
                 )
-            tensor = states[layer_index][0]
-            if tensor.ndim != 2 or tensor.shape[0] != len(input_ids) or tensor.shape[1] < 1:
-                raise CaptureContractError(
-                    f"layer {layer_index} hidden-state shape is incompatible with token capture"
-                )
-            observed_dtype = str(tensor.dtype).removeprefix("torch.")
-            self._observed_hidden_state_dtypes.setdefault(layer_index, set()).add(
-                observed_dtype
+            tensor = _extract_hidden_tensor(value)
+            selected[layer_index] = self._pool_tensor_record(
+                tensor,
+                layer_index=layer_index,
+                token_count=token_count,
+                pool_span=pool_span,
             )
-            span_tensor = tensor[start:end].detach()
-            if span_tensor.shape[0] == 1:
-                pooled = span_tensor[0].to(dtype=torch.float64)
-            else:
-                pooled = span_tensor.mean(dim=0, dtype=torch.float64)
-            if not bool(torch.isfinite(pooled).all().item()):
-                raise CaptureContractError(
-                    f"layer {layer_index} pooled representation contains non-finite values"
+
+        def make_pre_hook(layer_index: int):
+            def hook(_module: Any, args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> None:
+                value = kwargs.get("hidden_states")
+                if value is None and args:
+                    value = args[0]
+                capture(layer_index, value)
+
+            return hook
+
+        for layer_index in requested:
+            if layer_index < len(self._blocks):
+                handle = self._blocks[layer_index].register_forward_pre_hook(
+                    make_pre_hook(layer_index), with_kwargs=True
                 )
-            vector = pooled.to(device="cpu").tolist()
-            selected[layer_index] = {
-                "vector": vector,
-                "vector_dimension": int(tensor.shape[1]),
-                "observed_dtype": observed_dtype,
-            }
+                handles.append(handle)
+
+        if len(self._blocks) in requested:
+            final_index = len(self._blocks)
+
+            def final_hook(_module: Any, _args: tuple[Any, ...], output: Any) -> None:
+                capture(final_index, output)
+
+            handles.append(self._base_model.register_forward_hook(final_hook))
+
+        ids = torch.tensor([list(input_ids)], dtype=torch.long, device=self._device)
+        mask = torch.ones_like(ids)
+        try:
+            with torch.inference_mode():
+                self._model(
+                    input_ids=ids,
+                    attention_mask=mask,
+                    output_hidden_states=False,
+                    use_cache=False,
+                    return_dict=True,
+                )
+        finally:
+            for handle in handles:
+                handle.remove()
+
+        if set(selected) != set(requested):
+            missing = sorted(set(requested) - set(selected))
+            raise CaptureContractError(
+                f"selective hidden-state hooks did not capture requested layers: {missing}"
+            )
         return selected
 
     @staticmethod
@@ -910,6 +1190,10 @@ class HuggingFacePyTorchBackend:
                 for layer, values in sorted(self._observed_hidden_state_dtypes.items())
             },
             "pool_accumulation_dtype": "float64",
+            "pool_accumulation_device": "cpu",
+            "hidden_state_capture_strategy": "selective_forward_hooks",
+            "hidden_state_block_path": self._block_path,
+            "hidden_state_count": self._hidden_state_count,
             "quantization": "none",
             "offloading": "none",
             "local_files_only": True,
@@ -949,6 +1233,7 @@ def execute_capture(
     steps = _capture_steps(validated, backend)
     observed_backend = dict(backend.metadata())
     _validate_backend_identity(observed_backend, validated)
+    _validate_backend_metadata_shape(observed_backend, evidence_class)
 
     request_sha256 = sha256_json(validated)
     manifest_identity = {
@@ -1028,21 +1313,34 @@ def verify_capture_bundle(
         )
     if not isinstance(manifest, dict) or not isinstance(trajectory, dict):
         raise CaptureContractError("manifest and trajectory must be objects")
-    if trajectory.get("evidence_class") not in _ALLOWED_EVIDENCE:
+
+    # Validate declared object shapes before authenticating hashes. Otherwise a
+    # caller could make an unknown field self-consistent merely by rehashing it.
+    _require_exact_keys(manifest, required=_MANIFEST_KEYS, where="run manifest")
+    _require_exact_keys(trajectory, required=_TRAJECTORY_KEYS, where="captured trajectory")
+
+    if trajectory["evidence_class"] not in _ALLOWED_EVIDENCE:
         raise CaptureContractError("trajectory evidence_class is invalid")
-    if trajectory.get("replication_status") != "not_attempted":
+    if trajectory["replication_status"] != "not_attempted":
         raise CaptureContractError("trajectory replication_status must be not_attempted")
 
+    artifacts = _require_object(manifest["artifacts"], "manifest artifacts")
+    _require_exact_keys(artifacts, required=_ARTIFACT_KEYS, where="manifest artifacts")
+    representation = _require_object(
+        trajectory["representation_definition"], "trajectory representation_definition"
+    )
+    _require_exact_keys(
+        representation,
+        required=_REPRESENTATION_KEYS,
+        where="trajectory representation_definition",
+    )
+
     request_sha = sha256_json(validated)
-    if manifest.get("request_sha256") != request_sha:
+    if manifest["request_sha256"] != request_sha:
         raise CaptureContractError("manifest request_sha256 does not match capture request")
-    artifacts = manifest.get("artifacts")
-    if not isinstance(artifacts, dict) or artifacts.get("capture_request_sha256") != request_sha:
+    if artifacts["capture_request_sha256"] != request_sha:
         raise CaptureContractError("manifest artifact request hash does not match capture request")
 
-    representation = trajectory.get("representation_definition")
-    if not isinstance(representation, dict):
-        raise CaptureContractError("trajectory representation_definition must be an object")
     expected_representation = {
         "context_mode": validated["capture"]["context_mode"],
         "phase": validated["capture"]["phase"],
@@ -1052,12 +1350,12 @@ def verify_capture_bundle(
         "step_span_semantics": _STEP_SPAN_SEMANTICS,
     }
     for field, expected in expected_representation.items():
-        if representation.get(field) != expected:
+        if representation[field] != expected:
             raise CaptureContractError(
                 f"trajectory representation_definition.{field} does not match request"
             )
 
-    trajectory_steps = trajectory.get("steps")
+    trajectory_steps = trajectory["steps"]
     if not isinstance(trajectory_steps, list) or len(trajectory_steps) != len(validated["steps"]):
         raise CaptureContractError("trajectory step count does not match request")
 
@@ -1191,19 +1489,19 @@ def verify_capture_bundle(
         if context_mode == "cumulative":
             previous_ids = input_ids
 
-    stored_trajectory_sha = trajectory.get("trajectory_sha256")
+    stored_trajectory_sha = trajectory["trajectory_sha256"]
     actual_trajectory_sha = sha256_json(_without(trajectory, "trajectory_sha256"))
     if stored_trajectory_sha != actual_trajectory_sha:
         raise CaptureContractError("captured trajectory SHA-256 is invalid")
-    if artifacts.get("captured_trajectory_sha256") != actual_trajectory_sha:
+    if artifacts["captured_trajectory_sha256"] != actual_trajectory_sha:
         raise CaptureContractError("manifest trajectory hash does not match trajectory")
 
     actual_manifest_sha = sha256_json(_without(manifest, "manifest_sha256"))
-    if manifest.get("manifest_sha256") != actual_manifest_sha:
+    if manifest["manifest_sha256"] != actual_manifest_sha:
         raise CaptureContractError("run manifest SHA-256 is invalid")
 
     manifest_identity = {
-        key: manifest.get(key)
+        key: manifest[key]
         for key in (
             "schema_version",
             "protocol_id",
@@ -1219,29 +1517,31 @@ def verify_capture_bundle(
         )
     }
     actual_run_manifest_id = sha256_json(manifest_identity)
-    if manifest.get("run_manifest_id") != actual_run_manifest_id:
+    if manifest["run_manifest_id"] != actual_run_manifest_id:
         raise CaptureContractError("run_manifest_id is invalid")
 
     for field in ("schema_version", "protocol_id", "run_id", "repository_commit"):
-        if trajectory.get(field) != manifest.get(field):
+        if trajectory[field] != manifest[field]:
             raise CaptureContractError(f"trajectory {field} does not match manifest")
-    if trajectory.get("run_manifest_id") != actual_run_manifest_id:
+    if trajectory["run_manifest_id"] != actual_run_manifest_id:
         raise CaptureContractError("trajectory run_manifest_id does not match manifest")
 
     for field in ("model", "backend", "capture", "determinism", "generation_parameters"):
         manifest_field = "backend_request" if field == "backend" else field
-        if manifest.get(manifest_field) != validated[field]:
+        if manifest[manifest_field] != validated[field]:
             raise CaptureContractError(f"manifest {manifest_field} does not match request")
 
-    observed_backend = manifest.get("backend_observed")
-    if not isinstance(observed_backend, dict):
-        raise CaptureContractError("manifest backend_observed must be an object")
+    observed_backend = _require_object(manifest["backend_observed"], "manifest backend_observed")
     _validate_backend_identity(observed_backend, validated)
-    if trajectory.get("evidence_class") == "OBSERVATION":
+    _validate_backend_metadata_shape(observed_backend, trajectory["evidence_class"])
+    if trajectory["evidence_class"] == "OBSERVATION":
         required_observed = {
             "checkpoint_loading_clean": True,
             "quantization_config_present": False,
             "model_reports_quantized": False,
+            "hidden_state_capture_strategy": "selective_forward_hooks",
+            "pool_accumulation_dtype": "float64",
+            "pool_accumulation_device": "cpu",
             "quantization": "none",
             "local_files_only": True,
             "trust_remote_code": False,
@@ -1250,7 +1550,7 @@ def verify_capture_bundle(
             "kv_cache_reuse": False,
         }
         for field, expected in required_observed.items():
-            if observed_backend.get(field) != expected:
+            if observed_backend[field] != expected:
                 raise CaptureContractError(
                     f"observation backend provenance field {field} is invalid"
                 )

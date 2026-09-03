@@ -164,7 +164,7 @@ immutable v0.2.0 formal evidence layer
 Phase 2A canonical hidden-state capture instrument
 ```
 
-The sole release-grade cold proof authority is the manually dispatched `lean-isolated-audit / isolated-cold-trust` job. The routine `lean-phase1` workflow is pull-request-only and carries no competing cold-trust authority. The protected theorem audit imports the source-bound GeoReason object graph without executing project initializers and emits its completion record only after all twelve theorem-kind and axiom-allowlist checks pass.
+The sole release-grade cold proof authority is the manually dispatched `lean-isolated-audit / isolated-cold-trust` job. `lean-phase1` is a verified-cache regression/cache-maintenance lane: pull-request runs validate candidates, while relevant pushes to `main` and explicit maintenance dispatches may seed authenticated caches for later pull requests. Those cache-maintenance executions carry no competing cold-trust authority. The protected theorem audit imports the source-bound GeoReason object graph without executing project initializers and emits its completion record only after all twelve theorem-kind and axiom-allowlist checks pass.
 
 Lean proves the exact-real mathematics, not CPython floating point, JSON, SHA-256, Git provenance, serving behaviour, or LLM semantics. An implementation-refinement proof would be a separate result.
 
@@ -180,7 +180,8 @@ The canonical production path is intentionally boring in the best possible way:
 - no remote code;
 - no quantization in the canonical lane;
 - `use_cache=false`;
-- explicit hidden-state tuple layer indices;
+- explicit hidden-state tuple indices captured selectively with hooks rather than retaining every layer output;
+- requested spans moved to CPU before bounded float64 pooling, including MPS captures;
 - exact input IDs and token-span provenance;
 - explicit cumulative/isolated context mode;
 - explicit pooling;
