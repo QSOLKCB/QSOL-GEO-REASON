@@ -22,9 +22,12 @@ The canonical Phase 2A instrument uses a direct Hugging Face / PyTorch forward p
 - an explicitly requested dtype and device;
 - the actual dtype observed at each selected hidden-state tensor recorded before conversion;
 - an exact checkpoint loading report with no missing, unexpected, mismatched, or errored parameters;
-- `output_hidden_states=true`;
+- **selective forward hooks rather than `output_hidden_states=true`**;
+- `output_hidden_states=false` during production replay;
 - `use_cache=false`; and
 - replayed-prefix capture rather than optimized serving.
+
+The production backend accepts an architecture only when it can identify exactly one recognized decoder-block sequence whose length matches the model configuration. If that mapping is missing or ambiguous, canonical capture fails closed rather than guessing which internal tensor corresponds to a requested hidden-state index.
 
 Optimized, quantized, cached, hybrid, remote, or otherwise substituted serving paths are **not** measurement-equivalent merely because they emit the same text. They belong in the later serving-equivalence study defined by Phase 2B.
 
@@ -110,23 +113,29 @@ The record stores:
 
 ## 5. Layer semantics, dtype, and memory boundary
 
-`capture.layers` contains explicit unique non-negative indices into the Hugging Face `outputs.hidden_states` tuple.
+`capture.layers` contains explicit unique non-negative indices into the canonical decoder hidden-state sequence normally represented by a causal language model's hidden-state outputs.
 
-For ordinary causal-language-model implementations that follow the Transformers contract, tuple index `0` is the embedding output before the first transformer block, followed by block outputs. Because architectures can differ, the captured record stores this indexing convention rather than silently relabelling it as a human layer number.
+For the accepted production mapping:
 
-A requested layer outside the observed tuple is rejected.
+- index `0` is the input to decoder block `0`;
+- indices `1 .. N-1` are the inputs to subsequent decoder blocks; and
+- index `N` is the final base-model hidden state after the decoder stack.
 
-Transformers may internally return the complete hidden-state tuple, but the canonical adapter never expands the full sequence for a selected layer into Python objects. For each requested layer it:
+This is the sequence whose semantics are recorded in every trajectory. The backend does **not** request and retain the complete `outputs.hidden_states` tuple to obtain those positions.
 
-1. inspects the tensor shape and **records the tensor's actual dtype before conversion**;
-2. selects the already-determined token pool span on the tensor;
-3. reduces that span to one vector using float64 accumulation when a mean is required;
-4. validates that the pooled tensor is finite; and
-5. only then transfers the single pooled vector to CPU/Python form.
+Instead, before the forward pass the backend:
 
-Unrequested layers are not materialized, and requested layers do not acquire Python-object memory proportional to the full context length. This closes both the model-depth and sequence-length materialization hazards.
+1. reads the configured positive hidden-layer count;
+2. resolves exactly one recognized decoder-block container of that length;
+3. registers pre-forward hooks only on requested block-input positions;
+4. registers a final base-model hook only when the final hidden-state position is requested; and
+5. runs the model with `output_hidden_states=false` and `use_cache=false`.
 
-The vector dimension must be nonzero and stable for each requested layer across all captured steps. Every layer record stores `observed_dtype` separately from the requested backend dtype so an architecture-internal upcast is visible rather than silently rewritten as the requested precision.
+A requested index outside `[0, N]` is rejected. An architecture whose block sequence cannot be mapped uniquely is also rejected. GEO-CAP-001 therefore prefers a narrower supported architecture surface over silently assigning the wrong internal state to a canonical layer index.
+
+Each selected hook immediately processes only the requested token span. The complete per-layer sequence is neither appended to a full hidden-state tuple nor expanded into Python objects. The selected span is detached and transferred to CPU before any float64 accumulation. Mean pooling uses bounded CPU chunks, so temporary Python/CPU memory does not scale as a full sequence of Python floats and MPS never receives an unsupported float64 tensor operation.
+
+For every selected state the backend records the tensor's actual dtype **before** transfer/conversion. The vector dimension must be nonzero and stable for each requested layer across all captured steps. Every layer record stores `observed_dtype` separately from the requested backend dtype so an architecture-internal upcast is visible rather than silently rewritten as the requested precision.
 
 ## 6. Pooling
 
@@ -139,7 +148,14 @@ GEO-CAP-001 supports four explicit pooling modes:
 
 The protocol core determines the exact `[start, end)` pool span independently of backend results. `bounded_context_mean` requires a strictly positive `window_tokens`; that parameter is prohibited for the other modes.
 
-For the production PyTorch adapter, the span is then applied and reduced on the tensor before Python conversion. The adapter records `pool_accumulation_dtype: float64`. The software-only test double implements the same span semantics independently in ordinary Python so the protocol's span-selection behavior remains unit-testable without model weights.
+For the production PyTorch adapter, only that selected span is transferred to CPU. A one-token span is converted to CPU float64 directly. Mean spans are transferred in bounded chunks and accumulated into a CPU float64 vector before division by the token count. The adapter records:
+
+- `pool_accumulation_dtype: "float64"`; and
+- `pool_accumulation_device: "cpu"`.
+
+This keeps the accumulation convention explicit while supporting CPU, CUDA, and MPS source devices without requiring float64 support on the source accelerator.
+
+The software-only test double implements the same span semantics independently in ordinary Python so the protocol's span-selection behavior remains unit-testable without model weights.
 
 Every layer record stores the exact pool span used.
 
@@ -149,7 +165,7 @@ The initial canonical phase is:
 
 `replayed_prefix`
 
-Each step is evaluated as a complete forward pass with `use_cache=false`.
+Each step is evaluated as a complete forward pass with `use_cache=false` and `output_hidden_states=false`. Requested representation states are observed through the selective hook mapping described above.
 
 This is intentionally distinct from:
 
@@ -169,13 +185,13 @@ A request records:
 
 The Hugging Face / PyTorch adapter seeds CPU and CUDA RNGs. In `required` mode it enables PyTorch deterministic algorithms.
 
-This does not turn every hardware/kernel stack into a mathematical guarantee of byte-identical floating-point execution. Runtime versions, device information, attention implementation, requested dtype, observed hidden-state dtype, thread configuration, and determinism state are recorded so replay behaviour can be tested rather than presumed.
+This does not turn every hardware/kernel stack into a mathematical guarantee of byte-identical floating-point execution. Runtime versions, device information, attention implementation, requested dtype, observed hidden-state dtype, thread configuration, capture strategy, and determinism state are recorded so replay behaviour can be tested rather than presumed.
 
 A production Phase 2A evidence gate remains open until deterministic replay is actually evaluated for the selected frozen model/backend where the backend permits it, or irreducible nondeterminism is explicitly recorded.
 
 ## 9. Runtime provenance
 
-The run manifest binds the request to the executing repository revision and observed backend metadata. The canonical backend records, where available:
+The run manifest binds the request to the executing repository revision and observed backend metadata. The canonical production backend records, where available:
 
 - Python version and platform;
 - PyTorch version;
@@ -189,7 +205,10 @@ The run manifest binds the request to the executing repository revision and obse
 - attention implementation;
 - requested device and dtype;
 - actual observed hidden-state dtypes by selected layer;
-- float64 pooling accumulation policy;
+- `hidden_state_capture_strategy: selective_forward_hooks`;
+- the recognized decoder block-container path;
+- the canonical hidden-state count;
+- CPU float64 pooling accumulation policy and device;
 - CPU machine/processor identity;
 - CPU instruction flags/features when exposed by the operating system;
 - PyTorch intra-op and inter-op thread counts;
@@ -203,7 +222,7 @@ The run manifest binds the request to the executing repository revision and obse
 - capture phase; and
 - deterministic-algorithm state.
 
-Unavailable runtime fields are recorded as unavailable/null rather than guessed.
+Unavailable hardware/version fields are recorded as unavailable/null rather than guessed. Structural capture fields such as the selective-hook strategy, recognized block path, hidden-state count, pooling dtype, and pooling device are mandatory production provenance rather than optional diagnostics.
 
 The repository revision is resolved using the existing source-provenance rules: a clean source checkout is required when `HEAD` supplies the implementation identity.
 
@@ -217,7 +236,7 @@ This is the only evidence class available to arbitrary test doubles or third-par
 
 `OBSERVATION` requires the concrete `HuggingFacePyTorchBackend` used by the canonical CLI. A backend cannot obtain empirical status merely by returning metadata whose `name` string says `huggingface-pytorch`.
 
-The captured-trajectory schema permits both explicitly labelled `SIMULATION` software-contract trajectories and `OBSERVATION` production trajectories. The classification is therefore preserved in the machine-readable artifact rather than contradicted by its schema.
+The captured-trajectory schema permits both explicitly labelled `SIMULATION` software-contract trajectories and `OBSERVATION` production trajectories. The run-manifest schema likewise has separate exact metadata branches for the minimal software simulation backend and the full production backend. A simulation therefore never has to invent production package, checkpoint-loading, CUDA, or hardware facts merely to satisfy the artifact schema.
 
 A real production capture is still only an observation of specified representation vectors. It does not state that any geometric theory is supported.
 
@@ -231,7 +250,9 @@ run-manifest.json
 captured-trajectory.json
 ```
 
-Before publication, the bundle verifier recomputes and cross-checks:
+Before publication, the bundle verifier first validates exact object shapes, rejecting unknown fields at the manifest root, trajectory root, artifact table, representation definition, every step, every layer record, and the evidence-class-specific backend metadata surface. Unknown fields therefore cannot become canonical merely because a caller recomputes an outer hash.
+
+It then recomputes and cross-checks:
 
 - normalized request SHA-256;
 - every input-ID-array SHA-256 and token count;
@@ -249,7 +270,7 @@ Before publication, the bundle verifier recomputes and cross-checks:
 - request-bound model/backend/capture/determinism/generation settings; and
 - trajectory representation semantics.
 
-Recomputing only the outer trajectory/manifest hashes therefore cannot bless stale nested hashes or contradictory dimensions, counts, spans, or layer identities.
+Recomputing only the outer trajectory/manifest hashes therefore cannot bless stale nested hashes, extra fields, or contradictory dimensions, counts, spans, or layer identities.
 
 The writer does not update an existing capture directory in place. The destination must not already exist. It writes and fsyncs all three files inside a temporary sibling directory, fsyncs that directory, then publishes the complete directory with one same-filesystem rename and fsyncs the parent. If publication fails, the staging directory is removed. A previous bundle can therefore never be partially overwritten into a mixture of runs by this writer.
 
@@ -257,7 +278,7 @@ Published canonical bundle directories are treated as immutable records. A rerun
 
 ## 12. Software-only contract fixture
 
-CI uses a deterministic test-double backend to exercise request validation, token-span semantics, requested-layer selection, pooling, provenance binding, bundle leaf checks, atomic publication behavior, and content hashes without shipping or downloading model weights.
+CI uses a deterministic test-double backend to exercise request validation, token-span semantics, requested-layer selection, pooling, provenance binding, schema parity, bundle shape/leaf checks, atomic publication behavior, and content hashes without shipping or downloading model weights.
 
 That fixture is explicitly labelled:
 
@@ -307,12 +328,15 @@ The capture is invalid if, among other cases:
 - declared or checkpoint-embedded quantization is present in the canonical lane;
 - checkpoint loading reports missing, unexpected, mismatched, or errored parameters;
 - the loaded model/tokenizer reports a different commit from the frozen request;
+- the model does not expose exactly one recognized decoder-block sequence matching the configured hidden-layer count;
 - a step tokenizes to no changed token span;
-- a requested hidden-state layer does not exist;
+- a requested canonical hidden-state index does not exist;
+- a selective hook fires unexpectedly more than once or fails to capture a requested state;
 - the backend returns layers other than exactly the requested set;
 - vector dimensions change unexpectedly;
 - any captured or pooled value is non-finite;
 - a material runtime/capture choice is absent from provenance;
+- an artifact contains unknown fields outside its evidence-class-specific schema surface;
 - per-leaf hashes, dimensions, counts, spans, layer identities, bundle hashes, or cross-artifact identities disagree;
 - an existing output directory would be overwritten; or
 - an optimized serving path is substituted without an equivalence result or explicit experimental-factor treatment.
@@ -323,7 +347,7 @@ Merging the capture implementation does **not** complete Phase 2A.
 
 The Phase 2A evidence gate requires, at minimum:
 
-1. selection of a sufficiently transparent fully local model;
+1. selection of a sufficiently transparent fully local model whose decoder-state layout is supported unambiguously by the canonical backend;
 2. immutable model and tokenizer identities;
 3. a frozen production GEO-CAP-001 request;
 4. a real local-model capture bundle;
