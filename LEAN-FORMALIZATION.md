@@ -69,44 +69,93 @@ Implementation is complete on the PR branch. Acceptance remains conditional on f
 
 ## Menger formalization
 
-For a triple `p : Fin 3 → V`, the exact Lean definition follows the frozen Phase 1 convention:
+For a triple `p : Fin 3 → V`, the Lean definition now begins with the exact quantity frozen by `GEO-MATH-006` rather than taking a downstream characterization as its definition.
 
-- affinely dependent triples, including repeated and collinear triples, have curvature `0`; and
-- an affinely independent triple has curvature equal to the reciprocal of its Euclidean circumradius.
+Let
 
-For nondegenerate triples this is the quantity frozen in `MATH-SPEC.md`:
+```text
+u = p₁ - p₀
+v = p₂ - p₀
+w = p₂ - p₁
+D = ‖u‖² ‖v‖² - inner(u,v)²
+A = sqrt(D) / 2
+abc = ‖u‖ ‖w‖ ‖v‖
+```
 
-`κ = 4A / (abc) = 1 / R`.
+Then:
 
-The scaling theorem proves that the circumradius scales by `|s|` under a nonzero scalar map and then takes reciprocals.
+- an affinely dependent triple, including repeated or collinear points, has curvature `0`; and
+- an affinely independent triple has curvature `κ = 4A / abc`.
+
+The formal bridge to the circumradius presentation is proved rather than assumed. For an affinely independent triple, the proof places the circumcenter displacement in the span of `u` and `v`, derives the Gram identity
+
+```text
+4 D R² = ‖u‖² ‖w‖² ‖v‖²,
+```
+
+uses positivity to obtain
+
+```text
+2 sqrt(D) R = ‖u‖ ‖w‖ ‖v‖,
+```
+
+and concludes
+
+```text
+4A / abc = 1 / R.
+```
+
+The isometry, translation, uniform-scaling, and circle theorems then use that proved bridge. The formal target therefore applies to the same area-and-side-length quantity named by the frozen exact contract and numerical kernel.
+
+## Declarative production-source boundary
+
+`scripts/verify_lean_source_purity.py` defines the project-controlled production source surface accepted by the protected compiler.
+
+It requires:
+
+- exactly the reviewed production module set;
+- an exact import list for every production module;
+- ordinary non-symlink source files;
+- only the explicitly permitted `@[simp]` attribute; and
+- no project-defined compile-time or foreign execution surface, including `run_cmd`, `run_tac`, initializers, custom syntax or elaborators, unsafe or partial declarations, native evaluation, foreign hooks, or IO/process/filesystem APIs.
+
+The scanner removes nested comments and string literals before token inspection and carries self-tests for accepted and rejected examples. Before protected recompilation it writes a root-owned source receipt containing every production source digest and import list. That receipt is checked before and after every module compilation. The `qsolcompile` identity is also terminated before an emitted object is inspected or frozen.
+
+This boundary deliberately permits tactics supplied by the exact pinned dependency graph while preventing reviewed project source from spawning a competing writer for the object being authenticated.
 
 ## Workflow roles
 
 ### Routine verified-cache lane
 
-`.github/workflows/lean-phase1.yml` is pull-request-only. It verifies pinned source and artifact identities, rebuilds the current project, and runs the theorem audit as a fast regression gate. It is not manually dispatchable and is not release-grade cold-reconstruction authority.
+`.github/workflows/lean-phase1.yml` is pull-request-only. It verifies the declarative project source surface, pinned dependency source and artifact identities, rebuilds the current project, reruns the source check, and executes the theorem audit as a fast regression gate. It is not manually dispatchable and is not release-grade cold-reconstruction authority.
 
 ### Isolated pull-request gate
 
 `.github/workflows/lean-isolated-audit.yml` runs an isolated PR job that:
 
-1. installs the hash-pinned Lean distribution;
-2. verifies declaration-bound dependency source state and externally anchored dependency objects;
-3. freezes the reviewed theorem, audit, configuration, verifier, and dependency inputs;
-4. builds through the unprivileged `qsolbuild` identity;
-5. terminates all `qsolbuild` descendants before freezing project outputs;
-6. recompiles each reviewed GeoReason module directly from frozen source under the separate `qsolcompile` identity;
-7. assembles the frozen project objects into one root-owned read-only package tree;
-8. recomputes the dependency closure against a protected receipt after compilation; and
-9. executes the non-initializing theorem audit under the read-only `qsolaudit` identity.
+1. verifies the closed declarative production-source surface;
+2. installs the hash-pinned Lean distribution;
+3. restores and verifies declaration-bound dependency source state when available;
+4. resolves and verifies the pinned dependency graph itself on a source-cache miss under a dedicated `qsolresolve` identity;
+5. terminates every `qsolresolve` process before any resolved source or manifest byte is accepted;
+6. freezes authenticated dependency source root-owned and read-only before dependency artifact transport begins;
+7. verifies externally anchored dependency objects;
+8. freezes reviewed theorem, audit, configuration, and verifier inputs;
+9. builds through the unprivileged `qsolbuild` identity and terminates all descendants before output freeze;
+10. recompiles each reviewed GeoReason module from the source receipt under the separate `qsolcompile` identity;
+11. assembles the frozen project objects into one root-owned read-only package tree;
+12. recomputes the dependency closure against a protected receipt after compilation; and
+13. executes the non-initializing theorem audit under the read-only `qsolaudit` identity.
 
-The project `.lake/build` objects produced by `qsolbuild` are not eligible for the final protected import path.
+The isolated job therefore does not depend on a competing workflow winning a source-cache race. The project `.lake/build` objects produced by `qsolbuild` are not eligible for the final protected import path.
 
 ### Sole release-grade cold authority
 
 The manually dispatched `lean-isolated-audit / isolated-cold-trust` job is the only release-grade cold-reconstruction authority. It restores no dependency caches and freezes reviewed inputs before the first project Lake evaluation.
 
-After dependency compilation, every `qsolbuild` process is terminated before dependency objects are transferred to root ownership and made read-only. The job records the complete dependency artifact closure in a protected receipt, performs the source-bound project recompilation, and verifies the closure again before the theorem audit. This order prevents a descendant process from retaining a writable file descriptor across the freeze boundary.
+Dependency resolution runs under the dedicated `qsolresolve` identity. Every resolver process is terminated before the manifest or dependency source is verified or transferred to root ownership. Only after that source boundary is closed does the separate `qsolbuild` identity receive generated Lake/build output surfaces.
+
+After dependency compilation, every `qsolbuild` process is terminated before dependency objects are transferred to root ownership and made read-only. The job records the complete dependency artifact closure in a protected receipt, performs the declarative source-bound project recompilation, and verifies the closure again before the theorem audit. This order prevents resolver, build, or compiler descendants from retaining a writable file descriptor across an accepted freeze boundary.
 
 The removed legacy `lean-phase1 / cold-trust` job has no remaining evidentiary authority.
 
@@ -133,7 +182,7 @@ Only after all twelve declarations pass does the runner print:
 QSOL_PROTECTED_AUDIT_COMPLETE targets=12 theorem_kinds=verified axiom_allowlist=verified project_initializers=not_executed
 ```
 
-CI requires an exact full-line match. A project initializer cannot forge the record because project initializers are never executed by the protected importer.
+CI requires an exact full-line match. A project initializer cannot forge the record because project initializers are never executed by the protected importer and production project modules are rejected if they introduce initializer or compile-time execution surfaces.
 
 ## Dependency reconstruction and cache policy
 
@@ -142,10 +191,11 @@ The exact source, cache, receipt, process-lifetime, and workflow-authority seman
 In summary:
 
 - the fast lane may reuse only externally anchored dependency artifacts;
-- the isolated PR lane independently reconstructs the current project theorem graph from reviewed source;
-- the isolated cold lane reconstructs dependencies without cache restore;
-- writable build identities are terminated before object freeze; and
-- protected dependency receipts are verified after project compilation and before audit.
+- the isolated PR lane can verify a source-cache hit or securely resolve pinned source on a miss;
+- dependency source is frozen before artifact restoration begins;
+- the isolated cold lane reconstructs dependencies without any cache restore;
+- resolver, build, and compiler identities are terminated before their outputs are accepted or frozen; and
+- protected source and dependency receipts are verified after project compilation and before audit.
 
 The independent `phase1-reference` workflow remains a separate gate and must continue reproducing the immutable numerical Phase 1 evidence unchanged.
 
