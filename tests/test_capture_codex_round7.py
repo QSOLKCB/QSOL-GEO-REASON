@@ -23,18 +23,23 @@ class CaptureRound7RegressionTests(unittest.TestCase):
         request = fixture_request()
         backend = object.__new__(HuggingFacePyTorchBackend)
         backend._applied_seed = request["determinism"]["seed"]
+        backend._determinism_mode = request["determinism"]["mode"]
         backend._model_identifier = request["model"]["identifier"]
+        backend._model_revision = request["model"]["revision"]
         backend._tokenizer_identifier = request["model"]["tokenizer_identifier"]
+        backend._tokenizer_revision = request["model"]["tokenizer_revision"]
+        backend._device = request["backend"]["device"]
+        backend._dtype_name = request["backend"]["dtype"]
         backend.assert_execution_request(request)
 
         mirrored_model = copy.deepcopy(request)
         mirrored_model["model"]["identifier"] = "mirror/model"
-        with self.assertRaisesRegex(CaptureContractError, "model repository identity"):
+        with self.assertRaisesRegex(CaptureContractError, "model/tokenizer identity"):
             backend.assert_execution_request(mirrored_model)
 
         mirrored_tokenizer = copy.deepcopy(request)
         mirrored_tokenizer["model"]["tokenizer_identifier"] = "mirror/tokenizer"
-        with self.assertRaisesRegex(CaptureContractError, "tokenizer repository identity"):
+        with self.assertRaisesRegex(CaptureContractError, "model/tokenizer identity"):
             backend.assert_execution_request(mirrored_tokenizer)
 
     def test_hub_repo_ids_reject_repeated_forbidden_separators(self):
