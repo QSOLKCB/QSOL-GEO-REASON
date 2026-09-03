@@ -176,11 +176,29 @@ jobs:
           sudo -u qsolresolve test -w .lake
           sudo -u qsolresolve test -w lake-manifest.json
 
+          # Lake writes the complete manifest before running optional package
+          # post-update hooks. Mathlib's hook is disabled by environment, but a
+          # hook may still return status 1 on a source-only resolver. Accept no
+          # output based on that status: close the identity first, then require
+          # the exact manifest and full commit-tree verification below.
+          set +e
           sudo -u qsolresolve env -i \
             HOME=/tmp/qsolresolve-home \
             PATH="$LEAN_HOME/bin:/usr/bin:/bin" \
             MATHLIB_NO_CACHE_ON_UPDATE=1 \
-            "$LEAN_HOME/bin/lake" update
+            "$LEAN_HOME/bin/lake" update \
+            2>&1 | tee /tmp/qsol-isolated-source-update.log
+          update_pipeline=("${PIPESTATUS[@]}")
+          set -e
+          test "${update_pipeline[1]}" -eq 0
+          update_status="${update_pipeline[0]}"
+          case "$update_status" in
+            0|1) ;;
+            *)
+              echo "Lake source resolution exited with unexpected status $update_status" >&2
+              exit "$update_status"
+              ;;
+          esac
 
           # No source byte or generated object is trusted until every resolver
           # descendant is gone and every inherited descriptor is closed.
@@ -207,6 +225,9 @@ jobs:
             --dependency-declaration lakefile.lean \
             --receipt .lean-cache/source-receipt.json \
             --write-receipt
+          if [ "$update_status" -ne 0 ]; then
+            echo "Lake post-update phase returned status ${update_status}; exact source and manifest verification accepted the resolved graph."
+          fi
           sudo rm -rf /tmp/qsolresolve-home
 
       - name: Freeze verified dependency source and open artifact-only slots
@@ -584,11 +605,24 @@ jobs:
           }
           terminate_qsolresolve
 
+          set +e
           sudo -u qsolresolve env -i \
             HOME=/tmp/qsolresolve-home \
             PATH="$LEAN_HOME/bin:/usr/bin:/bin" \
             MATHLIB_NO_CACHE_ON_UPDATE=1 \
-            "$LEAN_HOME/bin/lake" update
+            "$LEAN_HOME/bin/lake" update \
+            2>&1 | tee /tmp/qsol-cold-source-update.log
+          update_pipeline=("${PIPESTATUS[@]}")
+          set -e
+          test "${update_pipeline[1]}" -eq 0
+          update_status="${update_pipeline[0]}"
+          case "$update_status" in
+            0|1) ;;
+            *)
+              echo "Cold Lake source resolution exited with unexpected status $update_status" >&2
+              exit "$update_status"
+              ;;
+          esac
 
           # Permission changes cannot revoke inherited descriptors. Terminate
           # the dedicated resolver identity before validating or freezing any
@@ -614,6 +648,9 @@ jobs:
             --lake-manifest lake-manifest.json \
             --expected-manifest-sha256 "$EXPECTED_LAKE_MANIFEST_SHA256" \
             --dependency-declaration lakefile.lean
+          if [ "$update_status" -ne 0 ]; then
+            echo "Cold Lake post-update phase returned status ${update_status}; exact source and manifest verification accepted the resolved graph."
+          fi
           sudo chown -R root:root .lake/packages lake-manifest.json
           sudo chmod -R a-w .lake/packages lake-manifest.json
           sudo chown root:root .lake
