@@ -9,7 +9,7 @@ noncomputable section
 open Affine
 open scoped RealInnerProductSpace
 
-variable {V : Type*} [NormedAddCommGroup V] [InnerProductSpace ℝ V]
+variable {V : Type*} [NormedAddCommGroup V]
 
 private def mengerEdge01 (p : Fin 3 → V) : V :=
   p 1 - p 0
@@ -25,10 +25,12 @@ private theorem mengerEdge02_sub_edge01 (p : Fin 3 → V) :
   unfold mengerEdge02 mengerEdge01 mengerEdge12
   abel
 
+variable [InnerProductSpace ℝ V]
+
 /-- Gram determinant of the two edges based at the first point. -/
 noncomputable def mengerGramDet (p : Fin 3 → V) : ℝ :=
   ‖mengerEdge01 p‖ ^ 2 * ‖mengerEdge02 p‖ ^ 2 -
-    ⟪mengerEdge01 p, mengerEdge02 p⟫_ℝ ^ 2
+    (⟪mengerEdge01 p, mengerEdge02 p⟫_ℝ) ^ 2
 
 /-- Exact unsigned area of the ordered triangle.
 
@@ -62,9 +64,10 @@ private theorem circumcenter_sub_base_mem_span_edges (p : Fin 3 → V)
   classical
   let s : Affine.Simplex ℝ V 2 := ⟨p, h⟩
   have hcenter : s.circumcenter ∈ affineSpan ℝ (Set.range p) := by
-    simpa [s] using s.circumcenter_mem_affineSpan
+    change s.circumcenter ∈ affineSpan ℝ (Set.range s.points)
+    exact s.circumcenter_mem_affineSpan
   have hbase : p 0 ∈ affineSpan ℝ (Set.range p) :=
-    subset_affineSpan ℝ (Set.mem_range_self 0)
+    subset_affineSpan ℝ (Set.range p) (Set.mem_range_self 0)
   have hw : s.circumcenter - p 0 ∈ vectorSpan ℝ (Set.range p) := by
     rw [← direction_affineSpan]
     exact AffineSubspace.vsub_mem_direction hcenter hbase
@@ -101,31 +104,33 @@ private theorem four_mul_gramDet_mul_circumradius_sq (p : Fin 3 → V)
   let R : ℝ := s.circumradius
 
   have hwR : ‖w‖ = R := by
-    calc
-      ‖w‖ = dist s.circumcenter (p 0) := by
-        simp [w, dist_eq_norm]
-      _ = R := by
-        simpa [R] using s.dist_circumcenter_eq_circumradius' 0
+    change ‖s.circumcenter - s.points 0‖ = s.circumradius
+    rw [← dist_eq_norm]
+    exact s.dist_circumcenter_eq_circumradius' 0
 
   have huSub : u - w = p 1 - s.circumcenter := by
-    simp [u, w, mengerEdge01]
+    dsimp [u, w, mengerEdge01]
     abel
   have hvSub : v - w = p 2 - s.circumcenter := by
-    simp [v, w, mengerEdge02]
+    dsimp [v, w, mengerEdge02]
     abel
   have huR : ‖u - w‖ = R := by
-    rw [huSub, ← dist_eq_norm]
-    simpa [R] using s.dist_circumcenter_eq_circumradius 1
+    rw [huSub]
+    change ‖s.points 1 - s.circumcenter‖ = s.circumradius
+    rw [← dist_eq_norm]
+    exact s.dist_circumcenter_eq_circumradius 1
   have hvR : ‖v - w‖ = R := by
-    rw [hvSub, ← dist_eq_norm]
-    simpa [R] using s.dist_circumcenter_eq_circumradius 2
+    rw [hvSub]
+    change ‖s.points 2 - s.circumcenter‖ = s.circumradius
+    rw [← dist_eq_norm]
+    exact s.dist_circumcenter_eq_circumradius 2
 
-  have huw : ⟪u, w⟫_ℝ = ‖u‖ ^ 2 / 2 := by
+  have huw : (⟪u, w⟫_ℝ) = ‖u‖ ^ 2 / 2 := by
     have hsquare : ‖u - w‖ ^ 2 = ‖w‖ ^ 2 := by
       rw [huR, hwR]
     rw [norm_sub_sq_real] at hsquare
     nlinarith
-  have hvw : ⟪v, w⟫_ℝ = ‖v‖ ^ 2 / 2 := by
+  have hvw : (⟪v, w⟫_ℝ) = ‖v‖ ^ 2 / 2 := by
     have hsquare : ‖v - w‖ ^ 2 = ‖w‖ ^ 2 := by
       rw [hvR, hwR]
     rw [norm_sub_sq_real] at hsquare
@@ -136,10 +141,10 @@ private theorem four_mul_gramDet_mul_circumradius_sq (p : Fin 3 → V)
     simpa [u, v, w, s] using hab
 
   have hgram :
-      (‖u‖ ^ 2 * ‖v‖ ^ 2 - ⟪u, v⟫_ℝ ^ 2) * ‖w‖ ^ 2 =
-        ‖v‖ ^ 2 * ⟪u, w⟫_ℝ ^ 2 -
-          2 * ⟪u, v⟫_ℝ * ⟪u, w⟫_ℝ * ⟪v, w⟫_ℝ +
-            ‖u‖ ^ 2 * ⟪v, w⟫_ℝ ^ 2 := by
+      (‖u‖ ^ 2 * ‖v‖ ^ 2 - (⟪u, v⟫_ℝ) ^ 2) * ‖w‖ ^ 2 =
+        ‖v‖ ^ 2 * (⟪u, w⟫_ℝ) ^ 2 -
+          2 * (⟪u, v⟫_ℝ) * (⟪u, w⟫_ℝ) * (⟪v, w⟫_ℝ) +
+            ‖u‖ ^ 2 * (⟪v, w⟫_ℝ) ^ 2 := by
     rw [← real_inner_self_eq_norm_sq w, ← hab']
     simp [inner_add_left, inner_add_right, real_inner_smul_left,
       real_inner_smul_right, real_inner_self_eq_norm_sq, real_inner_comm]
@@ -147,24 +152,24 @@ private theorem four_mul_gramDet_mul_circumradius_sq (p : Fin 3 → V)
 
   have hedge :
       ‖mengerEdge12 p‖ ^ 2 =
-        ‖v‖ ^ 2 + ‖u‖ ^ 2 - 2 * ⟪u, v⟫_ℝ := by
+        ‖v‖ ^ 2 + ‖u‖ ^ 2 - 2 * (⟪u, v⟫_ℝ) := by
     rw [← mengerEdge02_sub_edge01 p]
     change ‖v - u‖ ^ 2 = _
     rw [norm_sub_sq_real, real_inner_comm v u]
     ring
 
   change
-    4 * (‖u‖ ^ 2 * ‖v‖ ^ 2 - ⟪u, v⟫_ℝ ^ 2) * R ^ 2 =
+    4 * (‖u‖ ^ 2 * ‖v‖ ^ 2 - (⟪u, v⟫_ℝ) ^ 2) * R ^ 2 =
       ‖u‖ ^ 2 * ‖mengerEdge12 p‖ ^ 2 * ‖v‖ ^ 2
   calc
-    4 * (‖u‖ ^ 2 * ‖v‖ ^ 2 - ⟪u, v⟫_ℝ ^ 2) * R ^ 2 =
-        4 * ((‖u‖ ^ 2 * ‖v‖ ^ 2 - ⟪u, v⟫_ℝ ^ 2) * ‖w‖ ^ 2) := by
+    4 * (‖u‖ ^ 2 * ‖v‖ ^ 2 - (⟪u, v⟫_ℝ) ^ 2) * R ^ 2 =
+        4 * ((‖u‖ ^ 2 * ‖v‖ ^ 2 - (⟪u, v⟫_ℝ) ^ 2) * ‖w‖ ^ 2) := by
           rw [hwR]
           ring
     _ = 4 *
-        (‖v‖ ^ 2 * ⟪u, w⟫_ℝ ^ 2 -
-          2 * ⟪u, v⟫_ℝ * ⟪u, w⟫_ℝ * ⟪v, w⟫_ℝ +
-            ‖u‖ ^ 2 * ⟪v, w⟫_ℝ ^ 2) := by rw [hgram]
+        (‖v‖ ^ 2 * (⟪u, w⟫_ℝ) ^ 2 -
+          2 * (⟪u, v⟫_ℝ) * (⟪u, w⟫_ℝ) * (⟪v, w⟫_ℝ) +
+            ‖u‖ ^ 2 * (⟪v, w⟫_ℝ) ^ 2) := by rw [hgram]
     _ = ‖u‖ ^ 2 * ‖mengerEdge12 p‖ ^ 2 * ‖v‖ ^ 2 := by
       rw [huw, hvw, hedge]
       ring
@@ -195,7 +200,8 @@ theorem mengerCurvature_of_affineIndependent (p : Fin 3 → V)
     dsimp [P, mengerSideProduct]
     positivity
   have hRpos : 0 < R := by
-    simpa [R, s] using s.circumradius_pos
+    change 0 < s.circumradius
+    exact s.circumradius_pos
 
   have hidentity :
       4 * D * R ^ 2 =
@@ -234,19 +240,6 @@ theorem mengerCurvature_of_affineIndependent (p : Fin 3 → V)
   change 4 * (Real.sqrt D / 2) / P = 1 / R
   field_simp [hPpos.ne', hRpos.ne']
   nlinarith [hroot]
-
-/-- The frozen area/side-length definition and reciprocal-circumradius
-presentation agree on both branches. -/
-theorem mengerCurvature_eq_circumradius (p : Fin 3 → V) :
-    mengerCurvature p = if h : AffineIndependent ℝ p then
-      1 / (⟨p, h⟩ : Affine.Simplex ℝ V 2).circumradius
-    else
-      0 := by
-  classical
-  by_cases h : AffineIndependent ℝ p
-  · rw [mengerCurvature_of_affineIndependent p h]
-    simp [h]
-  · simp [mengerCurvature, h]
 
 /-- Affine Euclidean isometries preserve exact project Menger curvature. -/
 theorem mengerCurvature_affineIsometry (f : V →ᵃⁱ[ℝ] V) (p : Fin 3 → V) :
