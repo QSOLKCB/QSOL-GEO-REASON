@@ -145,8 +145,10 @@ private theorem four_mul_gramDet_mul_circumradius_sq (p : Fin 3 → V)
           2 * inner ℝ u v * inner ℝ u w * inner ℝ v w +
             ‖u‖ ^ 2 * (inner ℝ v w) ^ 2 := by
     rw [← real_inner_self_eq_norm_sq w, ← hab']
-    simp [inner_add_left, inner_add_right, real_inner_smul_left,
-      real_inner_smul_right, real_inner_self_eq_norm_sq, real_inner_comm]
+    simp only [inner_add_left, inner_add_right, real_inner_smul_left,
+      real_inner_smul_right]
+    simp only [real_inner_self_eq_norm_sq]
+    rw [real_inner_comm v u]
     ring
 
   have hedge :
