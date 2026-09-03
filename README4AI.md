@@ -228,7 +228,7 @@ Do not:
 
 ## Lean workflow authority
 
-`lean-phase1` is a pull-request-only verified-cache regression lane. It is not a release-grade cold authority.
+`lean-phase1` is the verified-cache regression and cache-maintenance lane. Pull-request runs validate the current candidate; relevant pushes to `main` and manual dispatches may populate the same authenticated source/build cache identities so later pull requests are not dependent on a branch-local first-build race. These cache-maintenance runs do **not** acquire release-grade cold authority.
 
 The sole release-grade cold proof authority is the manually dispatched `lean-isolated-audit / isolated-cold-trust` job. The protected audit imports `GeoReason` without executing project initializers, verifies all twelve target declarations are theorems, and restricts transitive axioms to `propext`, `Classical.choice`, and `Quot.sound`.
 
