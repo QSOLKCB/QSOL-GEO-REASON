@@ -73,6 +73,7 @@ def execute_capture(
         if type(backend) is not HuggingFacePyTorchBackend:
             raise CaptureContractError("OBSERVATION capture requires the concrete HuggingFacePyTorchBackend")
         backend.assert_execution_request(validated)
+        backend._observed_hidden_state_dtypes.clear()
     steps, prefix_ids = _capture_steps(validated, backend)
     observed = dict(backend.metadata())
     if evidence_class == "SIMULATION":
