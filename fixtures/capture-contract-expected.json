@@ -4,8 +4,8 @@
   "production_artifact_evidence_class": "OBSERVATION",
   "implementation_revision": "dddddddddddddddddddddddddddddddddddddddd",
   "expected_run_manifest_id": "7649a13b0eef2e2a3067c4f654b43336c0217eda82c27da62c6f42c1daa2d1c7",
-  "expected_manifest_sha256": "da9bd22c4a7f6ff2354252882c60ffc2cb896e75e21340e029b48b726f8b656b",
-  "expected_trajectory_sha256": "9221e532f48f832a3869a3ffa3023ce49e59e161d70834220bb7f49afbbd22c9",
+  "expected_manifest_sha256": "53bdee4916f52432754b829b42d4dc327bb5a354efb04706aec14aed6a8aae33",
+  "expected_trajectory_sha256": "e84ce30ac42bf3be440ec20e5e3c5705df0e9da97488d30081b1d312015c38ea",
   "expected_changed_token_spans": [[1, 4], [4, 7]],
   "note": "These values come from a deterministic fake/test-double backend and validate software contracts only. They are not empirical hidden-state evidence from an LLM."
 }
