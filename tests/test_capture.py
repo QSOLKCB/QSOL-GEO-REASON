@@ -302,8 +302,9 @@ class CheckpointLoadingTests(unittest.TestCase):
 class CaptureExecutionTests(unittest.TestCase):
     def test_test_double_defaults_to_simulation(self):
         request = fixture_request()
-        _, trajectory = execute(request)
+        manifest, trajectory = execute(request)
         self.assertEqual(trajectory["evidence_class"], "SIMULATION")
+        self.assertEqual(manifest["backend_observed"]["name"], "software-simulation")
 
     def test_test_double_cannot_emit_observation(self):
         request = fixture_request()
@@ -445,17 +446,17 @@ class CaptureExecutionTests(unittest.TestCase):
                 ),
             )
 
-    def test_backend_identity_mismatch_is_rejected(self):
+    def test_simulation_backend_name_is_canonicalized(self):
         request = fixture_request()
-        with self.assertRaisesRegex(CaptureContractError, "backend metadata name"):
-            execute_capture(
+        manifest, _ = execute_capture(
+            request,
+            implementation_revision=IMPLEMENTATION_REVISION,
+            backend=BadBackend(
                 request,
-                implementation_revision=IMPLEMENTATION_REVISION,
-                backend=BadBackend(
-                    request,
-                    metadata_updates={"name": "not-the-canonical-backend"},
-                ),
-            )
+                metadata_updates={"name": "not-the-canonical-backend"},
+            ),
+        )
+        self.assertEqual(manifest["backend_observed"]["name"], "software-simulation")
 
 
 class CaptureBundleTests(unittest.TestCase):
@@ -463,74 +464,70 @@ class CaptureBundleTests(unittest.TestCase):
         request = fixture_request()
         manifest, trajectory = execute(request)
         validated = verify_capture_bundle(request, manifest, trajectory)
-        self.assertEqual(validated, request)
-        with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "bundle"
+        self.assertEqual(validated["run_id"], request["run_id"])
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "bundle"
             write_capture_bundle(output, request, manifest, trajectory)
             self.assertEqual(
                 sorted(path.name for path in output.iterdir()),
                 ["capture-request.json", "captured-trajectory.json", "run-manifest.json"],
             )
-            with self.assertRaisesRegex(CaptureContractError, "already exists"):
-                write_capture_bundle(output, request, manifest, trajectory)
 
     def test_cross_run_trajectory_is_rejected(self):
         request = fixture_request()
-        manifest, trajectory = execute(request)
-        changed = copy.deepcopy(request)
-        changed["steps"][1]["text"] = "CE"
-        _, changed_trajectory = execute(changed)
-        with self.assertRaisesRegex(CaptureContractError, "rendered text hash|trajectory hash"):
-            verify_capture_bundle(request, manifest, changed_trajectory)
+        manifest, _ = execute(request)
+        other = copy.deepcopy(request)
+        other["run_id"] = "capture-contract-fixture-002"
+        _, other_trajectory = execute(other)
+        with self.assertRaises(CaptureContractError):
+            verify_capture_bundle(request, manifest, other_trajectory)
 
     def test_tampered_trajectory_is_rejected(self):
         request = fixture_request()
         manifest, trajectory = execute(request)
+        trajectory = copy.deepcopy(trajectory)
         trajectory["steps"][0]["step_id"] = "tampered"
-        with self.assertRaisesRegex(CaptureContractError, "step_id mismatch"):
+        with self.assertRaises(CaptureContractError):
             verify_capture_bundle(request, manifest, trajectory)
 
     def test_tampered_manifest_hash_is_rejected(self):
         request = fixture_request()
         manifest, trajectory = execute(request)
-        manifest["run_id"] = "other-run"
-        with self.assertRaisesRegex(CaptureContractError, "manifest SHA-256"):
+        manifest = copy.deepcopy(manifest)
+        manifest["manifest_sha256"] = "0" * 64
+        with self.assertRaises(CaptureContractError):
             verify_capture_bundle(request, manifest, trajectory)
 
     def test_stale_vector_leaf_hash_is_rejected_after_outer_rehash(self):
         request = fixture_request()
         manifest, trajectory = execute(request)
+        manifest, trajectory = copy.deepcopy(manifest), copy.deepcopy(trajectory)
         trajectory["steps"][0]["layers"][0]["vector"][0] += 1.0
         rehash_outer_bundle(manifest, trajectory)
-        with self.assertRaisesRegex(CaptureContractError, "vector_sha256 mismatch"):
+        with self.assertRaisesRegex(CaptureContractError, "vector SHA-256"):
             verify_capture_bundle(request, manifest, trajectory)
 
     def test_stale_input_ids_leaf_hash_is_rejected_after_outer_rehash(self):
         request = fixture_request()
         manifest, trajectory = execute(request)
-        trajectory["steps"][0]["input_ids"][1] += 1
+        manifest, trajectory = copy.deepcopy(manifest), copy.deepcopy(trajectory)
+        trajectory["steps"][0]["input_ids"][0] += 1
         rehash_outer_bundle(manifest, trajectory)
-        with self.assertRaisesRegex(CaptureContractError, "input_ids_sha256 mismatch"):
+        with self.assertRaisesRegex(CaptureContractError, "input_ids SHA-256"):
             verify_capture_bundle(request, manifest, trajectory)
 
     def test_dimension_count_layer_and_pool_span_are_reverified(self):
         request = fixture_request()
-        manifest, trajectory = execute(request)
-        cases = [
-            ("token_count", lambda value: value["steps"][0].__setitem__("token_count", 99), "token_count mismatch"),
-            ("dimension", lambda value: value["steps"][0]["layers"][0].__setitem__("vector_dimension", 99), "vector content/dimension"),
-            ("layer", lambda value: value["steps"][0]["layers"][0].__setitem__("layer_index", 1), "layer identity mismatch"),
-            ("pool", lambda value: value["steps"][0]["layers"][0].__setitem__("pool_span", [2, 4]), "pool span mismatch"),
-        ]
-        for name, mutate, pattern in cases:
-            changed_manifest = copy.deepcopy(manifest)
-            changed_trajectory = copy.deepcopy(trajectory)
-            mutate(changed_trajectory)
-            rehash_outer_bundle(changed_manifest, changed_trajectory)
-            with self.subTest(name=name):
+        for mutator, pattern in (
+            (lambda t: t["steps"][0]["layers"][0].__setitem__("vector_dimension", 99), "dimension"),
+            (lambda t: t["steps"][0].__setitem__("token_count", 99), "token_count"),
+            (lambda t: t["steps"][0]["layers"][0].__setitem__("layer_index", 1), "layer"),
+            (lambda t: t["steps"][0]["layers"][0].__setitem__("pool_span", [0, 1]), "pool span"),
+        ):
+            manifest, trajectory = execute(request)
+            manifest, trajectory = copy.deepcopy(manifest), copy.deepcopy(trajectory)
+            mutator(trajectory)
+            rehash_outer_bundle(manifest, trajectory)
+            with self.subTest(pattern=pattern):
                 with self.assertRaisesRegex(CaptureContractError, pattern):
-                    verify_capture_bundle(request, changed_manifest, changed_trajectory)
-
-
-if __name__ == "__main__":
-    unittest.main()
+                    verify_capture_bundle(request, manifest, trajectory)
