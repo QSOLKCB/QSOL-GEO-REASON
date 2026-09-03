@@ -3,13 +3,19 @@ from __future__ import annotations
 import copy
 import json
 import math
+import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from qsol_geo_reason.capture import (
     CaptureContractError,
+    _quantization_reasons,
+    _validate_loading_info,
     execute_capture,
     validate_capture_request,
+    verify_capture_bundle,
+    write_capture_bundle,
 )
 
 
@@ -24,18 +30,25 @@ class FakeBackend:
 
     def __init__(self, request: dict):
         self.request = request
+        self.requested_layer_calls: list[tuple[int, ...]] = []
 
     def tokenize(self, text: str) -> list[int]:
         return [ord(ch) for ch in text]
 
-    def hidden_states(self, input_ids):
-        return [
-            [
+    def hidden_states(self, input_ids, layer_indices):
+        self.requested_layer_calls.append(tuple(layer_indices))
+        if any(index < 0 or index >= 3 for index in layer_indices):
+            bad = next(index for index in layer_indices if index < 0 or index >= 3)
+            raise CaptureContractError(
+                f"requested layer {bad} outside backend hidden_states range [0, 2]"
+            )
+        return {
+            layer_index: [
                 [float(token_id + layer_index), float(token_id * (layer_index + 1))]
                 for token_id in input_ids
             ]
-            for layer_index in range(3)
-        ]
+            for layer_index in layer_indices
+        }
 
     def metadata(self):
         return {
@@ -65,8 +78,8 @@ class BadBackend(FakeBackend):
         value.update(self.metadata_updates)
         return value
 
-    def hidden_states(self, input_ids):
-        states = super().hidden_states(input_ids)
+    def hidden_states(self, input_ids, layer_indices):
+        states = super().hidden_states(input_ids, layer_indices)
         if self.state_mutator is not None:
             self.state_mutator(states)
         return states
@@ -76,11 +89,12 @@ def fixture_request() -> dict:
     return json.loads(FIXTURE_REQUEST.read_text(encoding="utf-8"))
 
 
-def execute(request: dict):
+def execute(request: dict, backend=None):
+    selected_backend = backend or FakeBackend(request)
     return execute_capture(
         request,
         implementation_revision=IMPLEMENTATION_REVISION,
-        backend=FakeBackend(request),
+        backend=selected_backend,
     )
 
 
@@ -92,6 +106,12 @@ class CaptureValidationTests(unittest.TestCase):
         self.assertEqual(validated["protocol_id"], "GEO-CAP-001")
         self.assertEqual(validated["model"]["revision"], "a" * 40)
         self.assertEqual(request["model"]["revision"], "A" * 40)
+
+    def test_non_object_json_roots_are_rejected(self):
+        for root in (None, [], [["protocol_id", "GEO-CAP-001"]], "text", 1):
+            with self.subTest(root=root):
+                with self.assertRaisesRegex(CaptureContractError, "must be an object"):
+                    validate_capture_request(root)  # type: ignore[arg-type]
 
     def test_unknown_root_field_is_rejected(self):
         request = fixture_request()
@@ -115,7 +135,7 @@ class CaptureValidationTests(unittest.TestCase):
         request = fixture_request()
         request["model"]["tokenizer_revision_kind"] = "branch"
         with self.assertRaisesRegex(CaptureContractError, "tokenizer_revision_kind"):
-            validate_capture_request_request = validate_capture_request(request)
+            validate_capture_request(request)
 
     def test_canonical_backend_requires_local_only(self):
         request = fixture_request()
@@ -129,7 +149,7 @@ class CaptureValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(CaptureContractError, "trust_remote_code"):
             validate_capture_request(request)
 
-    def test_canonical_backend_forbids_quantization(self):
+    def test_canonical_backend_forbids_declared_quantization(self):
         request = fixture_request()
         request["backend"]["quantization"] = "int8"
         with self.assertRaisesRegex(CaptureContractError, "quantization"):
@@ -151,6 +171,55 @@ class CaptureValidationTests(unittest.TestCase):
             validate_capture_request(request)
 
 
+class CheckpointLoadingTests(unittest.TestCase):
+    def test_clean_loading_info_is_accepted(self):
+        _validate_loading_info(
+            {
+                "missing_keys": [],
+                "unexpected_keys": [],
+                "mismatched_keys": [],
+                "error_msgs": [],
+            }
+        )
+
+    def test_missing_or_unexpected_weights_are_rejected(self):
+        for key in ("missing_keys", "unexpected_keys", "mismatched_keys", "error_msgs"):
+            info = {name: [] for name in ("missing_keys", "unexpected_keys", "mismatched_keys", "error_msgs")}
+            info[key] = ["bad-entry"]
+            with self.subTest(key=key):
+                with self.assertRaisesRegex(CaptureContractError, "not exact"):
+                    _validate_loading_info(info)
+
+    def test_embedded_quantization_signals_are_rejected(self):
+        clean = SimpleNamespace(
+            config=SimpleNamespace(quantization_config=None),
+            is_quantized=False,
+            hf_quantizer=None,
+        )
+        self.assertEqual(_quantization_reasons(clean), [])
+
+        cases = [
+            SimpleNamespace(
+                config=SimpleNamespace(quantization_config={"bits": 8}),
+                is_quantized=False,
+                hf_quantizer=None,
+            ),
+            SimpleNamespace(
+                config=SimpleNamespace(quantization_config=None),
+                is_quantized=True,
+                hf_quantizer=None,
+            ),
+            SimpleNamespace(
+                config=SimpleNamespace(quantization_config=None),
+                is_quantized=False,
+                hf_quantizer=object(),
+            ),
+        ]
+        for model in cases:
+            with self.subTest(model=model):
+                self.assertTrue(_quantization_reasons(model))
+
+
 class CaptureExecutionTests(unittest.TestCase):
     def test_test_double_defaults_to_simulation(self):
         request = fixture_request()
@@ -167,6 +236,13 @@ class CaptureExecutionTests(unittest.TestCase):
                 evidence_class="OBSERVATION",
             )
 
+    def test_backend_receives_only_requested_layers(self):
+        request = fixture_request()
+        request["capture"]["layers"] = [2]
+        backend = FakeBackend(request)
+        execute(request, backend=backend)
+        self.assertEqual(backend.requested_layer_calls, [(2,), (2,)])
+
     def test_cumulative_token_spans_are_explicit(self):
         request = fixture_request()
         _, trajectory = execute(request)
@@ -182,8 +258,10 @@ class CaptureExecutionTests(unittest.TestCase):
         request = fixture_request()
         request["capture"]["context_mode"] = "isolated"
         _, trajectory = execute(request)
-        spans = [step["changed_token_span"] for step in trajectory["steps"]]
-        self.assertEqual(spans, [[1, 4], [1, 4]])
+        self.assertEqual(
+            [step["changed_token_span"] for step in trajectory["steps"]],
+            [[1, 4], [1, 4]],
+        )
 
     def test_step_mean_uses_changed_span(self):
         request = fixture_request()
@@ -219,10 +297,7 @@ class CaptureExecutionTests(unittest.TestCase):
         self.assertEqual(trajectory["evidence_class"], "SIMULATION")
         self.assertEqual(manifest["run_manifest_id"], expected["expected_run_manifest_id"])
         self.assertEqual(manifest["manifest_sha256"], expected["expected_manifest_sha256"])
-        self.assertEqual(
-            trajectory["trajectory_sha256"],
-            expected["expected_trajectory_sha256"],
-        )
+        self.assertEqual(trajectory["trajectory_sha256"], expected["expected_trajectory_sha256"])
         self.assertEqual(
             [step["changed_token_span"] for step in trajectory["steps"]],
             expected["expected_changed_token_spans"],
@@ -234,17 +309,14 @@ class CaptureExecutionTests(unittest.TestCase):
         manifest_b, trajectory_b = execute(copy.deepcopy(request))
         self.assertEqual(manifest_a, manifest_b)
         self.assertEqual(trajectory_a, trajectory_b)
-
         changed = copy.deepcopy(request)
         changed["steps"][1]["text"] = "CE"
         changed_manifest, changed_trajectory = execute(changed)
         self.assertNotEqual(
-            trajectory_a["trajectory_sha256"],
-            changed_trajectory["trajectory_sha256"],
+            trajectory_a["trajectory_sha256"], changed_trajectory["trajectory_sha256"]
         )
         self.assertNotEqual(
-            manifest_a["manifest_sha256"],
-            changed_manifest["manifest_sha256"],
+            manifest_a["manifest_sha256"], changed_manifest["manifest_sha256"]
         )
 
     def test_missing_requested_layer_is_rejected(self):
@@ -301,6 +373,44 @@ class CaptureExecutionTests(unittest.TestCase):
                     metadata_updates={"name": "not-the-canonical-backend"},
                 ),
             )
+
+
+class CaptureBundleTests(unittest.TestCase):
+    def test_valid_bundle_verifies_and_writes(self):
+        request = fixture_request()
+        manifest, trajectory = execute(request)
+        validated = verify_capture_bundle(request, manifest, trajectory)
+        self.assertEqual(validated, request)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            write_capture_bundle(output, request, manifest, trajectory)
+            self.assertEqual(
+                sorted(path.name for path in output.iterdir()),
+                ["capture-request.json", "captured-trajectory.json", "run-manifest.json"],
+            )
+
+    def test_cross_run_trajectory_is_rejected(self):
+        request = fixture_request()
+        manifest, trajectory = execute(request)
+        changed = copy.deepcopy(request)
+        changed["steps"][1]["text"] = "CE"
+        _, changed_trajectory = execute(changed)
+        with self.assertRaisesRegex(CaptureContractError, "trajectory hash"):
+            verify_capture_bundle(request, manifest, changed_trajectory)
+
+    def test_tampered_trajectory_hash_is_rejected(self):
+        request = fixture_request()
+        manifest, trajectory = execute(request)
+        trajectory["steps"][0]["step_id"] = "tampered"
+        with self.assertRaisesRegex(CaptureContractError, "trajectory SHA-256"):
+            verify_capture_bundle(request, manifest, trajectory)
+
+    def test_tampered_manifest_hash_is_rejected(self):
+        request = fixture_request()
+        manifest, trajectory = execute(request)
+        manifest["run_id"] = "other-run"
+        with self.assertRaisesRegex(CaptureContractError, "manifest SHA-256"):
+            verify_capture_bundle(request, manifest, trajectory)
 
 
 if __name__ == "__main__":
