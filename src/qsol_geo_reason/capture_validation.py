@@ -53,8 +53,8 @@ def validate_capture_request(request: Mapping[str, Any]) -> dict[str, Any]:
     if _require_bool(backend["trust_remote_code"], "backend.trust_remote_code") is not False:
         raise CaptureContractError("backend.trust_remote_code must be false")
     device = _require_nonempty_string(backend["device"], "backend.device")
-    if device.startswith("cuda") and not _CUDA_DEVICE.fullmatch(device):
-        raise CaptureContractError("canonical CUDA capture requires backend.device='cuda:N' with an explicit non-negative device index")
+    if device not in {"cpu", "mps"} and not _CUDA_DEVICE.fullmatch(device):
+        raise CaptureContractError("backend.device must be one of 'cpu', 'mps', or 'cuda:N' with an explicit non-negative CUDA index")
     if backend["dtype"] not in _ALLOWED_DTYPES:
         raise CaptureContractError(f"backend.dtype must be one of {sorted(_ALLOWED_DTYPES)}")
     if backend["quantization"] != "none":
