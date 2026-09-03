@@ -16,7 +16,7 @@
     "backend_observed": {"$ref": "#/$defs/backendObserved"},
     "capture": {"$ref": "#/$defs/capture"},
     "determinism": {"$ref": "#/$defs/determinism"},
-    "generation_parameters": {"type": "object"},
+    "generation_parameters": {"$ref": "#/$defs/generationParameters"},
     "run_manifest_id": {"$ref": "#/$defs/sha256"},
     "artifacts": {
       "type": "object",
@@ -34,15 +34,21 @@
     "gitSha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "nullableString": {"type": ["string", "null"]},
     "nullableInteger": {"type": ["integer", "null"]},
+    "hubRepoId": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 96,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
     "model": {
       "type": "object",
       "additionalProperties": false,
       "required": ["identifier", "revision", "revision_kind", "tokenizer_identifier", "tokenizer_revision", "tokenizer_revision_kind"],
       "properties": {
-        "identifier": {"type": "string", "minLength": 1},
+        "identifier": {"$ref": "#/$defs/hubRepoId"},
         "revision": {"$ref": "#/$defs/gitSha"},
         "revision_kind": {"const": "hf_commit"},
-        "tokenizer_identifier": {"type": "string", "minLength": 1},
+        "tokenizer_identifier": {"$ref": "#/$defs/hubRepoId"},
         "tokenizer_revision": {"$ref": "#/$defs/gitSha"},
         "tokenizer_revision_kind": {"const": "hf_commit"}
       }
@@ -85,6 +91,12 @@
       "required": ["mode", "seed"],
       "properties": {"mode": {"enum": ["required", "best_effort"]}, "seed": {"type": "integer", "minimum": 0}}
     },
+    "generationParameters": {
+      "type": "object",
+      "required": ["generation_used"],
+      "properties": {"generation_used": {"const": false}},
+      "additionalProperties": {"type": "null"}
+    },
     "backendObserved": {
       "type": "object",
       "additionalProperties": true,
@@ -103,12 +115,21 @@
         "model_reports_quantized",
         "attention_implementation",
         "device",
+        "cpu_machine",
+        "cpu_processor",
+        "cpu_instruction_flags",
+        "torch_num_threads",
+        "torch_num_interop_threads",
+        "omp_num_threads",
+        "mkl_num_threads",
         "cuda_device_name",
         "cuda_device_capability",
         "cuda_build_version",
         "cudnn_version",
         "nvidia_driver_version",
         "dtype",
+        "observed_hidden_state_dtypes",
+        "pool_accumulation_dtype",
         "quantization",
         "offloading",
         "local_files_only",
@@ -136,12 +157,30 @@
         "model_reports_quantized": {"const": false},
         "attention_implementation": {"$ref": "#/$defs/nullableString"},
         "device": {"type": "string", "minLength": 1},
+        "cpu_machine": {"$ref": "#/$defs/nullableString"},
+        "cpu_processor": {"$ref": "#/$defs/nullableString"},
+        "cpu_instruction_flags": {"$ref": "#/$defs/nullableString"},
+        "torch_num_threads": {"$ref": "#/$defs/nullableInteger"},
+        "torch_num_interop_threads": {"$ref": "#/$defs/nullableInteger"},
+        "omp_num_threads": {"$ref": "#/$defs/nullableString"},
+        "mkl_num_threads": {"$ref": "#/$defs/nullableString"},
         "cuda_device_name": {"$ref": "#/$defs/nullableString"},
         "cuda_device_capability": {"$ref": "#/$defs/nullableString"},
         "cuda_build_version": {"$ref": "#/$defs/nullableString"},
         "cudnn_version": {"$ref": "#/$defs/nullableInteger"},
         "nvidia_driver_version": {"$ref": "#/$defs/nullableString"},
         "dtype": {"enum": ["float32", "float16", "bfloat16"]},
+        "observed_hidden_state_dtypes": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"type": "string", "minLength": 1}
+          }
+        },
+        "pool_accumulation_dtype": {"const": "float64"},
         "quantization": {"const": "none"},
         "offloading": {"const": "none"},
         "local_files_only": {"const": true},
