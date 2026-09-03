@@ -21,6 +21,7 @@ from .capture_common import (
     _require_exact_keys,
     _require_git_sha,
     _require_nonempty_string,
+    _require_nonnegative_int,
     _require_object,
     _sha256_text,
     _validate_token_ids,
@@ -112,7 +113,8 @@ def verify_capture_bundle(request: Mapping[str, Any], manifest: Mapping[str, Any
         if not isinstance(step, dict):
             raise CaptureContractError(f"trajectory step {index} is not an object")
         _require_exact_keys(step, required={"step_index", "step_id", "rendered_text_sha256", "input_ids", "input_ids_sha256", "token_count", "changed_token_span", "phase", "layers"}, where=f"trajectory step {index}")
-        if step["step_index"] != index:
+        step_index = _require_nonnegative_int(step["step_index"], f"trajectory step {index}.step_index")
+        if step_index != index:
             raise CaptureContractError(f"trajectory step_index mismatch at {index}")
         if step["step_id"] != request_step["step_id"]:
             raise CaptureContractError(f"trajectory step_id mismatch at {index}")
@@ -128,7 +130,8 @@ def verify_capture_bundle(request: Mapping[str, Any], manifest: Mapping[str, Any
         if step["rendered_text_sha256"] != _sha256_text(rendered):
             raise CaptureContractError(f"rendered text hash mismatch at step {index}")
         input_ids = _validate_token_ids(step["input_ids"], f"trajectory step {index}")
-        if step["token_count"] != len(input_ids):
+        token_count = _require_nonnegative_int(step["token_count"], f"trajectory step {index}.token_count")
+        if token_count != len(input_ids):
             raise CaptureContractError(f"token_count mismatch at step {index}")
         if step["input_ids_sha256"] != sha256_json(input_ids):
             raise CaptureContractError(f"input_ids SHA-256 mismatch at step {index}")
@@ -144,7 +147,8 @@ def verify_capture_bundle(request: Mapping[str, Any], manifest: Mapping[str, Any
             if not isinstance(record, dict):
                 raise CaptureContractError(f"trajectory step {index} layer {position} is not an object")
             _require_exact_keys(record, required={"layer_index", "vector_dimension", "observed_dtype", "pool_span", "vector", "vector_sha256"}, where=f"trajectory step {index} layer {position}")
-            if record["layer_index"] != requested_layer:
+            layer_index = _require_nonnegative_int(record["layer_index"], f"trajectory step {index} layer {position}.layer_index")
+            if layer_index != requested_layer:
                 raise CaptureContractError(f"layer identity mismatch at step {index} position {position}")
             dim = record["vector_dimension"]
             if isinstance(dim, bool) or not isinstance(dim, int) or dim < 1:
