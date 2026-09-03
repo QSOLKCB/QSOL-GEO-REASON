@@ -34,14 +34,29 @@ class HuggingFacePyTorchBackend:
         self._torch = torch
         self._transformers = transformers
         self._observed_hidden_state_dtypes: dict[int, set[str]] = {}
+        self._last_sdpa_policy: dict[str, bool | None] | None = None
         backend, model_cfg, determinism = validated["backend"], validated["model"], validated["determinism"]
         dtype_map = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
         self._device = backend["device"]
+        self._device_type = self._device.split(":", 1)[0]
         self._dtype_name = backend["dtype"]
         self._determinism_mode = determinism["mode"]
         self._applied_seed = determinism["seed"]
         self._model_identifier = model_cfg["identifier"]
+        self._model_revision = model_cfg["revision"]
         self._tokenizer_identifier = model_cfg["tokenizer_identifier"]
+        self._tokenizer_revision = model_cfg["tokenizer_revision"]
+        self._cuda_resolved_device_index: int | None = None
+        if self._device_type == "cuda":
+            self._cuda_resolved_device_index = int(self._device.split(":", 1)[1])
+            if not torch.cuda.is_available():
+                raise CaptureContractError("canonical CUDA capture requested but CUDA is unavailable")
+            if self._cuda_resolved_device_index >= int(torch.cuda.device_count()):
+                raise CaptureContractError(
+                    f"canonical CUDA device index {self._cuda_resolved_device_index} is outside available range"
+                )
+        self._assert_mps_execution_policy()
+        self._assert_autocast_disabled()
 
         torch.manual_seed(self._applied_seed)
         if torch.cuda.is_available():
@@ -51,6 +66,8 @@ class HuggingFacePyTorchBackend:
 
         model_snapshot = Path(snapshot_download(repo_id=model_cfg["identifier"], revision=model_cfg["revision"], local_files_only=True))
         tokenizer_snapshot = Path(snapshot_download(repo_id=model_cfg["tokenizer_identifier"], revision=model_cfg["tokenizer_revision"], local_files_only=True))
+        model_hashes_before = _snapshot_file_hashes(model_snapshot, model_cfg["revision"], "model")
+        tokenizer_hashes_before = _snapshot_file_hashes(tokenizer_snapshot, model_cfg["tokenizer_revision"], "tokenizer")
 
         self._tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_snapshot), local_files_only=True, trust_remote_code=False)
         loaded = AutoModelForCausalLM.from_pretrained(
@@ -65,33 +82,104 @@ class HuggingFacePyTorchBackend:
         if quantization:
             raise CaptureContractError("canonical capture forbids checkpoint/config quantization; detected: " + ", ".join(quantization))
 
-        self._model_snapshot_hashes = _snapshot_file_hashes(model_snapshot, model_cfg["revision"], "model")
-        self._tokenizer_snapshot_hashes = _snapshot_file_hashes(tokenizer_snapshot, model_cfg["tokenizer_revision"], "tokenizer")
+        model_hashes_after = _snapshot_file_hashes(model_snapshot, model_cfg["revision"], "model")
+        tokenizer_hashes_after = _snapshot_file_hashes(tokenizer_snapshot, model_cfg["tokenizer_revision"], "tokenizer")
+        if model_hashes_before != model_hashes_after:
+            raise CaptureContractError("model snapshot changed while canonical checkpoint was loading")
+        if tokenizer_hashes_before != tokenizer_hashes_after:
+            raise CaptureContractError("tokenizer snapshot changed while canonical tokenizer was loading")
+        self._model_snapshot_hashes = model_hashes_after
+        self._tokenizer_snapshot_hashes = tokenizer_hashes_after
         self._base_model, self._block_path, self._blocks = _resolve_hidden_state_layout(self._model)
         self._hidden_state_count = len(self._blocks) + 1
         self._checkpoint_loading_clean = True
         self._attention_implementation = getattr(self._model.config, "_attn_implementation", None)
-        if str(self._device).startswith("cuda") and self._attention_implementation == "sdpa":
+        if self._device_type == "cuda" and self._attention_implementation == "sdpa":
             self._force_sdpa_math_policy()
         self._model.to(self._device)
         self._model.eval()
 
     def assert_execution_request(self, request: Mapping[str, Any]) -> None:
         """Refuse reuse when construction-bound request identity differs."""
-        seed = request["determinism"]["seed"]
-        if seed != self._applied_seed:
+        determinism = request["determinism"]
+        if determinism["seed"] != self._applied_seed:
             raise CaptureContractError(
-                f"backend applied seed {self._applied_seed} does not match execution request seed {seed}"
+                f"backend applied seed {self._applied_seed} does not match execution request seed {determinism['seed']}"
             )
+        if determinism["mode"] != self._determinism_mode:
+            raise CaptureContractError("backend determinism mode does not match execution request")
         model_cfg = request["model"]
-        if model_cfg["identifier"] != self._model_identifier:
-            raise CaptureContractError(
-                "backend model repository identity does not match execution request"
-            )
-        if model_cfg["tokenizer_identifier"] != self._tokenizer_identifier:
-            raise CaptureContractError(
-                "backend tokenizer repository identity does not match execution request"
-            )
+        expected_model = (
+            self._model_identifier, self._model_revision,
+            self._tokenizer_identifier, self._tokenizer_revision,
+        )
+        requested_model = (
+            model_cfg["identifier"], model_cfg["revision"],
+            model_cfg["tokenizer_identifier"], model_cfg["tokenizer_revision"],
+        )
+        if requested_model != expected_model:
+            raise CaptureContractError("backend model/tokenizer identity does not match execution request")
+        backend = request["backend"]
+        if backend["device"] != self._device or backend["dtype"] != self._dtype_name:
+            raise CaptureContractError("backend device/dtype does not match execution request")
+
+    @staticmethod
+    def _env_flag_enabled(value: str | None) -> bool:
+        return value is not None and value.strip().lower() not in {"", "0", "false", "no", "off"}
+
+    def _assert_mps_execution_policy(self) -> None:
+        if self._device_type != "mps":
+            return
+        fallback = os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK")
+        fast_math = os.environ.get("PYTORCH_MPS_FAST_MATH")
+        if self._env_flag_enabled(fallback):
+            raise CaptureContractError("canonical MPS capture forbids PYTORCH_ENABLE_MPS_FALLBACK")
+        if self._env_flag_enabled(fast_math):
+            raise CaptureContractError("canonical MPS capture forbids PYTORCH_MPS_FAST_MATH")
+
+    def _autocast_enabled(self) -> bool:
+        torch = self._torch
+        checker = getattr(torch, "is_autocast_enabled", None)
+        if callable(checker):
+            try:
+                return bool(checker(self._device_type))
+            except TypeError:
+                if self._device_type == "cuda":
+                    return bool(checker())
+        if self._device_type == "cpu":
+            legacy = getattr(torch, "is_autocast_cpu_enabled", None)
+            if callable(legacy):
+                return bool(legacy())
+        return False
+
+    def _assert_autocast_disabled(self) -> None:
+        if self._autocast_enabled():
+            raise CaptureContractError("canonical capture forbids ambient torch autocast")
+
+    def _sdpa_policy_state(self) -> dict[str, bool | None]:
+        cuda_backend = getattr(self._torch.backends, "cuda", None)
+        if cuda_backend is None:
+            raise CaptureContractError("CUDA SDPA backend controls are unavailable")
+        result: dict[str, bool | None] = {}
+        for key, name in (
+            ("flash", "flash_sdp_enabled"),
+            ("mem_efficient", "mem_efficient_sdp_enabled"),
+            ("math", "math_sdp_enabled"),
+            ("cudnn", "cudnn_sdp_enabled"),
+        ):
+            query = getattr(cuda_backend, name, None)
+            if key != "cudnn" and not callable(query):
+                raise CaptureContractError(f"canonical CUDA SDPA policy requires torch.backends.cuda.{name}")
+            result[key] = bool(query()) if callable(query) else None
+        return result
+
+    def _assert_sdpa_math_policy(self) -> dict[str, bool | None]:
+        state = self._sdpa_policy_state()
+        if state["flash"] is not False or state["mem_efficient"] is not False or state["math"] is not True:
+            raise CaptureContractError(f"canonical CUDA SDPA policy drifted from math-only state: {state!r}")
+        if state["cudnn"] is True:
+            raise CaptureContractError("canonical CUDA SDPA policy requires cuDNN SDPA disabled")
+        return state
 
     def _force_sdpa_math_policy(self) -> None:
         """Force canonical CUDA SDPA policy to math-only for reproducible capture."""
@@ -111,6 +199,7 @@ class HuggingFacePyTorchBackend:
         cudnn_toggle = getattr(cuda_backend, "enable_cudnn_sdp", None)
         if callable(cudnn_toggle):
             cudnn_toggle(False)
+        self._last_sdpa_policy = self._assert_sdpa_math_policy()
 
     def tokenize(self, text: str) -> list[int]:
         encoded = self._tokenizer(text, add_special_tokens=True, return_attention_mask=False)
@@ -153,6 +242,10 @@ class HuggingFacePyTorchBackend:
         if any(i < 0 or i >= self._hidden_state_count for i in requested):
             bad = next(i for i in requested if i < 0 or i >= self._hidden_state_count)
             raise CaptureContractError(f"requested layer {bad} outside backend hidden-state range [0, {self._hidden_state_count - 1}]")
+        self._assert_mps_execution_policy()
+        self._assert_autocast_disabled()
+        if self._device_type == "cuda" and self._attention_implementation == "sdpa":
+            self._force_sdpa_math_policy()
         selected: dict[int, Mapping[str, Any]] = {}
         handles: list[Any] = []
         token_count = len(input_ids)
@@ -187,6 +280,8 @@ class HuggingFacePyTorchBackend:
         finally:
             for handle in handles:
                 handle.remove()
+        if self._device_type == "cuda" and self._attention_implementation == "sdpa":
+            self._last_sdpa_policy = self._assert_sdpa_math_policy()
         if set(selected) != set(requested):
             raise CaptureContractError(f"selective hidden-state hooks did not capture requested layers: {sorted(set(requested) - set(selected))}")
         return selected
@@ -212,14 +307,18 @@ class HuggingFacePyTorchBackend:
         config = self._model.config
         model_commit = getattr(config, "_commit_hash", None) or Path(getattr(self._model, "name_or_path", "")).name
         tokenizer_commit = getattr(self._tokenizer, "_commit_hash", None) or self._tokenizer.init_kwargs.get("_commit_hash") or Path(getattr(self._tokenizer, "name_or_path", "")).name
-        cuda_active = str(self._device).startswith("cuda") and torch.cuda.is_available()
-        mps_active = str(self._device).startswith("mps")
-        cuda_device = cuda_capability = None
-        if cuda_active:
+        cuda_active = self._device_type == "cuda" and torch.cuda.is_available()
+        mps_active = self._device_type == "mps"
+        cuda_device = cuda_capability = cuda_uuid = None
+        if cuda_active and self._cuda_resolved_device_index is not None:
             try:
-                cuda_device = torch.cuda.get_device_name(self._device)
-                cap = torch.cuda.get_device_capability(self._device)
+                index = self._cuda_resolved_device_index
+                cuda_device = torch.cuda.get_device_name(index)
+                cap = torch.cuda.get_device_capability(index)
                 cuda_capability = f"{cap[0]}.{cap[1]}"
+                properties = torch.cuda.get_device_properties(index)
+                raw_uuid = getattr(properties, "uuid", None)
+                cuda_uuid = str(raw_uuid) if raw_uuid is not None else None
             except Exception:
                 pass
         try:
@@ -246,6 +345,7 @@ class HuggingFacePyTorchBackend:
             mps_built = mps_available = False
         model_hashes = dict(sorted(self._model_snapshot_hashes.items()))
         tokenizer_hashes = dict(sorted(self._tokenizer_snapshot_hashes.items()))
+        sdpa = self._last_sdpa_policy or {"flash": None, "mem_efficient": None, "math": None, "cudnn": None}
         return {
             "name": _PRODUCTION_BACKEND,
             "python_version": sys.version.split()[0], "platform": platform.platform(),
@@ -259,21 +359,30 @@ class HuggingFacePyTorchBackend:
             "attention_implementation": self._attention_implementation,
             "device": str(self._device), **_cpu_hardware_metadata(torch),
             "cuda_device_name": cuda_device, "cuda_device_capability": cuda_capability,
+            "cuda_resolved_device_index": self._cuda_resolved_device_index,
+            "cuda_device_uuid": cuda_uuid, "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
             "cuda_build_version": getattr(torch.version, "cuda", None), "cudnn_version": cudnn_version,
             "nvidia_driver_version": self._nvidia_driver_version() if cuda_active else None,
             "float32_matmul_precision": matmul_precision, "cuda_matmul_allow_tf32": cuda_tf32,
-            "cudnn_allow_tf32": cudnn_tf32, "nvidia_tf32_override": os.environ.get("NVIDIA_TF32_OVERRIDE"),
+            "cudnn_allow_tf32": cudnn_tf32,
+            "sdpa_flash_enabled": sdpa["flash"], "sdpa_mem_efficient_enabled": sdpa["mem_efficient"],
+            "sdpa_math_enabled": sdpa["math"], "sdpa_cudnn_enabled": sdpa["cudnn"],
+            "nvidia_tf32_override": os.environ.get("NVIDIA_TF32_OVERRIDE"),
             "torch_allow_tf32_cublas_override": os.environ.get("TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"),
             "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
             "mps_device_active": mps_active, "mps_built": mps_built, "mps_available": mps_available,
             "mps_mac_model": _sysctl_value("hw.model") if mps_active else None,
             "mps_cpu_brand": _sysctl_value("machdep.cpu.brand_string") if mps_active else None,
             "mps_macos_version": (platform.mac_ver()[0] or None) if mps_active else None,
+            "mps_fallback_env": os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK"),
+            "mps_fast_math_env": os.environ.get("PYTORCH_MPS_FAST_MATH"),
+            "autocast_disabled": True,
             "dtype": self._dtype_name,
             "observed_hidden_state_dtypes": {str(k): sorted(v) for k, v in sorted(self._observed_hidden_state_dtypes.items())},
             "pool_accumulation_dtype": "float64", "pool_accumulation_device": "cpu",
             "hidden_state_capture_strategy": "selective_forward_hooks", "hidden_state_block_path": self._block_path,
-            "hidden_state_count": self._hidden_state_count, "snapshot_authentication": "sha256_all_snapshot_files",
+            "hidden_state_count": self._hidden_state_count,
+            "snapshot_authentication": "sha256_all_snapshot_files_pre_and_post_load",
             "model_snapshot_file_count": len(model_hashes), "model_snapshot_file_sha256": model_hashes,
             "model_snapshot_receipt_sha256": sha256_json(model_hashes),
             "tokenizer_snapshot_file_count": len(tokenizer_hashes), "tokenizer_snapshot_file_sha256": tokenizer_hashes,
