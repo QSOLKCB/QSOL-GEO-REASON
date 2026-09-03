@@ -7,6 +7,7 @@ on:
       - "Lean/**"
       - "scripts/lean_dependency_receipt.py"
       - "scripts/verify_lean_source_state.py"
+      - "scripts/verify_lean_source_purity.py"
       - "scripts/protected_lean_recompile.sh"
       - "lean-toolchain"
       - "lakefile.lean"
@@ -40,6 +41,12 @@ jobs:
       BUILD_CACHE_SCHEMA: "geo-lean-deps-v1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Verify declarative production Lean source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_lean_source_purity.py --root Lean --self-test
 
       - name: Verify declared Lean toolchain
         shell: bash
@@ -269,10 +276,11 @@ jobs:
             echo "- Timing: \`${timing}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Reject source proof placeholders and explicit axioms
+      - name: Reject source proof placeholders, explicit axioms, and executable source
         shell: bash
         run: |
           set -euo pipefail
+          python3 scripts/verify_lean_source_purity.py --root Lean --self-test
           if grep -RInE '(^|[^[:alnum:]_])(sorry|admit)([^[:alnum:]_]|$)|^[[:space:]]*axiom[[:space:]]' Lean --exclude='Audit.lean'; then
             echo "Lean proof placeholder or explicit axiom declaration found" >&2
             exit 1
