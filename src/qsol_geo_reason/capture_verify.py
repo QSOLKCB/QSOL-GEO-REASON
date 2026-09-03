@@ -3,9 +3,31 @@ from __future__ import annotations
 import math
 from typing import Any, Mapping
 from .canonical import canonical_json_bytes, sha256_json
-from .capture_common import (_ALLOWED_EVIDENCE, _ARTIFACT_KEYS, _CAPTURE_PHASE, _LAYER_INDEX_SEMANTICS, _MANIFEST_KEYS, _REPRESENTATION_KEYS, _STEP_SPAN_SEMANTICS, _TRAJECTORY_KEYS, CaptureContractError, _common_prefix_length, _compose_text, _pool_span, _require_exact_keys, _require_nonempty_string, _require_object, _sha256_text, _validate_token_ids)
+from .capture_common import (
+    CAPTURE_PROTOCOL_ID,
+    CAPTURE_SCHEMA_VERSION,
+    _ALLOWED_EVIDENCE,
+    _ARTIFACT_KEYS,
+    _CAPTURE_PHASE,
+    _LAYER_INDEX_SEMANTICS,
+    _MANIFEST_KEYS,
+    _REPRESENTATION_KEYS,
+    _STEP_SPAN_SEMANTICS,
+    _TRAJECTORY_KEYS,
+    CaptureContractError,
+    _common_prefix_length,
+    _compose_text,
+    _pool_span,
+    _require_exact_keys,
+    _require_git_sha,
+    _require_nonempty_string,
+    _require_object,
+    _sha256_text,
+    _validate_token_ids,
+)
 from .capture_validation import validate_capture_request
 from .capture_provenance import _validate_backend_metadata
+
 
 def _without(mapping: Mapping[str, Any], field: str) -> dict[str, Any]:
     return {k: v for k, v in mapping.items() if k != field}
@@ -28,6 +50,20 @@ def verify_capture_bundle(request: Mapping[str, Any], manifest: Mapping[str, Any
         raise CaptureContractError("manifest and trajectory must be objects")
     _require_exact_keys(manifest, required=_MANIFEST_KEYS, where="run manifest")
     _require_exact_keys(trajectory, required=_TRAJECTORY_KEYS, where="captured trajectory")
+
+    if manifest["schema_version"] != CAPTURE_SCHEMA_VERSION or trajectory["schema_version"] != CAPTURE_SCHEMA_VERSION:
+        raise CaptureContractError(f"bundle schema_version must be {CAPTURE_SCHEMA_VERSION!r}")
+    if manifest["protocol_id"] != CAPTURE_PROTOCOL_ID or trajectory["protocol_id"] != CAPTURE_PROTOCOL_ID:
+        raise CaptureContractError(f"bundle protocol_id must be {CAPTURE_PROTOCOL_ID!r}")
+    manifest_repository_commit = _require_git_sha(manifest["repository_commit"], "manifest.repository_commit")
+    trajectory_repository_commit = _require_git_sha(trajectory["repository_commit"], "trajectory.repository_commit")
+    if manifest_repository_commit != manifest["repository_commit"]:
+        raise CaptureContractError("manifest.repository_commit must use canonical lowercase 40-hex form")
+    if trajectory_repository_commit != trajectory["repository_commit"]:
+        raise CaptureContractError("trajectory.repository_commit must use canonical lowercase 40-hex form")
+    if trajectory_repository_commit != manifest_repository_commit:
+        raise CaptureContractError("trajectory repository_commit does not match manifest")
+
     if trajectory["evidence_class"] not in _ALLOWED_EVIDENCE or trajectory["replication_status"] != "not_attempted":
         raise CaptureContractError("trajectory evidence/replication status is invalid")
 

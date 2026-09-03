@@ -18,6 +18,7 @@ from .capture_provenance import (
     _snapshot_file_hashes, _sysctl_value,
 )
 
+
 class HuggingFacePyTorchBackend:
     """Direct local-only Hugging Face / PyTorch replay backend."""
 
@@ -66,8 +67,30 @@ class HuggingFacePyTorchBackend:
         self._base_model, self._block_path, self._blocks = _resolve_hidden_state_layout(self._model)
         self._hidden_state_count = len(self._blocks) + 1
         self._checkpoint_loading_clean = True
+        self._attention_implementation = getattr(self._model.config, "_attn_implementation", None)
+        if str(self._device).startswith("cuda") and self._attention_implementation == "sdpa":
+            self._force_sdpa_math_policy()
         self._model.to(self._device)
         self._model.eval()
+
+    def _force_sdpa_math_policy(self) -> None:
+        """Force canonical CUDA SDPA policy to math-only for reproducible capture."""
+        cuda_backend = getattr(self._torch.backends, "cuda", None)
+        if cuda_backend is None:
+            raise CaptureContractError("CUDA SDPA backend controls are unavailable")
+        required_toggles = (
+            ("enable_flash_sdp", False),
+            ("enable_mem_efficient_sdp", False),
+            ("enable_math_sdp", True),
+        )
+        for name, enabled in required_toggles:
+            toggle = getattr(cuda_backend, name, None)
+            if not callable(toggle):
+                raise CaptureContractError(f"canonical CUDA SDPA policy requires torch.backends.cuda.{name}")
+            toggle(enabled)
+        cudnn_toggle = getattr(cuda_backend, "enable_cudnn_sdp", None)
+        if callable(cudnn_toggle):
+            cudnn_toggle(False)
 
     def tokenize(self, text: str) -> list[int]:
         encoded = self._tokenizer(text, add_special_tokens=True, return_attention_mask=False)
@@ -213,7 +236,7 @@ class HuggingFacePyTorchBackend:
             "checkpoint_loading_clean": self._checkpoint_loading_clean,
             "quantization_config_present": getattr(config, "quantization_config", None) is not None,
             "model_reports_quantized": bool(getattr(self._model, "is_quantized", False)),
-            "attention_implementation": getattr(config, "_attn_implementation", None),
+            "attention_implementation": self._attention_implementation,
             "device": str(self._device), **_cpu_hardware_metadata(torch),
             "cuda_device_name": cuda_device, "cuda_device_capability": cuda_capability,
             "cuda_build_version": getattr(torch.version, "cuda", None), "cudnn_version": cudnn_version,
