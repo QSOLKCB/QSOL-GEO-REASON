@@ -98,7 +98,7 @@ The numerical kernel is frozen. The Lean work is additive evidence and does not 
 
 **Formal release commit:** `ec3312dcc102d859819c764a881e2d020662e880`.
 
-The sole release-grade cold proof authority remains `lean-isolated-audit / isolated-cold-trust`. The routine `lean-phase1` workflow is pull-request-only and cannot serve as a competing manual cold-trust lane.
+The sole release-grade cold proof authority remains `lean-isolated-audit / isolated-cold-trust`. `lean-phase1` is a verified-cache regression/cache-maintenance lane: PR runs validate candidates, while relevant `main` pushes or explicit maintenance dispatches may seed authenticated caches for later PRs. Those cache-maintenance runs are not a competing cold-trust authority.
 
 If later work discovers a mathematical defect in the frozen specification, preserve both immutable releases as historical evidence, amend the mathematical contract in a new release, and reprove affected theorem targets against the new identity.
 
