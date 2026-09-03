@@ -1,30 +1,51 @@
-import Mathlib.Geometry.Euclidean.Angle.Sphere
+import Mathlib.Geometry.Euclidean.Circumcenter
+import Mathlib.Tactic.Abel
 import Mathlib.Tactic.FieldSimp
-import Mathlib.Tactic.Nlinarith
 
 namespace GeoReason
 
 noncomputable section
 
 open Affine
+open scoped RealInnerProductSpace
 
 variable {V : Type*} [NormedAddCommGroup V] [InnerProductSpace ℝ V]
 
-/-- Exact unsigned area of the ordered triangle, using the standard
-`A = ab sin(θ) / 2` formula at the middle point. -/
+private def mengerEdge01 (p : Fin 3 → V) : V :=
+  p 1 - p 0
+
+private def mengerEdge02 (p : Fin 3 → V) : V :=
+  p 2 - p 0
+
+private def mengerEdge12 (p : Fin 3 → V) : V :=
+  p 2 - p 1
+
+private theorem mengerEdge02_sub_edge01 (p : Fin 3 → V) :
+    mengerEdge02 p - mengerEdge01 p = mengerEdge12 p := by
+  unfold mengerEdge02 mengerEdge01 mengerEdge12
+  abel
+
+/-- Gram determinant of the two edges based at the first point. -/
+noncomputable def mengerGramDet (p : Fin 3 → V) : ℝ :=
+  ‖mengerEdge01 p‖ ^ 2 * ‖mengerEdge02 p‖ ^ 2 -
+    ⟪mengerEdge01 p, mengerEdge02 p⟫_ℝ ^ 2
+
+/-- Exact unsigned area of the ordered triangle.
+
+This is the standard inner-product-space area formula
+`A = sqrt (‖u‖² ‖v‖² - ⟪u,v⟫²) / 2`.
+-/
 noncomputable def mengerTriangleArea (p : Fin 3 → V) : ℝ :=
-  (dist (p 0) (p 1) * dist (p 1) (p 2) *
-      Real.sin (EuclideanGeometry.angle (p 0) (p 1) (p 2))) / 2
+  Real.sqrt (mengerGramDet p) / 2
 
 /-- Product `abc` of the three side lengths in GEO-MATH-006. -/
 def mengerSideProduct (p : Fin 3 → V) : ℝ :=
-  dist (p 0) (p 1) * dist (p 1) (p 2) * dist (p 0) (p 2)
+  ‖mengerEdge01 p‖ * ‖mengerEdge12 p‖ * ‖mengerEdge02 p‖
 
 /-- GEO-MATH-006, defined from the frozen `4A/(abc)` formula.
 
-For an affinely independent triple, `A` is `mengerTriangleArea` and `a b c`
-is `mengerSideProduct`. Affinely dependent triples, including repeated or
-collinear points, use the frozen project convention `κ = 0`.
+Affinely dependent triples, including repeated or collinear points, use
+project convention `κ = 0`.
 -/
 noncomputable def mengerCurvature (p : Fin 3 → V) : ℝ := by
   classical
@@ -33,79 +54,201 @@ noncomputable def mengerCurvature (p : Fin 3 → V) : ℝ := by
   else
     0
 
-/-- The circumradius presentation used to derive transformation laws. This is
-not the definition of project curvature; its equivalence to the frozen
-`4A/(abc)` definition is proved below. -/
-noncomputable def circumradiusMengerCurvature (p : Fin 3 → V) : ℝ := by
+private theorem circumcenter_sub_base_mem_span_edges (p : Fin 3 → V)
+    (h : AffineIndependent ℝ p) :
+    ∃ a b : ℝ,
+      a • mengerEdge01 p + b • mengerEdge02 p =
+        (⟨p, h⟩ : Affine.Simplex ℝ V 2).circumcenter - p 0 := by
   classical
-  exact if h : AffineIndependent ℝ p then
-    1 / (⟨p, h⟩ : Affine.Simplex ℝ V 2).circumradius
-  else
-    0
+  let s : Affine.Simplex ℝ V 2 := ⟨p, h⟩
+  have hcenter : s.circumcenter ∈ affineSpan ℝ (Set.range p) := by
+    simpa [s] using s.circumcenter_mem_affineSpan
+  have hbase : p 0 ∈ affineSpan ℝ (Set.range p) :=
+    subset_affineSpan ℝ (Set.mem_range_self 0)
+  have hw : s.circumcenter - p 0 ∈ vectorSpan ℝ (Set.range p) := by
+    rw [← direction_affineSpan]
+    exact AffineSubspace.vsub_mem_direction hcenter hbase
+  have hle :
+      vectorSpan ℝ (Set.range p) ≤
+        Submodule.span ℝ ({mengerEdge01 p, mengerEdge02 p} : Set V) := by
+    rw [vectorSpan_eq_span_vsub_set_right ℝ (Set.mem_range_self 0)]
+    refine Submodule.span_le.mpr ?_
+    rintro _ ⟨_, ⟨i, rfl⟩, rfl⟩
+    refine Fin.cases ?_ (fun j => ?_) i
+    · simp
+    · refine Fin.cases ?_ (fun k => ?_) j
+      · change mengerEdge01 p ∈
+          Submodule.span ℝ ({mengerEdge01 p, mengerEdge02 p} : Set V)
+        exact Submodule.subset_span (by simp)
+      · refine Fin.cases ?_ (fun z => Fin.elim0 z) k
+        change mengerEdge02 p ∈
+          Submodule.span ℝ ({mengerEdge01 p, mengerEdge02 p} : Set V)
+        exact Submodule.subset_span (by simp)
+  exact Submodule.mem_span_pair.mp (hle hw)
+
+/-- The algebraic circumradius identity for the Gram-area definition. -/
+private theorem four_mul_gramDet_mul_circumradius_sq (p : Fin 3 → V)
+    (h : AffineIndependent ℝ p) :
+    4 * mengerGramDet p *
+          (⟨p, h⟩ : Affine.Simplex ℝ V 2).circumradius ^ 2 =
+      ‖mengerEdge01 p‖ ^ 2 * ‖mengerEdge12 p‖ ^ 2 *
+        ‖mengerEdge02 p‖ ^ 2 := by
+  classical
+  let s : Affine.Simplex ℝ V 2 := ⟨p, h⟩
+  let u : V := mengerEdge01 p
+  let v : V := mengerEdge02 p
+  let w : V := s.circumcenter - p 0
+  let R : ℝ := s.circumradius
+
+  have hwR : ‖w‖ = R := by
+    calc
+      ‖w‖ = dist s.circumcenter (p 0) := by
+        simp [w, dist_eq_norm]
+      _ = R := by
+        simpa [R] using s.dist_circumcenter_eq_circumradius' 0
+
+  have huSub : u - w = p 1 - s.circumcenter := by
+    simp [u, w, mengerEdge01]
+    abel
+  have hvSub : v - w = p 2 - s.circumcenter := by
+    simp [v, w, mengerEdge02]
+    abel
+  have huR : ‖u - w‖ = R := by
+    rw [huSub, ← dist_eq_norm]
+    simpa [R] using s.dist_circumcenter_eq_circumradius 1
+  have hvR : ‖v - w‖ = R := by
+    rw [hvSub, ← dist_eq_norm]
+    simpa [R] using s.dist_circumcenter_eq_circumradius 2
+
+  have huw : ⟪u, w⟫_ℝ = ‖u‖ ^ 2 / 2 := by
+    have hsquare : ‖u - w‖ ^ 2 = ‖w‖ ^ 2 := by
+      rw [huR, hwR]
+    rw [norm_sub_sq_real] at hsquare
+    nlinarith
+  have hvw : ⟪v, w⟫_ℝ = ‖v‖ ^ 2 / 2 := by
+    have hsquare : ‖v - w‖ ^ 2 = ‖w‖ ^ 2 := by
+      rw [hvR, hwR]
+    rw [norm_sub_sq_real] at hsquare
+    nlinarith
+
+  obtain ⟨a, b, hab⟩ := circumcenter_sub_base_mem_span_edges p h
+  have hab' : a • u + b • v = w := by
+    simpa [u, v, w, s] using hab
+
+  have hgram :
+      (‖u‖ ^ 2 * ‖v‖ ^ 2 - ⟪u, v⟫_ℝ ^ 2) * ‖w‖ ^ 2 =
+        ‖v‖ ^ 2 * ⟪u, w⟫_ℝ ^ 2 -
+          2 * ⟪u, v⟫_ℝ * ⟪u, w⟫_ℝ * ⟪v, w⟫_ℝ +
+            ‖u‖ ^ 2 * ⟪v, w⟫_ℝ ^ 2 := by
+    rw [← real_inner_self_eq_norm_sq w, ← hab']
+    simp [inner_add_left, inner_add_right, real_inner_smul_left,
+      real_inner_smul_right, real_inner_self_eq_norm_sq, real_inner_comm]
+    ring
+
+  have hedge :
+      ‖mengerEdge12 p‖ ^ 2 =
+        ‖v‖ ^ 2 + ‖u‖ ^ 2 - 2 * ⟪u, v⟫_ℝ := by
+    rw [← mengerEdge02_sub_edge01 p]
+    change ‖v - u‖ ^ 2 = _
+    rw [norm_sub_sq_real, real_inner_comm v u]
+    ring
+
+  change
+    4 * (‖u‖ ^ 2 * ‖v‖ ^ 2 - ⟪u, v⟫_ℝ ^ 2) * R ^ 2 =
+      ‖u‖ ^ 2 * ‖mengerEdge12 p‖ ^ 2 * ‖v‖ ^ 2
+  calc
+    4 * (‖u‖ ^ 2 * ‖v‖ ^ 2 - ⟪u, v⟫_ℝ ^ 2) * R ^ 2 =
+        4 * ((‖u‖ ^ 2 * ‖v‖ ^ 2 - ⟪u, v⟫_ℝ ^ 2) * ‖w‖ ^ 2) := by
+          rw [hwR]
+          ring
+    _ = 4 *
+        (‖v‖ ^ 2 * ⟪u, w⟫_ℝ ^ 2 -
+          2 * ⟪u, v⟫_ℝ * ⟪u, w⟫_ℝ * ⟪v, w⟫_ℝ +
+            ‖u‖ ^ 2 * ⟪v, w⟫_ℝ ^ 2) := by rw [hgram]
+    _ = ‖u‖ ^ 2 * ‖mengerEdge12 p‖ ^ 2 * ‖v‖ ^ 2 := by
+      rw [huw, hvw, hedge]
+      ring
 
 /-- For a nondegenerate triple, the frozen `4A/(abc)` definition equals the
-reciprocal circumradius. This is the formal bridge asserted by GEO-MATH-006. -/
+reciprocal circumradius. This proves the equality asserted by GEO-MATH-006
+rather than taking it as the definition. -/
 theorem mengerCurvature_of_affineIndependent (p : Fin 3 → V)
     (h : AffineIndependent ℝ p) :
     mengerCurvature p =
       1 / (⟨p, h⟩ : Affine.Simplex ℝ V 2).circumradius := by
   classical
   let s : Affine.Simplex ℝ V 2 := ⟨p, h⟩
-  have h01 : (0 : Fin 3) ≠ 1 := by decide
-  have h02 : (0 : Fin 3) ≠ 2 := by decide
-  have h12 : (1 : Fin 3) ≠ 2 := by decide
-  have hp01 : p 0 ≠ p 1 := h.injective.ne h01
-  have hp02 : p 0 ≠ p 2 := h.injective.ne h02
-  have hp12 : p 1 ≠ p 2 := h.injective.ne h12
-  have hd01 : dist (p 0) (p 1) ≠ 0 := dist_ne_zero.mpr hp01
-  have hd02 : dist (p 0) (p 2) ≠ 0 := dist_ne_zero.mpr hp02
-  have hd12 : dist (p 1) (p 2) ≠ 0 := dist_ne_zero.mpr hp12
-  have hsineLaw :
-      dist (p 0) (p 2) /
-          Real.sin (EuclideanGeometry.angle (p 0) (p 1) (p 2)) =
-        2 * s.circumradius := by
-    simpa [s] using
-      s.dist_div_sin_angle_eq_two_mul_circumradius h01 h02 h12
-  have hsin :
-      Real.sin (EuclideanGeometry.angle (p 0) (p 1) (p 2)) ≠ 0 := by
-    intro hzero
-    rw [hzero, div_zero] at hsineLaw
-    nlinarith [s.circumradius_pos]
-  have hchord :
-      dist (p 0) (p 2) =
-        (2 * s.circumradius) *
-          Real.sin (EuclideanGeometry.angle (p 0) (p 1) (p 2)) :=
-    (div_eq_iff hsin).mp hsineLaw
+  let D : ℝ := mengerGramDet p
+  let P : ℝ := mengerSideProduct p
+  let R : ℝ := s.circumradius
+
+  have h01 : p 1 ≠ p 0 := h.injective.ne (by decide)
+  have h02 : p 2 ≠ p 0 := h.injective.ne (by decide)
+  have h12 : p 2 ≠ p 1 := h.injective.ne (by decide)
+  have he01 : mengerEdge01 p ≠ 0 := by
+    exact sub_ne_zero.mpr h01
+  have he02 : mengerEdge02 p ≠ 0 := by
+    exact sub_ne_zero.mpr h02
+  have he12 : mengerEdge12 p ≠ 0 := by
+    exact sub_ne_zero.mpr h12
+  have hPpos : 0 < P := by
+    dsimp [P, mengerSideProduct]
+    positivity
+  have hRpos : 0 < R := by
+    simpa [R, s] using s.circumradius_pos
+
+  have hidentity :
+      4 * D * R ^ 2 =
+        ‖mengerEdge01 p‖ ^ 2 * ‖mengerEdge12 p‖ ^ 2 *
+          ‖mengerEdge02 p‖ ^ 2 := by
+    simpa [D, R, s] using four_mul_gramDet_mul_circumradius_sq p h
+  have hrhsPos :
+      0 < ‖mengerEdge01 p‖ ^ 2 * ‖mengerEdge12 p‖ ^ 2 *
+        ‖mengerEdge02 p‖ ^ 2 := by
+    positivity
+  have hDpos : 0 < D := by
+    by_contra hnot
+    have hDle : D ≤ 0 := le_of_not_gt hnot
+    have hleft : 4 * D * R ^ 2 ≤ 0 := by
+      exact mul_nonpos_of_nonpos_of_nonneg
+        (mul_nonpos_of_nonneg_of_nonpos (by norm_num) hDle)
+        (sq_nonneg R)
+    rw [hidentity] at hleft
+    exact (not_lt_of_ge hleft) hrhsPos
+
+  have hroot : 2 * Real.sqrt D * R = P := by
+    apply (mul_self_inj_of_nonneg (by positivity) (le_of_lt hPpos)).mp
+    calc
+      (2 * Real.sqrt D * R) * (2 * Real.sqrt D * R) =
+          4 * (Real.sqrt D * Real.sqrt D) * R ^ 2 := by ring
+      _ = 4 * D * R ^ 2 := by
+        rw [Real.mul_self_sqrt (le_of_lt hDpos)]
+      _ = ‖mengerEdge01 p‖ ^ 2 * ‖mengerEdge12 p‖ ^ 2 *
+          ‖mengerEdge02 p‖ ^ 2 := hidentity
+      _ = P * P := by
+        dsimp [P, mengerSideProduct]
+        ring
+
   unfold mengerCurvature
   rw [if_pos h]
-  change
-    4 *
-          ((dist (p 0) (p 1) * dist (p 1) (p 2) *
-              Real.sin (EuclideanGeometry.angle (p 0) (p 1) (p 2))) /
-            2) /
-        (dist (p 0) (p 1) * dist (p 1) (p 2) * dist (p 0) (p 2)) =
-      1 / s.circumradius
-  calc
-    _ =
-        2 * Real.sin (EuclideanGeometry.angle (p 0) (p 1) (p 2)) /
-          dist (p 0) (p 2) := by
-            field_simp [hd01, hd02, hd12]
-            <;> ring
-    _ = 1 / s.circumradius := by
-      field_simp [hd02, s.circumradius_pos.ne']
-      nlinarith [hchord]
+  change 4 * (Real.sqrt D / 2) / P = 1 / R
+  field_simp [hPpos.ne', hRpos.ne']
+  nlinarith [hroot]
 
-/-- The area/side-length definition and the circumradius presentation agree on
-both the nondegenerate branch and the frozen zero-convention branch. -/
-theorem mengerCurvature_eq_circumradiusMengerCurvature (p : Fin 3 → V) :
-    mengerCurvature p = circumradiusMengerCurvature p := by
+/-- The frozen area/side-length definition and reciprocal-circumradius
+presentation agree on both branches. -/
+theorem mengerCurvature_eq_circumradius (p : Fin 3 → V) :
+    mengerCurvature p = if h : AffineIndependent ℝ p then
+      1 / (⟨p, h⟩ : Affine.Simplex ℝ V 2).circumradius
+    else
+      0 := by
   classical
   by_cases h : AffineIndependent ℝ p
   · rw [mengerCurvature_of_affineIndependent p h]
-    simp [circumradiusMengerCurvature, h]
-  · simp [mengerCurvature, circumradiusMengerCurvature, h]
+    simp [h]
+  · simp [mengerCurvature, h]
 
-/-- Affine Euclidean isometries preserve the exact project Menger curvature. -/
+/-- Affine Euclidean isometries preserve exact project Menger curvature. -/
 theorem mengerCurvature_affineIsometry (f : V →ᵃⁱ[ℝ] V) (p : Fin 3 → V) :
     mengerCurvature (fun i => f (p i)) = mengerCurvature p := by
   classical

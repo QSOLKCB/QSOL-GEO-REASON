@@ -39,9 +39,9 @@ EXPECTED_IMPORTS: dict[PurePosixPath, tuple[str, ...]] = {
         "GeoReason.Trajectory",
     ),
     PurePosixPath("GeoReason/Menger.lean"): (
-        "Mathlib.Geometry.Euclidean.Angle.Sphere",
+        "Mathlib.Geometry.Euclidean.Circumcenter",
+        "Mathlib.Tactic.Abel",
         "Mathlib.Tactic.FieldSimp",
-        "Mathlib.Tactic.Nlinarith",
     ),
     PurePosixPath("GeoReason/ArcLength.lean"): ("GeoReason.Trajectory",),
 }
