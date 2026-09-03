@@ -7,7 +7,6 @@ namespace GeoReason
 noncomputable section
 
 open Affine
-open scoped RealInnerProductSpace
 
 variable {V : Type*} [NormedAddCommGroup V]
 
@@ -30,12 +29,12 @@ variable [InnerProductSpace ℝ V]
 /-- Gram determinant of the two edges based at the first point. -/
 noncomputable def mengerGramDet (p : Fin 3 → V) : ℝ :=
   ‖mengerEdge01 p‖ ^ 2 * ‖mengerEdge02 p‖ ^ 2 -
-    (⟪mengerEdge01 p, mengerEdge02 p⟫_ℝ) ^ 2
+    (inner ℝ (mengerEdge01 p) (mengerEdge02 p)) ^ 2
 
 /-- Exact unsigned area of the ordered triangle.
 
 This is the standard inner-product-space area formula
-`A = sqrt (‖u‖² ‖v‖² - ⟪u,v⟫²) / 2`.
+`A = sqrt (‖u‖² ‖v‖² - inner(u,v)²) / 2`.
 -/
 noncomputable def mengerTriangleArea (p : Fin 3 → V) : ℝ :=
   Real.sqrt (mengerGramDet p) / 2
@@ -125,12 +124,12 @@ private theorem four_mul_gramDet_mul_circumradius_sq (p : Fin 3 → V)
     rw [← dist_eq_norm]
     exact s.dist_circumcenter_eq_circumradius 2
 
-  have huw : (⟪u, w⟫_ℝ) = ‖u‖ ^ 2 / 2 := by
+  have huw : inner ℝ u w = ‖u‖ ^ 2 / 2 := by
     have hsquare : ‖u - w‖ ^ 2 = ‖w‖ ^ 2 := by
       rw [huR, hwR]
     rw [norm_sub_sq_real] at hsquare
     nlinarith
-  have hvw : (⟪v, w⟫_ℝ) = ‖v‖ ^ 2 / 2 := by
+  have hvw : inner ℝ v w = ‖v‖ ^ 2 / 2 := by
     have hsquare : ‖v - w‖ ^ 2 = ‖w‖ ^ 2 := by
       rw [hvR, hwR]
     rw [norm_sub_sq_real] at hsquare
@@ -141,10 +140,10 @@ private theorem four_mul_gramDet_mul_circumradius_sq (p : Fin 3 → V)
     simpa [u, v, w, s] using hab
 
   have hgram :
-      (‖u‖ ^ 2 * ‖v‖ ^ 2 - (⟪u, v⟫_ℝ) ^ 2) * ‖w‖ ^ 2 =
-        ‖v‖ ^ 2 * (⟪u, w⟫_ℝ) ^ 2 -
-          2 * (⟪u, v⟫_ℝ) * (⟪u, w⟫_ℝ) * (⟪v, w⟫_ℝ) +
-            ‖u‖ ^ 2 * (⟪v, w⟫_ℝ) ^ 2 := by
+      (‖u‖ ^ 2 * ‖v‖ ^ 2 - (inner ℝ u v) ^ 2) * ‖w‖ ^ 2 =
+        ‖v‖ ^ 2 * (inner ℝ u w) ^ 2 -
+          2 * inner ℝ u v * inner ℝ u w * inner ℝ v w +
+            ‖u‖ ^ 2 * (inner ℝ v w) ^ 2 := by
     rw [← real_inner_self_eq_norm_sq w, ← hab']
     simp [inner_add_left, inner_add_right, real_inner_smul_left,
       real_inner_smul_right, real_inner_self_eq_norm_sq, real_inner_comm]
@@ -152,24 +151,24 @@ private theorem four_mul_gramDet_mul_circumradius_sq (p : Fin 3 → V)
 
   have hedge :
       ‖mengerEdge12 p‖ ^ 2 =
-        ‖v‖ ^ 2 + ‖u‖ ^ 2 - 2 * (⟪u, v⟫_ℝ) := by
+        ‖v‖ ^ 2 + ‖u‖ ^ 2 - 2 * inner ℝ u v := by
     rw [← mengerEdge02_sub_edge01 p]
     change ‖v - u‖ ^ 2 = _
     rw [norm_sub_sq_real, real_inner_comm v u]
     ring
 
   change
-    4 * (‖u‖ ^ 2 * ‖v‖ ^ 2 - (⟪u, v⟫_ℝ) ^ 2) * R ^ 2 =
+    4 * (‖u‖ ^ 2 * ‖v‖ ^ 2 - (inner ℝ u v) ^ 2) * R ^ 2 =
       ‖u‖ ^ 2 * ‖mengerEdge12 p‖ ^ 2 * ‖v‖ ^ 2
   calc
-    4 * (‖u‖ ^ 2 * ‖v‖ ^ 2 - (⟪u, v⟫_ℝ) ^ 2) * R ^ 2 =
-        4 * ((‖u‖ ^ 2 * ‖v‖ ^ 2 - (⟪u, v⟫_ℝ) ^ 2) * ‖w‖ ^ 2) := by
+    4 * (‖u‖ ^ 2 * ‖v‖ ^ 2 - (inner ℝ u v) ^ 2) * R ^ 2 =
+        4 * ((‖u‖ ^ 2 * ‖v‖ ^ 2 - (inner ℝ u v) ^ 2) * ‖w‖ ^ 2) := by
           rw [hwR]
           ring
     _ = 4 *
-        (‖v‖ ^ 2 * (⟪u, w⟫_ℝ) ^ 2 -
-          2 * (⟪u, v⟫_ℝ) * (⟪u, w⟫_ℝ) * (⟪v, w⟫_ℝ) +
-            ‖u‖ ^ 2 * (⟪v, w⟫_ℝ) ^ 2) := by rw [hgram]
+        (‖v‖ ^ 2 * (inner ℝ u w) ^ 2 -
+          2 * inner ℝ u v * inner ℝ u w * inner ℝ v w +
+            ‖u‖ ^ 2 * (inner ℝ v w) ^ 2) := by rw [hgram]
     _ = ‖u‖ ^ 2 * ‖mengerEdge12 p‖ ^ 2 * ‖v‖ ^ 2 := by
       rw [huw, hvw, hedge]
       ring
