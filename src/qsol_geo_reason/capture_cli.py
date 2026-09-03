@@ -48,6 +48,7 @@ def main() -> int:
             validated,
             implementation_revision=implementation_revision,
             backend=backend,
+            evidence_class="OBSERVATION",
         )
     except (
         SourceIdentityError,

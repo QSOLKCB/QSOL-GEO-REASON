@@ -29,18 +29,13 @@ class FakeBackend:
         return [ord(ch) for ch in text]
 
     def hidden_states(self, input_ids):
-        layers = []
-        for layer_index in range(3):
-            rows = []
-            for token_id in input_ids:
-                rows.append(
-                    [
-                        float(token_id + layer_index),
-                        float(token_id * (layer_index + 1)),
-                    ]
-                )
-            layers.append(rows)
-        return layers
+        return [
+            [
+                [float(token_id + layer_index), float(token_id * (layer_index + 1))]
+                for token_id in input_ids
+            ]
+            for layer_index in range(3)
+        ]
 
     def metadata(self):
         return {
@@ -90,9 +85,13 @@ def execute(request: dict):
 
 
 class CaptureValidationTests(unittest.TestCase):
-    def test_fixture_request_validates(self):
-        validated = validate_capture_request(fixture_request())
+    def test_fixture_request_validates_without_mutating_caller(self):
+        request = fixture_request()
+        request["model"]["revision"] = "A" * 40
+        validated = validate_capture_request(request)
         self.assertEqual(validated["protocol_id"], "GEO-CAP-001")
+        self.assertEqual(validated["model"]["revision"], "a" * 40)
+        self.assertEqual(request["model"]["revision"], "A" * 40)
 
     def test_unknown_root_field_is_rejected(self):
         request = fixture_request()
@@ -116,7 +115,7 @@ class CaptureValidationTests(unittest.TestCase):
         request = fixture_request()
         request["model"]["tokenizer_revision_kind"] = "branch"
         with self.assertRaisesRegex(CaptureContractError, "tokenizer_revision_kind"):
-            validate_capture_request(request)
+            validate_capture_request_request = validate_capture_request(request)
 
     def test_canonical_backend_requires_local_only(self):
         request = fixture_request()
@@ -153,6 +152,21 @@ class CaptureValidationTests(unittest.TestCase):
 
 
 class CaptureExecutionTests(unittest.TestCase):
+    def test_test_double_defaults_to_simulation(self):
+        request = fixture_request()
+        _, trajectory = execute(request)
+        self.assertEqual(trajectory["evidence_class"], "SIMULATION")
+
+    def test_test_double_cannot_emit_observation(self):
+        request = fixture_request()
+        with self.assertRaisesRegex(CaptureContractError, "concrete HuggingFace"):
+            execute_capture(
+                request,
+                implementation_revision=IMPLEMENTATION_REVISION,
+                backend=FakeBackend(request),
+                evidence_class="OBSERVATION",
+            )
+
     def test_cumulative_token_spans_are_explicit(self):
         request = fixture_request()
         _, trajectory = execute(request)
@@ -202,7 +216,7 @@ class CaptureExecutionTests(unittest.TestCase):
         expected = json.loads(FIXTURE_EXPECTED.read_text(encoding="utf-8"))
         manifest, trajectory = execute(request)
         self.assertEqual(expected["evidence_class"], "SIMULATION")
-        self.assertEqual(trajectory["evidence_class"], "OBSERVATION")
+        self.assertEqual(trajectory["evidence_class"], "SIMULATION")
         self.assertEqual(manifest["run_manifest_id"], expected["expected_run_manifest_id"])
         self.assertEqual(manifest["manifest_sha256"], expected["expected_manifest_sha256"])
         self.assertEqual(
@@ -237,11 +251,7 @@ class CaptureExecutionTests(unittest.TestCase):
         request = fixture_request()
         request["capture"]["layers"] = [3]
         with self.assertRaisesRegex(CaptureContractError, "outside"):
-            execute_capture(
-                request,
-                implementation_revision=IMPLEMENTATION_REVISION,
-                backend=FakeBackend(request),
-            )
+            execute(request)
 
     def test_nonfinite_hidden_state_is_rejected(self):
         request = fixture_request()
