@@ -6,6 +6,7 @@ package «qsol-geo-reason» where
 
 -- Protected workflows bind these exact dependency-declaration bytes to the
 -- frozen manifest and verify every resolved checkout before compilation.
+-- Resolver handoff schema: root-owned read-only verification surface v1.
 require mathlib from git
   "https://github.com/leanprover-community/mathlib4.git" @
     "0df444a360eaa60ab8c11dca51a86af692955474"
