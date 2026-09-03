@@ -131,7 +131,7 @@ def verify_capture_bundle(request: Mapping[str, Any], manifest: Mapping[str, Any
         if step["token_count"] != len(input_ids):
             raise CaptureContractError(f"token_count mismatch at step {index}")
         if step["input_ids_sha256"] != sha256_json(input_ids):
-            raise CaptureContractError(f"input_ids_sha256 mismatch at step {index}")
+            raise CaptureContractError(f"input_ids SHA-256 mismatch at step {index}")
         changed_span = _require_span(step["changed_token_span"], token_count=len(input_ids), where=f"trajectory step {index}.changed_token_span")
         expected_changed = (_common_prefix_length(baseline_ids, input_ids), len(input_ids))
         if changed_span != expected_changed:
@@ -163,7 +163,7 @@ def verify_capture_bundle(request: Mapping[str, Any], manifest: Mapping[str, Any
             if not isinstance(vector, list) or len(vector) != dim or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(float(v)) for v in vector):
                 raise CaptureContractError(f"vector content/dimension mismatch at step {index} layer {requested_layer}")
             if record["vector_sha256"] != sha256_json(vector):
-                raise CaptureContractError(f"vector_sha256 mismatch at step {index} layer {requested_layer}")
+                raise CaptureContractError(f"vector SHA-256 mismatch at step {index} layer {requested_layer}")
         if cfg["context_mode"] == "cumulative":
             previous_ids = input_ids
 
