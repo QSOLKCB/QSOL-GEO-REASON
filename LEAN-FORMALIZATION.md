@@ -1,12 +1,15 @@
 # Phase 1 Lean 4 Formalization
 
-This document records the formal proof layer for the exact mathematical contract frozen by the immutable QSOL-GEO-REASON Phase 1 release.
+This document records the formal proof layer for the exact mathematical contract frozen by the immutable QSOL-GEO-REASON Phase 1 numerical release.
 
 ## Status
 
-The numerical Phase 1 release is already immutable. Pull request #3 implements all twelve named Lean theorem targets as a new evidence layer against that frozen identity. The formalization remains a pull-request candidate until its exact head has no unresolved correctness findings, all required checks are green, and the PR is merged.
+Phase 1 is now frozen in two immutable releases:
 
-This status does not reopen or rewrite the release tag.
+- `v0.1.0 — Phase 1 Mathematical Kernel`, the numerical/simulation release at commit `1b5ab8b4543b20cdb6d439f7ad215c08e698188f`; and
+- `v0.2.0 — Phase 1 Lean 4 Formal Evidence Layer`, published after PR #3 merged at commit `ec3312dcc102d859819c764a881e2d020662e880`.
+
+PR #3 implemented and reviewed all twelve named Lean theorem targets against the stationary `v0.1.0` contract. Its merge and the later immutable `v0.2.0` release do not reopen, rewrite, or retroactively upgrade the `v0.1.0` simulation artifact.
 
 ## Frozen source target
 
@@ -14,11 +17,20 @@ The formalization targets the repository state published as:
 
 - release: `v0.1.0 — Phase 1 Mathematical Kernel`;
 - release commit: `1b5ab8b4543b20cdb6d439f7ad215c08e698188f`;
-- release immutability: enabled before this formalization began;
+- release immutability: enabled before formalization began;
 - numerical implementation kernel recorded by that release: `5f45b5e69bcab890a757fffa491cf787f92a5bea`; and
 - frozen Phase 1 simulation result SHA-256: `c542bce987d31350b4904122e5ec02ef026715f51a1fe21ee184a452cc67a583`.
 
-The Lean files were added after that immutable release. They do not rewrite the release and do not retroactively upgrade its `SIMULATION` evidence class.
+The Lean files were added after that immutable release. They are frozen separately by `v0.2.0` and do not retroactively upgrade the numerical release's `SIMULATION` evidence class.
+
+## Formal release identity
+
+- formal release: `v0.2.0 — Phase 1 Lean 4 Formal Evidence Layer`;
+- formal release commit: `ec3312dcc102d859819c764a881e2d020662e880`;
+- reviewed PR #3 head before merge: `622cd531bfa9b61f78626aa21e11485503c53a72`;
+- release immutability: enabled.
+
+Any later mathematical or formal correction must receive a new release identity rather than modifying either immutable Phase 1 record.
 
 ## Pinned proof environment
 
@@ -50,7 +62,7 @@ An empty source trajectory is therefore unrepresentable. Higher-order finite dif
 
 ## Frozen theorem targets
 
-Pull request #3 implements all twelve targets named by `MATH-SPEC.md` in immutable `v0.1.0`:
+Immutable `v0.2.0` contains implementations of all twelve targets named by `MATH-SPEC.md` in immutable `v0.1.0`:
 
 1. `GEO_LEAN_TGT_001` — order-`k` forward finite-difference length.
 2. `GEO_LEAN_TGT_002` — positive-order finite differences cancel global translation.
@@ -65,11 +77,9 @@ Pull request #3 implements all twelve targets named by `MATH-SPEC.md` in immutab
 11. `GEO_LEAN_TGT_011` — a nondegenerate Euclidean-circle triple of radius `r > 0` has curvature `1 / r`.
 12. `GEO_LEAN_TGT_012` — normalized piecewise-linear arc-length parameterization preserves the exact first and last endpoints at progress `0` and `1` for nonzero-length trajectories.
 
-Implementation is complete on the PR branch. Acceptance remains conditional on final exact-head review and merge.
-
 ## Menger formalization
 
-For a triple `p : Fin 3 → V`, the Lean definition now begins with the exact quantity frozen by `GEO-MATH-006` rather than taking a downstream characterization as its definition.
+For a triple `p : Fin 3 → V`, the Lean definition begins with the exact quantity frozen by `GEO-MATH-006` rather than taking a downstream characterization as its definition.
 
 Let
 
@@ -105,7 +115,7 @@ and concludes
 4A / abc = 1 / R.
 ```
 
-The isometry, translation, uniform-scaling, and circle theorems then use that proved bridge. The formal target therefore applies to the same area-and-side-length quantity named by the frozen exact contract and numerical kernel.
+The isometry, translation, uniform-scaling, and circle theorems use that proved bridge. The formal target therefore applies to the same area-and-side-length quantity named by the frozen exact contract and numerical kernel.
 
 ## Declarative production-source boundary
 
@@ -119,9 +129,9 @@ It requires:
 - only the explicitly permitted `@[simp]` attribute; and
 - no project-defined compile-time or foreign execution surface, including `run_cmd`, `run_tac`, initializers, custom syntax or elaborators, unsafe or partial declarations, native evaluation, foreign hooks, or IO/process/filesystem APIs.
 
-The scanner removes nested comments and string literals before token inspection and carries self-tests for accepted and rejected examples. Before protected recompilation it writes a root-owned source receipt containing every production source digest and import list. That receipt is checked before and after every module compilation. The `qsolcompile` identity is also terminated before an emitted object is inspected or frozen.
+The scanner removes nested comments and string literals before token inspection and carries self-tests for accepted and rejected examples. Before protected recompilation it writes a root-owned source receipt containing every production source digest and import list. That receipt is checked before and after every module compilation. The `qsolcompile` identity is terminated before an emitted object is inspected or frozen.
 
-This boundary deliberately permits tactics supplied by the exact pinned dependency graph while preventing reviewed project source from spawning a competing writer for the object being authenticated.
+This boundary permits tactics supplied by the exact pinned dependency graph while preventing reviewed project source from spawning a competing writer for the object being authenticated.
 
 ## Workflow roles
 
@@ -147,7 +157,7 @@ This boundary deliberately permits tactics supplied by the exact pinned dependen
 12. recomputes the dependency closure against a protected receipt after compilation; and
 13. executes the non-initializing theorem audit under the read-only `qsolaudit` identity.
 
-The isolated job therefore does not depend on a competing workflow winning a source-cache race. The project `.lake/build` objects produced by `qsolbuild` are not eligible for the final protected import path.
+The isolated job does not depend on a competing workflow winning a source-cache race. The project `.lake/build` objects produced by `qsolbuild` are not eligible for the final protected import path.
 
 ### Sole release-grade cold authority
 
@@ -155,7 +165,7 @@ The manually dispatched `lean-isolated-audit / isolated-cold-trust` job is the o
 
 Dependency resolution runs under the dedicated `qsolresolve` identity. Every resolver process is terminated before the manifest or dependency source is verified or transferred to root ownership. Only after that source boundary is closed does the separate `qsolbuild` identity receive generated Lake/build output surfaces.
 
-After dependency compilation, every `qsolbuild` process is terminated before dependency objects are transferred to root ownership and made read-only. The job records the complete dependency artifact closure in a protected receipt, performs the declarative source-bound project recompilation, and verifies the closure again before the theorem audit. This order prevents resolver, build, or compiler descendants from retaining a writable file descriptor across an accepted freeze boundary.
+After dependency compilation, every `qsolbuild` process is terminated before dependency objects are transferred to root ownership and made read-only. The job records the complete dependency artifact closure in a protected receipt, performs declarative source-bound project recompilation, and verifies the closure again before the theorem audit. This order prevents resolver, build, or compiler descendants from retaining a writable file descriptor across an accepted freeze boundary.
 
 The removed legacy `lean-phase1 / cold-trust` job has no remaining evidentiary authority.
 
@@ -163,7 +173,7 @@ The removed legacy `lean-phase1 / cold-trust` job has no remaining evidentiary a
 
 `Lean/GeoReason/Audit.lean` is an executable audit runner rather than a command file that imports `GeoReason` in its header.
 
-Its `main` function uses `Lean.withImportModules` to load the protected `GeoReason` object graph with the API default `loadExts := false`. Imported project `initialize` actions are therefore not executed in the audit process. The importer uses trust level `0`, and the runner inspects the resulting environment directly.
+Its `main` function uses `Lean.withImportModules` to load the protected `GeoReason` object graph with imported extension initializers disabled. The importer uses trust level `0`, and the runner inspects the resulting environment directly.
 
 For every `GEO_LEAN_TGT_001` through `GEO_LEAN_TGT_012`, the runner requires:
 
@@ -182,7 +192,7 @@ Only after all twelve declarations pass does the runner print:
 QSOL_PROTECTED_AUDIT_COMPLETE targets=12 theorem_kinds=verified axiom_allowlist=verified project_initializers=not_executed
 ```
 
-CI requires an exact full-line match. A project initializer cannot forge the record because project initializers are never executed by the protected importer and production project modules are rejected if they introduce initializer or compile-time execution surfaces.
+CI requires an exact full-line match.
 
 ## Dependency reconstruction and cache policy
 
@@ -193,11 +203,11 @@ In summary:
 - the fast lane may reuse only externally anchored dependency artifacts;
 - the isolated PR lane can verify a source-cache hit or securely resolve pinned source on a miss;
 - dependency source is frozen before artifact restoration begins;
-- the isolated cold lane reconstructs dependencies without any cache restore;
+- the isolated cold lane reconstructs dependencies without cache restore;
 - resolver, build, and compiler identities are terminated before their outputs are accepted or frozen; and
 - protected source and dependency receipts are verified after project compilation and before audit.
 
-The independent `phase1-reference` workflow remains a separate gate and must continue reproducing the immutable numerical Phase 1 evidence unchanged.
+The independent `phase1-reference` workflow remains a separate gate and must continue reproducing the immutable numerical Phase 1 evidence unchanged while later Python instrumentation is added.
 
 ## Formalization boundary
 
@@ -217,17 +227,17 @@ This Lean development proves statements in exact mathematics over real normed an
 The intended evidence relation remains:
 
 ```text
-immutable MATH-SPEC exact contract
+immutable v0.1.0 MATH-SPEC exact contract
         |
-        +--> Lean 4 proof layer
+        +--> immutable v0.2.0 Lean 4 proof layer
         |
         +--> Python numerical/conformance layer
                   |
                   +--> frozen GEO-SIM-001 evidence
 ```
 
-Agreement between formal and numerical layers is an explicit conformance question, not an identity assumed by documentation.
+Phase 2 capture is a new empirical instrumentation layer downstream of this relation; it is not a formal consequence of the Lean proof.
 
 ## Change policy
 
-The formalization targets immutable `v0.1.0`. If a later proof exposes a defect in the frozen mathematical contract, `v0.1.0` remains unchanged. The correction receives a new repository and release identity, and affected theorem targets are updated or reproved against that new target.
+The formalization targets immutable `v0.1.0` and is itself frozen in immutable `v0.2.0`. If later work exposes a defect in either frozen contract or proof layer, preserve the historical releases and create a new repository/release identity for the correction and any affected reproving.

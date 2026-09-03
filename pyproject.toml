@@ -5,12 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "qsol-geo-reason"
 version = "0.1.0"
-description = "Deterministic reference instrumentation for geometric-reasoning research."
+description = "Deterministic geometry instrumentation and canonical local-model capture for geometric-reasoning research."
 requires-python = ">=3.11"
 license = {text = "Apache-2.0"}
 
+[project.optional-dependencies]
+capture = [
+    "torch>=2.2",
+    "transformers>=4.40",
+]
+
 [project.scripts]
 qsol-geo-sim = "qsol_geo_reason.cli:main"
+qsol-geo-capture = "qsol_geo_reason.capture_cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
