@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 from .canonical import sha256_json
 from .capture_backend import HuggingFacePyTorchBackend
-from .capture_common import (CAPTURE_PROTOCOL_ID, CAPTURE_SCHEMA_VERSION, _ALLOWED_EVIDENCE, _CAPTURE_PHASE, _LAYER_INDEX_SEMANTICS, _STEP_SPAN_SEMANTICS, CaptureBackend, CaptureContractError, _common_prefix_length, _compose_text, _pool_span, _require_git_sha, _sha256_text, _validate_backend_layer, _validate_token_ids)
+from .capture_common import (CAPTURE_PROTOCOL_ID, CAPTURE_SCHEMA_VERSION, _ALLOWED_EVIDENCE, _CAPTURE_PHASE, _LAYER_INDEX_SEMANTICS, _SIMULATION_BACKEND, _STEP_SPAN_SEMANTICS, CaptureBackend, CaptureContractError, _common_prefix_length, _compose_text, _pool_span, _require_git_sha, _sha256_text, _validate_backend_layer, _validate_token_ids)
 from .capture_validation import validate_capture_request
 from .capture_provenance import _validate_backend_metadata
 
@@ -75,6 +75,8 @@ def execute_capture(
         backend.assert_execution_request(validated)
     steps, prefix_ids = _capture_steps(validated, backend)
     observed = dict(backend.metadata())
+    if evidence_class == "SIMULATION":
+        observed["name"] = _SIMULATION_BACKEND
     _validate_backend_metadata(observed, validated, evidence_class)
     request_sha = sha256_json(validated)
     identity = {
