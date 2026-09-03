@@ -59,8 +59,8 @@
         "trust_remote_code": {"const": false},
         "device": {
           "oneOf": [
-            {"type": "string", "pattern": "^cuda:[0-9]+$"},
-            {"type": "string", "minLength": 1, "pattern": "^(?!cuda(?::|$))\\S+$"}
+            {"enum": ["cpu", "mps"]},
+            {"type": "string", "pattern": "^cuda:[0-9]+$"}
           ]
         },
         "dtype": {"enum": ["float32", "float16", "bfloat16"]},
