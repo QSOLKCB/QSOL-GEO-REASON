@@ -102,11 +102,25 @@ class CaptureRound6RegressionTests(unittest.TestCase):
                     _validate_production_metadata_shape(mutated, request)
 
     def test_backend_reuse_is_bound_to_applied_seed(self):
+        request = fixture_request()
         backend = object.__new__(HuggingFacePyTorchBackend)
         backend._applied_seed = 17
-        backend.assert_execution_request({"determinism": {"seed": 17}})
+        backend._model_identifier = request["model"]["identifier"]
+        backend._tokenizer_identifier = request["model"]["tokenizer_identifier"]
+        matching = {
+            "determinism": {"seed": 17},
+            "model": {
+                "identifier": request["model"]["identifier"],
+                "tokenizer_identifier": request["model"]["tokenizer_identifier"],
+            },
+        }
+        backend.assert_execution_request(matching)
+        changed = {
+            "determinism": {"seed": 18},
+            "model": matching["model"],
+        }
         with self.assertRaisesRegex(CaptureContractError, "applied seed"):
-            backend.assert_execution_request({"determinism": {"seed": 18}})
+            backend.assert_execution_request(changed)
         self.assertIn(
             "backend.assert_execution_request(validated)",
             inspect.getsource(execute_capture),
