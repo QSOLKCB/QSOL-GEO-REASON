@@ -101,11 +101,19 @@ class CaptureRound5RegressionTests(unittest.TestCase):
             self.assertIsNotNone(re.search(pattern, "value"))
 
         device_options = schema["$defs"]["backend"]["properties"]["device"]["oneOf"]
-        device_patterns = [option["pattern"] for option in device_options]
-        self.assertFalse(any(re.fullmatch(pattern, "   \t") for pattern in device_patterns))
-        self.assertTrue(any(re.fullmatch(pattern, "cpu") for pattern in device_patterns))
-        self.assertTrue(any(re.fullmatch(pattern, "cuda:0") for pattern in device_patterns))
-        self.assertFalse(any(re.fullmatch(pattern, "cuda") for pattern in device_patterns))
+
+        def matches(option: dict, value: str) -> bool:
+            if "enum" in option:
+                return value in option["enum"]
+            pattern = option.get("pattern")
+            return isinstance(pattern, str) and re.fullmatch(pattern, value) is not None
+
+        self.assertFalse(any(matches(option, "   \t") for option in device_options))
+        self.assertTrue(any(matches(option, "cpu") for option in device_options))
+        self.assertTrue(any(matches(option, "mps") for option in device_options))
+        self.assertTrue(any(matches(option, "cuda:0") for option in device_options))
+        self.assertFalse(any(matches(option, "cuda") for option in device_options))
+        self.assertFalse(any(matches(option, "xpu:0") for option in device_options))
 
 
 if __name__ == "__main__":
