@@ -13,15 +13,19 @@ from .capture_common import (
     _CAPTURE_PHASE,
     _PRODUCTION_BACKEND,
     _PRODUCTION_BACKEND_KEYS,
+    _SIMULATION_BACKEND,
     _SIMULATION_BACKEND_KEYS,
     CaptureContractError,
     _require_exact_keys,
 )
 
 
-def _validate_backend_identity(observed: Mapping[str, Any], request: Mapping[str, Any]) -> None:
-    if observed.get("name") != _PRODUCTION_BACKEND:
-        raise CaptureContractError(f"backend metadata name must be {_PRODUCTION_BACKEND!r}")
+def _validate_backend_identity(
+    observed: Mapping[str, Any], request: Mapping[str, Any], evidence_class: str
+) -> None:
+    expected_name = _PRODUCTION_BACKEND if evidence_class == "OBSERVATION" else _SIMULATION_BACKEND
+    if observed.get("name") != expected_name:
+        raise CaptureContractError(f"backend metadata name must be {expected_name!r} for {evidence_class}")
     if observed.get("observed_model_commit") != request["model"]["revision"]:
         raise CaptureContractError("observed model commit does not match the frozen request revision")
     if observed.get("observed_tokenizer_commit") != request["model"]["tokenizer_revision"]:
@@ -138,7 +142,7 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
 def _validate_backend_metadata(observed: Mapping[str, Any], request: Mapping[str, Any], evidence_class: str) -> None:
     required = _PRODUCTION_BACKEND_KEYS if evidence_class == "OBSERVATION" else _SIMULATION_BACKEND_KEYS
     _require_exact_keys(observed, required=set(required), where=f"{evidence_class.lower()} backend_observed")
-    _validate_backend_identity(observed, request)
+    _validate_backend_identity(observed, request, evidence_class)
     expected = {
         "device": request["backend"]["device"],
         "dtype": request["backend"]["dtype"],
