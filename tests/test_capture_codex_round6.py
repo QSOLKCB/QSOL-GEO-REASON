@@ -38,6 +38,9 @@ def valid_production_shape(request: dict) -> dict:
         "mkl_num_threads": None,
         "cuda_device_name": None,
         "cuda_device_capability": None,
+        "cuda_resolved_device_index": None,
+        "cuda_device_uuid": None,
+        "cuda_visible_devices": None,
         "cuda_build_version": None,
         "nvidia_driver_version": None,
         "float32_matmul_precision": None,
@@ -47,14 +50,21 @@ def valid_production_shape(request: dict) -> dict:
         "mps_mac_model": None,
         "mps_cpu_brand": None,
         "mps_macos_version": None,
+        "mps_fallback_env": None,
+        "mps_fast_math_env": None,
         "torch_num_threads": 1,
         "torch_num_interop_threads": 1,
         "cudnn_version": None,
         "cuda_matmul_allow_tf32": None,
         "cudnn_allow_tf32": None,
+        "sdpa_flash_enabled": None,
+        "sdpa_mem_efficient_enabled": None,
+        "sdpa_math_enabled": None,
+        "sdpa_cudnn_enabled": None,
         "mps_device_active": False,
         "mps_built": False,
         "mps_available": False,
+        "autocast_disabled": True,
         "hidden_state_block_path": "layers",
         "hidden_state_count": max(request["capture"]["layers"]) + 2,
         "observed_hidden_state_dtypes": {
@@ -105,20 +115,18 @@ class CaptureRound6RegressionTests(unittest.TestCase):
         request = fixture_request()
         backend = object.__new__(HuggingFacePyTorchBackend)
         backend._applied_seed = 17
+        backend._determinism_mode = request["determinism"]["mode"]
         backend._model_identifier = request["model"]["identifier"]
+        backend._model_revision = request["model"]["revision"]
         backend._tokenizer_identifier = request["model"]["tokenizer_identifier"]
-        matching = {
-            "determinism": {"seed": 17},
-            "model": {
-                "identifier": request["model"]["identifier"],
-                "tokenizer_identifier": request["model"]["tokenizer_identifier"],
-            },
-        }
+        backend._tokenizer_revision = request["model"]["tokenizer_revision"]
+        backend._device = request["backend"]["device"]
+        backend._dtype_name = request["backend"]["dtype"]
+        matching = json.loads(json.dumps(request))
+        matching["determinism"]["seed"] = 17
         backend.assert_execution_request(matching)
-        changed = {
-            "determinism": {"seed": 18},
-            "model": matching["model"],
-        }
+        changed = json.loads(json.dumps(matching))
+        changed["determinism"]["seed"] = 18
         with self.assertRaisesRegex(CaptureContractError, "applied seed"):
             backend.assert_execution_request(changed)
         self.assertIn(
