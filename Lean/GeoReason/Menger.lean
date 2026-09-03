@@ -1,5 +1,6 @@
-import Mathlib.Geometry.Euclidean.Circumcenter
+import Mathlib.Geometry.Euclidean.Angle.Sphere
 import Mathlib.Tactic.FieldSimp
+import Mathlib.Tactic.Nlinarith
 
 namespace GeoReason
 
@@ -9,18 +10,100 @@ open Affine
 
 variable {V : Type*} [NormedAddCommGroup V] [InnerProductSpace ℝ V]
 
-/-- Exact Menger curvature for an ordered triple, matching GEO-MATH-006.
+/-- Exact unsigned area of the ordered triangle, using the standard
+`A = ab sin(θ) / 2` formula at the middle point. -/
+noncomputable def mengerTriangleArea (p : Fin 3 → V) : ℝ :=
+  (dist (p 0) (p 1) * dist (p 1) (p 2) *
+      Real.sin (EuclideanGeometry.angle (p 0) (p 1) (p 2))) / 2
 
-For an affinely independent triple this is the reciprocal of its Euclidean
-circumradius. Affinely dependent triples, including repeated or collinear
-points, use the project convention `κ = 0`.
+/-- Product `abc` of the three side lengths in GEO-MATH-006. -/
+def mengerSideProduct (p : Fin 3 → V) : ℝ :=
+  dist (p 0) (p 1) * dist (p 1) (p 2) * dist (p 0) (p 2)
+
+/-- GEO-MATH-006, defined from the frozen `4A/(abc)` formula.
+
+For an affinely independent triple, `A` is `mengerTriangleArea` and `a b c`
+is `mengerSideProduct`. Affinely dependent triples, including repeated or
+collinear points, use the frozen project convention `κ = 0`.
 -/
 noncomputable def mengerCurvature (p : Fin 3 → V) : ℝ := by
+  classical
+  exact if AffineIndependent ℝ p then
+    4 * mengerTriangleArea p / mengerSideProduct p
+  else
+    0
+
+/-- The circumradius presentation used to derive transformation laws. This is
+not the definition of project curvature; its equivalence to the frozen
+`4A/(abc)` definition is proved below. -/
+noncomputable def circumradiusMengerCurvature (p : Fin 3 → V) : ℝ := by
   classical
   exact if h : AffineIndependent ℝ p then
     1 / (⟨p, h⟩ : Affine.Simplex ℝ V 2).circumradius
   else
     0
+
+/-- For a nondegenerate triple, the frozen `4A/(abc)` definition equals the
+reciprocal circumradius. This is the formal bridge asserted by GEO-MATH-006. -/
+theorem mengerCurvature_of_affineIndependent (p : Fin 3 → V)
+    (h : AffineIndependent ℝ p) :
+    mengerCurvature p =
+      1 / (⟨p, h⟩ : Affine.Simplex ℝ V 2).circumradius := by
+  classical
+  let s : Affine.Simplex ℝ V 2 := ⟨p, h⟩
+  have h01 : (0 : Fin 3) ≠ 1 := by decide
+  have h02 : (0 : Fin 3) ≠ 2 := by decide
+  have h12 : (1 : Fin 3) ≠ 2 := by decide
+  have hp01 : p 0 ≠ p 1 := h.injective.ne h01
+  have hp02 : p 0 ≠ p 2 := h.injective.ne h02
+  have hp12 : p 1 ≠ p 2 := h.injective.ne h12
+  have hd01 : dist (p 0) (p 1) ≠ 0 := dist_ne_zero.mpr hp01
+  have hd02 : dist (p 0) (p 2) ≠ 0 := dist_ne_zero.mpr hp02
+  have hd12 : dist (p 1) (p 2) ≠ 0 := dist_ne_zero.mpr hp12
+  have hsineLaw :
+      dist (p 0) (p 2) /
+          Real.sin (EuclideanGeometry.angle (p 0) (p 1) (p 2)) =
+        2 * s.circumradius := by
+    simpa [s] using
+      s.dist_div_sin_angle_eq_two_mul_circumradius h01 h02 h12
+  have hsin :
+      Real.sin (EuclideanGeometry.angle (p 0) (p 1) (p 2)) ≠ 0 := by
+    intro hzero
+    rw [hzero, div_zero] at hsineLaw
+    nlinarith [s.circumradius_pos]
+  have hchord :
+      dist (p 0) (p 2) =
+        (2 * s.circumradius) *
+          Real.sin (EuclideanGeometry.angle (p 0) (p 1) (p 2)) :=
+    (div_eq_iff hsin).mp hsineLaw
+  unfold mengerCurvature
+  rw [if_pos h]
+  change
+    4 *
+          ((dist (p 0) (p 1) * dist (p 1) (p 2) *
+              Real.sin (EuclideanGeometry.angle (p 0) (p 1) (p 2))) /
+            2) /
+        (dist (p 0) (p 1) * dist (p 1) (p 2) * dist (p 0) (p 2)) =
+      1 / s.circumradius
+  calc
+    _ =
+        2 * Real.sin (EuclideanGeometry.angle (p 0) (p 1) (p 2)) /
+          dist (p 0) (p 2) := by
+            field_simp [hd01, hd02, hd12]
+            <;> ring
+    _ = 1 / s.circumradius := by
+      field_simp [hd02, s.circumradius_pos.ne']
+      nlinarith [hchord]
+
+/-- The area/side-length definition and the circumradius presentation agree on
+both the nondegenerate branch and the frozen zero-convention branch. -/
+theorem mengerCurvature_eq_circumradiusMengerCurvature (p : Fin 3 → V) :
+    mengerCurvature p = circumradiusMengerCurvature p := by
+  classical
+  by_cases h : AffineIndependent ℝ p
+  · rw [mengerCurvature_of_affineIndependent p h]
+    simp [circumradiusMengerCurvature, h]
+  · simp [mengerCurvature, circumradiusMengerCurvature, h]
 
 /-- Affine Euclidean isometries preserve the exact project Menger curvature. -/
 theorem mengerCurvature_affineIsometry (f : V →ᵃⁱ[ℝ] V) (p : Fin 3 → V) :
@@ -29,8 +112,8 @@ theorem mengerCurvature_affineIsometry (f : V →ᵃⁱ[ℝ] V) (p : Fin 3 → V
   by_cases h : AffineIndependent ℝ p
   · have hfp : AffineIndependent ℝ (fun i => f (p i)) := by
       simpa [Function.comp_def] using h.map' f.toAffineMap f.injective
-    unfold mengerCurvature
-    rw [dif_pos hfp, dif_pos h]
+    rw [mengerCurvature_of_affineIndependent _ hfp,
+      mengerCurvature_of_affineIndependent _ h]
     let s : Affine.Simplex ℝ V 2 := ⟨p, h⟩
     have hs :
         (⟨fun i => f (p i), hfp⟩ : Affine.Simplex ℝ V 2) =
@@ -44,8 +127,7 @@ theorem mengerCurvature_affineIsometry (f : V →ᵃⁱ[ℝ] V) (p : Fin 3 → V
       apply h
       exact AffineIndependent.of_comp f.toAffineMap (by
         simpa [Function.comp_def] using hbad)
-    unfold mengerCurvature
-    rw [dif_neg hfp, dif_neg h]
+    simp [mengerCurvature, h, hfp]
 
 /-- The affine Euclidean isometry `x ↦ Q x + t`. -/
 def linearTranslateIsometry (Q : V ≃ₗᵢ[ℝ] V) (t : V) : V →ᵃⁱ[ℝ] V :=
@@ -131,8 +213,8 @@ theorem GEO_LEAN_TGT_010 (s : ℝ) (hs : s ≠ 0) (p : Fin 3 → V) :
     let scaled : Affine.Simplex ℝ V 2 := ⟨fun i => s • p i, hsp⟩
     have hradius : scaled.circumradius = |s| * base.circumradius := by
       simpa [base, scaled] using circumradius_scale s hs p h
-    unfold mengerCurvature
-    rw [dif_pos hsp, dif_pos h]
+    rw [mengerCurvature_of_affineIndependent _ hsp,
+      mengerCurvature_of_affineIndependent _ h]
     change 1 / scaled.circumradius = (1 / |s|) * (1 / base.circumradius)
     rw [hradius]
     field_simp [abs_ne_zero.mpr hs, base.circumradius_pos.ne']
@@ -141,9 +223,7 @@ theorem GEO_LEAN_TGT_010 (s : ℝ) (hs : s ≠ 0) (p : Fin 3 → V) :
       apply h
       exact AffineIndependent.of_comp (scaleAffineEquiv s hs).toAffineMap (by
         simpa [Function.comp_def] using hbad)
-    unfold mengerCurvature
-    rw [dif_neg hsp, dif_neg h]
-    simp
+    simp [mengerCurvature, h, hsp]
 
 /-- GEO-LEAN-TGT-011 — a nondegenerate triple on a Euclidean circle of
 radius `r` has Menger curvature `1/r`.
@@ -166,8 +246,7 @@ theorem GEO_LEAN_TGT_011 (p : Fin 3 → V) (h : AffineIndependent ℝ p)
     simpa [s] using hon i
   have hradius : r = s.circumradius :=
     s.eq_circumradius_of_dist_eq hc' hon'
-  unfold mengerCurvature
-  rw [dif_pos h]
+  rw [mengerCurvature_of_affineIndependent p h]
   change 1 / s.circumradius = 1 / r
   rw [← hradius]
 

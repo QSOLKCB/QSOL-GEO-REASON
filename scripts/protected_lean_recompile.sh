@@ -11,20 +11,73 @@ audit_root="/opt/qsol-lean-audit"
 protected_base="$audit_root/recompiled"
 dependency_path_file="$audit_root/dependency-lean-path"
 audit_path_file="$audit_root/lean-path"
+source_receipt="$audit_root/project-source-receipt.json"
 project_build_lib="$GITHUB_WORKSPACE/.lake/build/lib/lean"
 source_root="$GITHUB_WORKSPACE/Lean"
+source_purity_script="$GITHUB_WORKSPACE/scripts/verify_lean_source_purity.py"
 
 lean_bin="$LEAN_HOME/bin/lean"
 test -x "$lean_bin"
+test -f "$source_purity_script"
+test ! -L "$source_purity_script"
 test "$(sha256sum "$lean_bin" | awk '{print $1}')" = "$PINNED_LEAN_BIN_SHA256"
 test "$(sha256sum "$audit_root/Audit.lean" | awk '{print $1}')" = "$PINNED_AUDIT_SHA256"
+source_purity_sha="$(sha256sum "$source_purity_script" | awk '{print $1}')"
+
+# Establish a root-owned receipt for the complete, closed production source
+# surface before any project module is elaborated. The verifier rejects all
+# project-defined compile-time execution mechanisms, including run_cmd,
+# run_tac, initializers, custom elaborators/macros, unsafe declarations,
+# foreign hooks, native evaluation, and IO/process/filesystem APIs.
+tmp_source_receipt="$(mktemp)"
+/usr/bin/python3 "$source_purity_script" \
+  --root "$source_root" \
+  --self-test \
+  --receipt "$tmp_source_receipt" \
+  --write-receipt
+sudo install -o root -g root -m 0444 "$tmp_source_receipt" "$source_receipt"
+rm -f "$tmp_source_receipt"
+test ! -L "$source_receipt"
+
+verify_project_source() {
+  test "$(sha256sum "$source_purity_script" | awk '{print $1}')" = "$source_purity_sha"
+  /usr/bin/python3 "$source_purity_script" \
+    --root "$source_root" \
+    --receipt "$source_receipt"
+}
+
+terminate_qsolcompile() {
+  sudo pkill -TERM -u qsolcompile 2>/dev/null || true
+  for _ in 1 2 3 4 5; do
+    if ! sudo pgrep -u qsolcompile >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  sudo pkill -KILL -u qsolcompile 2>/dev/null || true
+  sleep 1
+  if sudo pgrep -u qsolcompile >/dev/null 2>&1; then
+    echo "qsolcompile descendant survived protected compilation boundary" >&2
+    exit 1
+  fi
+}
 
 # The compiler identity exists only for direct, source-bound project
 # recompilation. It never evaluates the project lakefile and owns no reviewed
 # source, dependency artifact, protected audit input, or prior module root.
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin qsolcompile 2>/dev/null || true
+terminate_qsolcompile
 sudo rm -rf /tmp/qsolcompile-home
 sudo install -d -o qsolcompile -g qsolcompile -m 0700 /tmp/qsolcompile-home
+
+if sudo -u qsolcompile test -w "$source_purity_script"; then
+  echo "Protected compiler can write source-purity verifier" >&2
+  exit 1
+fi
+if sudo -u qsolcompile test -w "$source_receipt"; then
+  echo "Protected compiler can write production source receipt" >&2
+  exit 1
+fi
 
 # Build a dependency-only search path. In particular, the project output made
 # by qsolbuild is deliberately excluded from the protected theorem audit.
@@ -80,6 +133,7 @@ compile_protected_module() {
   output_file="$module_root/$output_rel"
   output_dir="$(dirname "$output_file")"
 
+  verify_project_source
   test -f "$source_file"
   test ! -L "$source_file"
   if sudo -u qsolcompile test -w "$source_file"; then
@@ -91,9 +145,12 @@ compile_protected_module() {
     exit 1
   fi
 
-  # Give this compiler invocation one fresh output root. Prior roots are
-  # already root-owned/read-only, so later module elaboration cannot replace
-  # earlier reviewed objects.
+  # Give this compiler invocation one fresh output root and one fresh HOME.
+  # Prior roots are already root-owned/read-only, so later elaboration cannot
+  # replace earlier reviewed objects.
+  terminate_qsolcompile
+  sudo rm -rf /tmp/qsolcompile-home
+  sudo install -d -o qsolcompile -g qsolcompile -m 0700 /tmp/qsolcompile-home
   sudo install -d -o qsolcompile -g qsolcompile -m 0700 "$module_root" "$output_dir"
   if sudo -u qsolbuild test -w "$module_root"; then
     echo "qsolbuild can write protected compiler output root: $module_root" >&2
@@ -111,18 +168,21 @@ compile_protected_module() {
       -o "$output_file" \
       "$source_file"
 
-  # A reviewed module may perform compile-time IO. Do not allow descendants
-  # of that elaboration to survive into the next module's writable root.
-  sudo pkill -KILL -u qsolcompile 2>/dev/null || true
+  # The production subset forbids source-controlled compile-time execution.
+  # Terminate the compiler identity before examining the accepted object anyway,
+  # closing every descriptor and providing defense in depth against descendants.
+  terminate_qsolcompile
+  verify_project_source
 
-  # The runner intentionally cannot traverse the fresh 0700 compiler-owned
-  # root. Verify the emitted object through the privileged boundary, then
-  # immediately transfer the entire root to read-only root ownership.
+  # Verify the emitted object only after the compiler identity is process-free,
+  # then transfer the entire root to read-only root ownership.
   sudo test -f "$output_file"
   sudo test ! -L "$output_file"
+  output_sha="$(sudo sha256sum "$output_file" | awk '{print $1}')"
   sudo chown -R root:root "$module_root"
   sudo find "$module_root" -type d -exec chmod 0555 {} +
   sudo find "$module_root" -type f -exec chmod 0444 {} +
+  test "$(sudo sha256sum "$output_file" | awk '{print $1}')" = "$output_sha"
 
   for identity in qsolbuild qsolcompile qsolaudit; do
     if sudo -u "$identity" test -w "$module_root"; then
@@ -189,6 +249,9 @@ compile_protected_module \
   "GeoReason.olean" \
   "$assembled_root:$dependency_lean_path"
 
+terminate_qsolcompile
+verify_project_source
+
 # The final audit path contains only the assembled source-bound project graph
 # plus the already authenticated dependency closure. The qsolbuild project tree
 # is never eligible for import by the final protected audit.
@@ -230,9 +293,10 @@ test -f "$assembled_root/GeoReason.olean"
 
 test "$(sha256sum "$lean_bin" | awk '{print $1}')" = "$PINNED_LEAN_BIN_SHA256"
 test "$(sha256sum "$audit_root/Audit.lean" | awk '{print $1}')" = "$PINNED_AUDIT_SHA256"
+test "$(sha256sum "$source_purity_script" | awk '{print $1}')" = "$source_purity_sha"
 
 find "$protected_base" -type f -name '*.olean' -print0 \
   | sort -z \
   | xargs -0 sha256sum
 
-echo "Protected GeoReason recompilation assembled one source-bound package root and excluded qsolbuild project objects from the audit path."
+echo "Protected GeoReason recompilation accepted only a closed, non-executable production source subset and excluded qsolbuild project objects from the audit path."
