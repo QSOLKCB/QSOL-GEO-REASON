@@ -26,9 +26,15 @@ jobs:
   isolated-audit:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Verify declarative production Lean source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_lean_source_purity.py --root Lean --self-test
 
       - name: Verify declared Lean toolchain
         shell: bash
@@ -103,9 +109,9 @@ jobs:
             lake-manifest.json
             .lean-cache/source-receipt.json
           key: ${{ steps.source-key.outputs.key }}
-          fail-on-cache-miss: true
 
-      - name: Purge generated package Lake state
+      - name: Purge generated package Lake state from restored source cache
+        if: steps.source-cache.outputs.cache-hit == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -115,6 +121,7 @@ jobs:
           done
 
       - name: Verify restored dependency source state
+        if: steps.source-cache.outputs.cache-hit == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -124,6 +131,104 @@ jobs:
             --expected-manifest-sha256 "$EXPECTED_LAKE_MANIFEST_SHA256" \
             --dependency-declaration lakefile.lean \
             --receipt .lean-cache/source-receipt.json
+
+      - name: Resolve dependency sources inside isolated cache-miss boundary
+        if: steps.source-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_lean_source_purity.py --root Lean --self-test
+          sudo useradd --system --no-create-home --shell /usr/sbin/nologin qsolresolve 2>/dev/null || true
+
+          terminate_qsolresolve() {
+            sudo pkill -TERM -u qsolresolve 2>/dev/null || true
+            for _ in 1 2 3 4 5; do
+              if ! sudo pgrep -u qsolresolve >/dev/null 2>&1; then
+                return 0
+              fi
+              sleep 1
+            done
+            sudo pkill -KILL -u qsolresolve 2>/dev/null || true
+            sleep 1
+            if sudo pgrep -u qsolresolve >/dev/null 2>&1; then
+              echo "qsolresolve descendant survived isolated source-resolution boundary" >&2
+              exit 1
+            fi
+          }
+          terminate_qsolresolve
+
+          sudo chmod o+x /home/runner /home/runner/work "$GITHUB_WORKSPACE/.." "$GITHUB_WORKSPACE"
+          sudo chown -R root:root Lean scripts lakefile.lean lean-toolchain
+          sudo chmod -R a-w Lean scripts lakefile.lean lean-toolchain
+
+          sudo rm -rf .lake .lean-cache lake-manifest.json /tmp/qsolresolve-home
+          sudo install -d -o qsolresolve -g qsolresolve -m 0700 .lake /tmp/qsolresolve-home
+          sudo install -o qsolresolve -g qsolresolve -m 0600 /dev/null lake-manifest.json
+          sudo chown root:root "$GITHUB_WORKSPACE"
+          sudo chmod 0555 "$GITHUB_WORKSPACE"
+
+          for input in Lean lakefile.lean lean-toolchain scripts; do
+            if sudo -u qsolresolve test -w "$input"; then
+              echo "Source resolver can write reviewed input: $input" >&2
+              exit 1
+            fi
+          done
+          sudo -u qsolresolve test -w .lake
+          sudo -u qsolresolve test -w lake-manifest.json
+
+          sudo -u qsolresolve env -i \
+            HOME=/tmp/qsolresolve-home \
+            PATH="$LEAN_HOME/bin:/usr/bin:/bin" \
+            MATHLIB_NO_CACHE_ON_UPDATE=1 \
+            "$LEAN_HOME/bin/lake" update
+
+          # No source byte or generated object is trusted until every resolver
+          # descendant is gone and every inherited descriptor is closed.
+          terminate_qsolresolve
+          test -d .lake/packages
+          test ! -L .lake
+          test ! -L .lake/packages
+          test "$(realpath .lake/packages)" = "$GITHUB_WORKSPACE/.lake/packages"
+          test -f lake-manifest.json
+          test ! -L lake-manifest.json
+          test "$(sha256sum lake-manifest.json | awk '{print $1}')" = "$EXPECTED_LAKE_MANIFEST_SHA256"
+
+          for pkg in .lake/packages/*; do
+            [ -d "$pkg" ] || continue
+            test ! -L "$pkg"
+            sudo rm -rf "$pkg/.lake"
+          done
+
+          sudo install -d -o root -g root -m 0755 .lean-cache
+          sudo /usr/bin/python3 scripts/verify_lean_source_state.py \
+            --root .lake/packages \
+            --lake-manifest lake-manifest.json \
+            --expected-manifest-sha256 "$EXPECTED_LAKE_MANIFEST_SHA256" \
+            --dependency-declaration lakefile.lean \
+            --receipt .lean-cache/source-receipt.json \
+            --write-receipt
+          sudo rm -rf /tmp/qsolresolve-home
+
+      - name: Freeze verified dependency source and open artifact-only slots
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f .lean-cache/source-receipt.json
+          runner_uid="$(id -u)"
+          runner_gid="$(id -g)"
+
+          sudo chown -R root:root .lake/packages lake-manifest.json .lean-cache/source-receipt.json
+          sudo chmod -R a-w .lake/packages lake-manifest.json .lean-cache/source-receipt.json
+          sudo chown "$runner_uid:$runner_gid" .lake .lean-cache
+          sudo chmod 0755 .lake .lean-cache
+
+          # The pinned cache action may populate only generated package build
+          # roots. Authenticated dependency source and Git metadata are already
+          # root-owned and read-only before artifact transport begins.
+          for pkg in .lake/packages/*; do
+            [ -d "$pkg" ] || continue
+            sudo install -d -o "$runner_uid" -g "$runner_gid" -m 0755 "$pkg/.lake"
+          done
 
       - name: Derive audited build cache identity
         id: build-key
@@ -164,6 +269,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 scripts/verify_lean_source_purity.py --root Lean --self-test
           sudo useradd --system --no-create-home --shell /usr/sbin/nologin qsolbuild 2>/dev/null || true
           sudo useradd --system --no-create-home --shell /usr/sbin/nologin qsolaudit 2>/dev/null || true
 
@@ -175,12 +281,7 @@ jobs:
           echo "PINNED_AUDIT_SHA256=$audit_sha" >> "$GITHUB_ENV"
           echo "PINNED_DEPENDENCY_RECEIPT_SHA256=$receipt_sha" >> "$GITHUB_ENV"
 
-          # Allow isolated identities to traverse into the checkout only.
           sudo chmod o+x /home/runner /home/runner/work "$GITHUB_WORKSPACE/.." "$GITHUB_WORKSPACE"
-
-          # Freeze every reviewed theorem/config/dependency input and the
-          # protected recompilation helper before any project Lake
-          # configuration is elaborated.
           sudo chown -R root:root Lean scripts .lake/packages lakefile.lean lean-toolchain lake-manifest.json
           sudo chmod -R a-w Lean scripts .lake/packages lakefile.lean lean-toolchain lake-manifest.json
           sudo chown root:root .lake
@@ -188,15 +289,9 @@ jobs:
 
           sudo install -d -o qsolbuild -g qsolbuild -m 0700 /tmp/qsolbuild-home
           sudo install -d -o qsolaudit -g qsolaudit -m 0700 /tmp/qsolaudit-home
-
-          # Lake stores compiled package configurations in workspace .lake/config.
-          # Only the non-sudo build identity may populate that generated area.
           sudo rm -rf .lake/config .lake/build
           sudo install -d -o qsolbuild -g qsolbuild -m 0700 .lake/config
 
-          # Pre-create the one deterministic ProofWidgets marker that must live
-          # beside tracked source. qsolbuild can write this file only, not its
-          # root-owned parent directory or any tracked dependency input.
           lock_file="$GITHUB_WORKSPACE/.lake/packages/proofwidgets/widget/package-lock.json"
           hash_file="${lock_file}.hash"
           test -f "$lock_file"
@@ -213,8 +308,6 @@ jobs:
           sudo chown root:root "$marker_script"
           sudo chmod 0444 "$marker_script"
 
-          # Lake must be able to inspect authenticated remote.origin.url after
-          # the privilege drop, while neither isolated identity may change it.
           config_count=0
           while IFS= read -r -d '' config; do
             config_count="$((config_count + 1))"
@@ -249,7 +342,6 @@ jobs:
           test ! -L "$hash_file"
           sudo chown root:root "$hash_file"
           sudo chmod 0444 "$hash_file"
-          echo "Materialized ProofWidgets Lake hash without evaluating project lakefile.lean."
 
       - name: Prime Lake configuration under build-only privileges
         shell: bash
@@ -270,9 +362,6 @@ jobs:
           sudo chown -R root:root .lake/config
           sudo find .lake/config -type d -exec chmod 0555 {} +
           sudo find .lake/config -type f -exec chmod 0444 {} +
-
-          # Any compile-time side effects from configuration elaboration are
-          # discarded from the project output surface before the real build.
           sudo rm -rf .lake/build
           sudo install -d -o qsolbuild -g qsolbuild -m 0755 .lake/build
 
@@ -309,9 +398,7 @@ jobs:
           terminate_qsolbuild() {
             sudo pkill -TERM -u qsolbuild 2>/dev/null || true
             for _ in 1 2 3 4 5; do
-              if ! sudo pgrep -u qsolbuild >/dev/null 2>&1; then
-                return 0
-              fi
+              if ! sudo pgrep -u qsolbuild >/dev/null 2>&1; then return 0; fi
               sleep 1
             done
             sudo pkill -KILL -u qsolbuild 2>/dev/null || true
@@ -322,9 +409,6 @@ jobs:
             fi
           }
           terminate_qsolbuild
-
-          # Killing the identity closes every writable descriptor before mode
-          # changes freeze the project object graph.
           sudo chown -R root:root .lake/build
           sudo chmod -R a-w .lake/build
           test "$(sha256sum /opt/qsol-lean-audit/Audit.lean | awk '{print $1}')" = "$PINNED_AUDIT_SHA256"
@@ -362,10 +446,11 @@ jobs:
             --expected-xor-fold-sha256 "$EXPECTED_BUILD_XOR_SHA256" \
             --expected-artifact-count "$EXPECTED_BUILD_ARTIFACT_COUNT"
 
-      - name: Reject project proof placeholders and explicit axioms
+      - name: Reject project proof placeholders, explicit axioms, and executable source
         shell: bash
         run: |
           set -euo pipefail
+          python3 scripts/verify_lean_source_purity.py --root Lean --self-test
           if grep -RInE '(^|[^[:alnum:]_])(sorry|admit)([^[:alnum:]_]|$)|^[[:space:]]*axiom[[:space:]]' Lean --exclude='Audit.lean'; then
             echo "Lean proof placeholder or explicit axiom declaration found" >&2
             exit 1
@@ -388,8 +473,7 @@ jobs:
             echo "Non-initializing protected audit completion marker missing" >&2
             exit 1
           fi
-          echo "Protected audit imported GeoReason with loadExts=false; project initializers were not executed." >> "$GITHUB_STEP_SUMMARY"
-          echo "qsolbuild descendants were terminated before object freeze and the dependency closure was reverified afterward." >> "$GITHUB_STEP_SUMMARY"
+          echo "Protected audit accepted a closed non-executable project source surface and source-bound project objects." >> "$GITHUB_STEP_SUMMARY"
 
   isolated-cold-trust:
     if: github.event_name == 'workflow_dispatch'
@@ -397,6 +481,12 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Verify declarative production Lean source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_lean_source_purity.py --root Lean --self-test
 
       - name: Verify declared Lean toolchain
         shell: bash
@@ -437,6 +527,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 scripts/verify_lean_source_purity.py --root Lean --self-test
+          sudo useradd --system --no-create-home --shell /usr/sbin/nologin qsolresolve 2>/dev/null || true
           sudo useradd --system --no-create-home --shell /usr/sbin/nologin qsolbuild 2>/dev/null || true
           sudo useradd --system --no-create-home --shell /usr/sbin/nologin qsolaudit 2>/dev/null || true
 
@@ -445,17 +537,13 @@ jobs:
           sudo install -o root -g root -m 0444 Lean/GeoReason/Audit.lean /opt/qsol-lean-audit/Audit.lean
           echo "PINNED_AUDIT_SHA256=$audit_sha" >> "$GITHUB_ENV"
 
-          # Allow isolated identities to traverse into the checkout, but make
-          # the checkout root itself non-writable before any project Lake code
-          # is evaluated.
           sudo chmod o+x /home/runner /home/runner/work "$GITHUB_WORKSPACE/.." "$GITHUB_WORKSPACE"
           sudo chown -R root:root Lean scripts lakefile.lean lean-toolchain
           sudo chmod -R a-w Lean scripts lakefile.lean lean-toolchain
 
-          sudo rm -rf .lake lake-manifest.json
-          sudo install -d -o qsolbuild -g qsolbuild -m 0700 .lake
-          sudo install -o qsolbuild -g qsolbuild -m 0600 /dev/null lake-manifest.json
-          sudo install -d -o qsolbuild -g qsolbuild -m 0700 /tmp/qsolbuild-home
+          sudo rm -rf .lake lake-manifest.json /tmp/qsolresolve-home /tmp/qsolbuild-home
+          sudo install -d -o qsolresolve -g qsolresolve -m 0700 .lake /tmp/qsolresolve-home
+          sudo install -o qsolresolve -g qsolresolve -m 0600 /dev/null lake-manifest.json
           sudo install -d -o qsolaudit -g qsolaudit -m 0700 /tmp/qsolaudit-home
 
           sudo chown root:root "$GITHUB_WORKSPACE"
@@ -466,26 +554,46 @@ jobs:
             lakefile.lean \
             lean-toolchain \
             scripts/verify_lean_source_state.py \
+            scripts/verify_lean_source_purity.py \
             scripts/lean_dependency_receipt.py \
             scripts/protected_lean_recompile.sh; do
-            if sudo -u qsolbuild test -w "$input"; then
+            if sudo -u qsolresolve test -w "$input"; then
               echo "Cold resolver can write reviewed input before lake update: $input" >&2
               exit 1
             fi
           done
-          sudo -u qsolbuild test -w .lake
-          sudo -u qsolbuild test -w lake-manifest.json
+          sudo -u qsolresolve test -w .lake
+          sudo -u qsolresolve test -w lake-manifest.json
 
-      - name: Resolve and verify pinned dependency sources under isolated identity
+      - name: Resolve and verify pinned dependency sources under isolated resolver identity
         shell: bash
         run: |
           set -euo pipefail
-          sudo -u qsolbuild env -i \
-            HOME=/tmp/qsolbuild-home \
+          terminate_qsolresolve() {
+            sudo pkill -TERM -u qsolresolve 2>/dev/null || true
+            for _ in 1 2 3 4 5; do
+              if ! sudo pgrep -u qsolresolve >/dev/null 2>&1; then return 0; fi
+              sleep 1
+            done
+            sudo pkill -KILL -u qsolresolve 2>/dev/null || true
+            sleep 1
+            if sudo pgrep -u qsolresolve >/dev/null 2>&1; then
+              echo "qsolresolve descendant survived cold source-resolution boundary" >&2
+              exit 1
+            fi
+          }
+          terminate_qsolresolve
+
+          sudo -u qsolresolve env -i \
+            HOME=/tmp/qsolresolve-home \
             PATH="$LEAN_HOME/bin:/usr/bin:/bin" \
             MATHLIB_NO_CACHE_ON_UPDATE=1 \
             "$LEAN_HOME/bin/lake" update
 
+          # Permission changes cannot revoke inherited descriptors. Terminate
+          # the dedicated resolver identity before validating or freezing any
+          # source checkout or manifest byte.
+          terminate_qsolresolve
           test -d .lake
           test ! -L .lake
           test -d .lake/packages
@@ -493,8 +601,7 @@ jobs:
           test "$(realpath .lake/packages)" = "$GITHUB_WORKSPACE/.lake/packages"
           test -f lake-manifest.json
           test ! -L lake-manifest.json
-          actual_manifest_sha="$(sha256sum lake-manifest.json | awk '{print $1}')"
-          test "$actual_manifest_sha" = "$EXPECTED_LAKE_MANIFEST_SHA256"
+          test "$(sha256sum lake-manifest.json | awk '{print $1}')" = "$EXPECTED_LAKE_MANIFEST_SHA256"
 
           for pkg in .lake/packages/*; do
             [ -d "$pkg" ] || continue
@@ -502,19 +609,16 @@ jobs:
             sudo rm -rf "$pkg/.lake"
           done
 
-          sudo -u qsolbuild env -i \
-            HOME=/tmp/qsolbuild-home \
-            PATH=/usr/bin:/bin \
-            /usr/bin/python3 scripts/verify_lean_source_state.py \
-              --root .lake/packages \
-              --lake-manifest lake-manifest.json \
-              --expected-manifest-sha256 "$EXPECTED_LAKE_MANIFEST_SHA256" \
-              --dependency-declaration lakefile.lean
-
+          sudo /usr/bin/python3 scripts/verify_lean_source_state.py \
+            --root .lake/packages \
+            --lake-manifest lake-manifest.json \
+            --expected-manifest-sha256 "$EXPECTED_LAKE_MANIFEST_SHA256" \
+            --dependency-declaration lakefile.lean
           sudo chown -R root:root .lake/packages lake-manifest.json
           sudo chmod -R a-w .lake/packages lake-manifest.json
           sudo chown root:root .lake
           sudo chmod 0755 .lake
+          sudo rm -rf /tmp/qsolresolve-home
 
       - name: Prepare cold-build and audit privilege boundaries
         shell: bash
@@ -523,17 +627,19 @@ jobs:
           test "$(sha256sum /opt/qsol-lean-audit/Audit.lean | awk '{print $1}')" = "$PINNED_AUDIT_SHA256"
           test "$(sha256sum "$LEAN_HOME/bin/lean" | awk '{print $1}')" = "$PINNED_LEAN_BIN_SHA256"
           test "$(sha256sum "$LEAN_HOME/bin/lake" | awk '{print $1}')" = "$PINNED_LAKE_BIN_SHA256"
+          if sudo pgrep -u qsolresolve >/dev/null 2>&1; then
+            echo "Resolver identity survived into cold-build preparation" >&2
+            exit 1
+          fi
 
           for pkg in .lake/packages/*; do
             [ -d "$pkg" ] || continue
             sudo mkdir -p "$pkg/.lake"
             sudo chown -R qsolbuild:qsolbuild "$pkg/.lake"
           done
-          sudo rm -rf .lake/config .lake/build
-          sudo install -d -o qsolbuild -g qsolbuild -m 0700 .lake/config
+          sudo rm -rf .lake/config .lake/build /tmp/qsolbuild-home
+          sudo install -d -o qsolbuild -g qsolbuild -m 0700 .lake/config /tmp/qsolbuild-home
           sudo install -d -o qsolbuild -g qsolbuild -m 0755 .lake/build
-          sudo install -d -o qsolbuild -g qsolbuild -m 0700 /tmp/qsolbuild-home
-          sudo install -d -o qsolaudit -g qsolaudit -m 0700 /tmp/qsolaudit-home
 
           lock_file="$GITHUB_WORKSPACE/.lake/packages/proofwidgets/widget/package-lock.json"
           hash_file="${lock_file}.hash"
@@ -627,9 +733,7 @@ jobs:
           terminate_qsolbuild() {
             sudo pkill -TERM -u qsolbuild 2>/dev/null || true
             for _ in 1 2 3 4 5; do
-              if ! sudo pgrep -u qsolbuild >/dev/null 2>&1; then
-                return 0
-              fi
+              if ! sudo pgrep -u qsolbuild >/dev/null 2>&1; then return 0; fi
               sleep 1
             done
             sudo pkill -KILL -u qsolbuild 2>/dev/null || true
@@ -640,9 +744,6 @@ jobs:
             fi
           }
           terminate_qsolbuild
-
-          # Mode changes are applied only after every qsolbuild process has
-          # exited, so no writable descriptor can survive the freeze.
           sudo chown -R root:root .lake/build .lake/packages
           sudo chmod -R a-w .lake/build .lake/packages
 
@@ -695,10 +796,11 @@ jobs:
             --expected-xor-fold-sha256 "$EXPECTED_BUILD_XOR_SHA256" \
             --expected-artifact-count "$EXPECTED_BUILD_ARTIFACT_COUNT"
 
-      - name: Reject cold project proof placeholders and explicit axioms
+      - name: Reject cold project proof placeholders, explicit axioms, and executable source
         shell: bash
         run: |
           set -euo pipefail
+          python3 scripts/verify_lean_source_purity.py --root Lean --self-test
           if grep -RInE '(^|[^[:alnum:]_])(sorry|admit)([^[:alnum:]_]|$)|^[[:space:]]*axiom[[:space:]]' Lean --exclude='Audit.lean'; then
             echo "Lean proof placeholder or explicit axiom declaration found" >&2
             exit 1
@@ -721,4 +823,4 @@ jobs:
             echo "Non-initializing protected cold audit completion marker missing" >&2
             exit 1
           fi
-          echo "Release-grade cold authority completed with no project initializer execution and a post-freeze dependency revalidation." >> "$GITHUB_STEP_SUMMARY"
+          echo "Release-grade cold authority terminated its dedicated resolver before source verification and accepted only non-executable project source." >> "$GITHUB_STEP_SUMMARY"
