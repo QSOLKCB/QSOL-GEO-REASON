@@ -10,6 +10,7 @@ from typing import Any, Mapping
 from .canonical import sha256_json
 from .capture_common import (_BLOCK_CONTAINER_PATHS, _CAPTURE_PHASE, _PRODUCTION_BACKEND, _PRODUCTION_BACKEND_KEYS, _SIMULATION_BACKEND_KEYS, CaptureContractError, _require_exact_keys)
 
+
 def _validate_backend_identity(observed: Mapping[str, Any], request: Mapping[str, Any]) -> None:
     if observed.get("name") != _PRODUCTION_BACKEND:
         raise CaptureContractError(f"backend metadata name must be {_PRODUCTION_BACKEND!r}")
@@ -17,6 +18,41 @@ def _validate_backend_identity(observed: Mapping[str, Any], request: Mapping[str
         raise CaptureContractError("observed model commit does not match the frozen request revision")
     if observed.get("observed_tokenizer_commit") != request["model"]["tokenizer_revision"]:
         raise CaptureContractError("observed tokenizer commit does not match the frozen request revision")
+
+
+def _is_lower_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _validate_snapshot_receipt(observed: Mapping[str, Any], prefix: str) -> None:
+    hashes = observed.get(f"{prefix}_snapshot_file_sha256")
+    count = observed.get(f"{prefix}_snapshot_file_count")
+    receipt = observed.get(f"{prefix}_snapshot_receipt_sha256")
+    if not isinstance(hashes, dict) or not hashes:
+        raise CaptureContractError(f"{prefix} snapshot artifact hashes are missing")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise CaptureContractError(f"{prefix} snapshot file count is invalid")
+    if count != len(hashes):
+        raise CaptureContractError(f"{prefix} snapshot file count does not match artifact hashes")
+    for path, digest in hashes.items():
+        if not isinstance(path, str) or not path or not _is_lower_sha256(digest):
+            raise CaptureContractError(f"{prefix} snapshot artifact hashes are malformed")
+    if not _is_lower_sha256(receipt) or receipt != sha256_json(hashes):
+        raise CaptureContractError(f"{prefix} snapshot receipt SHA-256 is invalid")
+
+
+def _validate_required_determinism(observed: Mapping[str, Any], request: Mapping[str, Any]) -> None:
+    enabled = observed.get("deterministic_algorithms_enabled")
+    if not isinstance(enabled, bool):
+        raise CaptureContractError("deterministic_algorithms_enabled must be boolean")
+    if request["determinism"]["mode"] == "required" and enabled is not True:
+        raise CaptureContractError(
+            "required determinism requires deterministic_algorithms_enabled=true"
+        )
 
 
 def _validate_backend_metadata(observed: Mapping[str, Any], request: Mapping[str, Any], evidence_class: str) -> None:
@@ -48,18 +84,9 @@ def _validate_backend_metadata(observed: Mapping[str, Any], request: Mapping[str
         for key, value in production_constants.items():
             if observed.get(key) != value:
                 raise CaptureContractError(f"observation backend provenance field {key} is invalid")
+        _validate_required_determinism(observed, request)
         for prefix in ("model", "tokenizer"):
-            hashes = observed.get(f"{prefix}_snapshot_file_sha256")
-            count = observed.get(f"{prefix}_snapshot_file_count")
-            receipt = observed.get(f"{prefix}_snapshot_receipt_sha256")
-            if not isinstance(hashes, dict) or not hashes:
-                raise CaptureContractError(f"{prefix} snapshot artifact hashes are missing")
-            if count != len(hashes):
-                raise CaptureContractError(f"{prefix} snapshot file count does not match artifact hashes")
-            if any(not isinstance(path, str) or not isinstance(digest, str) or len(digest) != 64 for path, digest in hashes.items()):
-                raise CaptureContractError(f"{prefix} snapshot artifact hashes are malformed")
-            if receipt != sha256_json(hashes):
-                raise CaptureContractError(f"{prefix} snapshot receipt SHA-256 is invalid")
+            _validate_snapshot_receipt(observed, prefix)
 
 
 def _cpu_hardware_metadata(torch_module: Any) -> dict[str, Any]:

@@ -42,6 +42,19 @@ def _require_span(value: Any, *, token_count: int, where: str) -> tuple[int, int
     return start, end
 
 
+def _validate_observed_dtype_map(
+    observed_backend: Mapping[str, Any], recorded_dtypes: Mapping[int, set[str]]
+) -> None:
+    expected = {
+        str(layer_index): sorted(values)
+        for layer_index, values in sorted(recorded_dtypes.items())
+    }
+    if observed_backend.get("observed_hidden_state_dtypes") != expected:
+        raise CaptureContractError(
+            "backend observed_hidden_state_dtypes does not match trajectory layer records"
+        )
+
+
 def verify_capture_bundle(request: Mapping[str, Any], manifest: Mapping[str, Any], trajectory: Mapping[str, Any]) -> dict[str, Any]:
     validated = validate_capture_request(request)
     if canonical_json_bytes(validated) != canonical_json_bytes(request):
@@ -94,6 +107,7 @@ def verify_capture_bundle(request: Mapping[str, Any], manifest: Mapping[str, Any
     cumulative_segments: list[str] = []
     previous_ids = prefix_ids
     stable_dimensions: dict[int, int] = {}
+    recorded_dtypes: dict[int, set[str]] = {}
     for index, (request_step, step) in enumerate(zip(validated["steps"], steps, strict=True)):
         if not isinstance(step, dict):
             raise CaptureContractError(f"trajectory step {index} is not an object")
@@ -138,7 +152,11 @@ def verify_capture_bundle(request: Mapping[str, Any], manifest: Mapping[str, Any
             prior_dim = stable_dimensions.setdefault(requested_layer, dim)
             if dim != prior_dim:
                 raise CaptureContractError(f"layer {requested_layer} vector dimension changed from {prior_dim} to {dim}")
-            _require_nonempty_string(record["observed_dtype"], f"trajectory step {index} layer {requested_layer}.observed_dtype")
+            observed_dtype = _require_nonempty_string(
+                record["observed_dtype"],
+                f"trajectory step {index} layer {requested_layer}.observed_dtype",
+            )
+            recorded_dtypes.setdefault(requested_layer, set()).add(observed_dtype)
             if _require_span(record["pool_span"], token_count=len(input_ids), where=f"trajectory step {index} layer {requested_layer}.pool_span") != expected_pool:
                 raise CaptureContractError(f"pool span mismatch at step {index} layer {requested_layer}")
             vector = record["vector"]
@@ -171,4 +189,6 @@ def verify_capture_bundle(request: Mapping[str, Any], manifest: Mapping[str, Any
         raise CaptureContractError("manifest backend_request does not match request")
     observed = _require_object(manifest["backend_observed"], "manifest backend_observed")
     _validate_backend_metadata(observed, validated, trajectory["evidence_class"])
+    if trajectory["evidence_class"] == "OBSERVATION":
+        _validate_observed_dtype_map(observed, recorded_dtypes)
     return validated

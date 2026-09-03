@@ -9,8 +9,24 @@ from .canonical import canonical_json_bytes
 from .capture_common import CaptureContractError
 from .capture_verify import verify_capture_bundle
 
+
 def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    """Sync directory metadata where the platform exposes POSIX directory fsync.
+
+    Windows does not permit opening directories with ``os.open`` in the same
+    way POSIX does. On Windows the writer still fsyncs every file and publishes
+    the staged directory with one same-volume ``os.replace``; the extra
+    directory-metadata fsync step is therefore intentionally skipped.
+    """
+
+    if os.name == "nt":
+        return
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if directory_flag is None:
+        raise CaptureContractError(
+            "canonical publication requires directory-fsync support on non-Windows platforms"
+        )
+    descriptor = os.open(path, os.O_RDONLY | directory_flag)
     try:
         os.fsync(descriptor)
     finally:
