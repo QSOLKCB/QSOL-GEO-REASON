@@ -13,6 +13,7 @@ It may reuse pinned dependency source state and dependency build artifacts only 
 - the repository `lean-toolchain` bytes match SHA-256 `3aac669c7a910ec2389f4e4f921b605adf6ebf2d1e0c9b9cd0be4d33f3f5db71`, corresponding to `leanprover/lean4:v4.33.1`;
 - the Lean Linux archive matches SHA-256 `890afd185370f85666025b883914ab4f4b339136f8c96167b69cfb62aecaf235`;
 - mathlib is pinned to commit `0df444a360eaa60ab8c11dca51a86af692955474`;
+- the project production modules satisfy the closed declarative-source policy in `scripts/verify_lean_source_purity.py` before and after compilation;
 - the reviewed `lakefile.lean` and frozen `lake-manifest.json` identities are part of the source-cache key;
 - every cached Git dependency is at the manifest revision and its tracked bytes and modes match that commit tree with replacement processing disabled;
 - replacement refs, grafts, suspicious index flags, generated package Lake state, untracked entries, and source-shadowing paths are rejected;
@@ -27,29 +28,65 @@ The former manually dispatched `lean-phase1 / cold-trust` job has been removed. 
 
 ### `lean-isolated-audit / isolated-audit`: protected pull-request gate
 
-The isolated pull-request job restores only externally anchored dependency state, freezes reviewed inputs, builds through the unprivileged `qsolbuild` identity, and then independently recompiles every reviewed GeoReason module from the frozen source using the hash-pinned Lean binary under `qsolcompile`.
+The isolated pull-request job is self-contained with respect to dependency source state. It verifies a declaration-bound source-cache hit when one exists. On a miss, it resolves the exact dependency graph itself under a dedicated `qsolresolve` identity rather than failing or relying on another concurrently running workflow to populate the key.
 
-Each project module receives a fresh writable compiler root. That root is transferred immediately to `root:root`, made read-only, and copied with SHA-256 equality checking into one root-owned assembled `GeoReason` package tree. The final theorem audit never loads the project `.lake/build` objects produced by `qsolbuild`.
+The miss boundary:
+
+1. freezes `Lean/`, `scripts/`, `lakefile.lean`, and `lean-toolchain` root-owned and read-only;
+2. gives `qsolresolve` write access only to its private home, `.lake`, and the pre-created manifest output;
+3. runs the pinned `lake update` with a scrubbed environment;
+4. sends `TERM`, polls, escalates to `KILL`, and verifies that no `qsolresolve` process survives;
+5. only then validates the manifest and dependency worktrees; and
+6. creates the source receipt.
+
+Permission changes do not revoke inherited descriptors. Terminating the resolver identity before verification is therefore part of the source-integrity boundary, not a cleanup convenience.
+
+Whether source was restored or resolved, authenticated dependency source and Git metadata are transferred to `root:root` and made read-only before dependency build artifacts are restored. The pinned cache action receives writable slots only beneath generated package `.lake` directories. It cannot rewrite the source tree being paired with those artifacts.
+
+The job then freezes reviewed inputs, builds through the unprivileged `qsolbuild` identity, and independently recompiles every reviewed GeoReason module from the frozen source using the hash-pinned Lean binary under `qsolcompile`.
 
 Before project outputs are frozen, every process owned by `qsolbuild` is terminated and absence is verified. This closes inherited writable file descriptors before ownership and mode changes become the freeze boundary. The externally anchored dependency receipt is copied into the protected audit directory and the complete dependency artifact closure is recomputed after protected project compilation and before the final audit.
+
+Each project module receives a fresh writable compiler root and private home. The production source receipt is checked before and after the invocation, every `qsolcompile` process is terminated before its output is inspected, and the accepted object is hashed across the ownership freeze. The final theorem audit never loads the project `.lake/build` objects produced by `qsolbuild`.
 
 ### `lean-isolated-audit / isolated-cold-trust`: sole release-grade authority
 
 The manually dispatched `isolated-cold-trust` job is the only workflow authorized to support a release-grade cold-reconstruction statement.
 
-It never restores the dependency source or build caches. Before the first project Lake evaluation it:
+It never restores dependency source or build caches. Before the first project Lake evaluation it:
 
 1. installs and hash-verifies the pinned Lean distribution;
-2. copies the audit runner to a root-owned read-only location;
-3. freezes `Lean/`, `scripts/`, `lakefile.lean`, and `lean-toolchain`;
-4. makes the checkout root non-writable to `qsolbuild`; and
-5. grants the resolver write access only to the pre-created Lake and manifest output surfaces.
+2. verifies the closed declarative production-source surface;
+3. copies the audit runner to a root-owned read-only location;
+4. freezes `Lean/`, `scripts/`, `lakefile.lean`, and `lean-toolchain`;
+5. makes the checkout root non-writable; and
+6. grants a dedicated `qsolresolve` identity write access only to the pre-created Lake and manifest output surfaces.
 
-Dependency resolution and compilation run under `qsolbuild`. After compilation, the job terminates every `qsolbuild` process before freezing `.lake/packages` and `.lake/build`, creates an externally anchored receipt, and installs that receipt root-owned and read-only. Protected GeoReason recompilation then runs under the separate `qsolcompile` identity. The dependency closure is recomputed against the protected receipt after that compilation and immediately before the theorem audit.
+Dependency resolution runs under `qsolresolve`, not under the later build identity. Every resolver process is terminated before the manifest or dependency worktree is inspected, verified, or frozen. Only after that resolver boundary is closed does `qsolbuild` receive generated package Lake and project build output surfaces.
+
+After dependency compilation, the job terminates every `qsolbuild` process before freezing `.lake/packages` and `.lake/build`, creates an externally anchored receipt, and installs that receipt root-owned and read-only. Protected GeoReason recompilation then runs under the separate `qsolcompile` identity using the same declarative source receipt. The dependency closure is recomputed against the protected receipt after that compilation and immediately before the theorem audit.
 
 Only a green `lean-isolated-audit / isolated-cold-trust` run licenses the statement:
 
 > the dependency graph was reconstructed from pinned source under the protected cold boundary on this exact run.
+
+## Declarative production-source policy
+
+`scripts/verify_lean_source_purity.py` defines the project-controlled Lean source accepted by the protected compiler. It is intentionally stricter than ordinary Lean syntax.
+
+The verifier requires:
+
+- exactly the reviewed production module paths;
+- exact per-file import lists;
+- regular non-symlink files;
+- only the permitted `@[simp]` attribute; and
+- no project-defined compile-time or foreign execution surface.
+
+Rejected surfaces include `run_cmd`, `run_tac`, `initialize`, `builtin_initialize`, custom commands, elaborators, syntax or macros, unsafe or partial declarations, native evaluation, foreign hooks, syntax quotation, hash commands, and direct IO/process/filesystem APIs.
+
+The scanner removes nested comments and string literals before checking tokens and includes positive and negative self-tests. It records the production source path, SHA-256, and exact imports in a root-owned receipt. Protected recompilation checks that receipt before and after every module.
+
+Pinned dependency tactics remain available because their implementation belongs to the separately authenticated dependency graph. Project source cannot introduce a process that races the object path being accepted.
 
 ## Non-initializing theorem audit
 
@@ -67,11 +104,11 @@ Because `sorryAx` is outside that allowlist, the same gate establishes sorry-fre
 QSOL_PROTECTED_AUDIT_COMPLETE targets=12 theorem_kinds=verified axiom_allowlist=verified project_initializers=not_executed
 ```
 
-Workflows require an exact full-line match for that record. Output printed by project code cannot substitute for it because project initializers are never run by the protected importer.
+Workflows require an exact full-line match for that record. Output printed by project code cannot substitute for it because project initializers are never run by the protected importer and production modules are rejected if they introduce project-controlled compile-time execution.
 
 ## Source-state receipt semantics
 
-`scripts/verify_lean_source_state.py` verifies source identity independently of compiled artifacts. Its receipt binds:
+`scripts/verify_lean_source_state.py` verifies dependency source identity independently of compiled artifacts. Its receipt binds:
 
 - the reviewed dependency declaration SHA-256;
 - the frozen Lake manifest SHA-256; and
@@ -80,6 +117,8 @@ Workflows require an exact full-line match for that record. Output printed by pr
 The verifier does not use `git status` as integrity evidence. It hashes tracked worktree bytes back to their Git object identities, verifies executable and symlink modes, rejects suspicious index state, disables and rejects replacement mechanisms, sanitizes repository configuration before running Git, and rejects untracked or alternate worktree entries.
 
 Generated package `.lake` state is purged before source verification, so compiled Lake configuration cannot travel inside the source cache and influence later builds without regeneration from verified source.
+
+The project production-source receipt is distinct from this dependency receipt. The former binds the closed GeoReason module surface accepted by `qsolcompile`; the latter binds the pinned external dependency worktrees.
 
 ## Build receipt semantics
 
@@ -107,6 +146,6 @@ These values are reviewed anchors for routine reuse. They do not turn the fast l
 
 ## Scientific boundary
 
-The cache and isolation machinery changes build latency, artifact transport, and trust evidence. It does not change any `GEO-LEAN-TGT-*` theorem, mathematical definition, permitted axiom, numerical fixture, or evidence class.
+The cache and isolation machinery changes build latency, artifact transport, and trust evidence. The Menger bridge now proves that the formal `4A/(abc)` quantity equals reciprocal circumradius on the nondegenerate branch, aligning the formal definition with frozen `GEO-MATH-006` without changing the immutable release.
 
 A green formal workflow proves only the exact Lean statements under its documented trust boundary. It does not by itself prove CPython or IEEE-754 execution, JSON canonicalization, SHA-256 implementations, GitHub infrastructure, serving equivalence, hidden-state extraction, or semantic and mechanistic claims about reasoning.
