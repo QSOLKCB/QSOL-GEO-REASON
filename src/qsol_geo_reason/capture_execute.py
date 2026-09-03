@@ -69,8 +69,10 @@ def execute_capture(
     implementation_revision = _require_git_sha(implementation_revision, "implementation_revision")
     if evidence_class not in _ALLOWED_EVIDENCE:
         raise CaptureContractError(f"evidence_class must be one of {sorted(_ALLOWED_EVIDENCE)}")
-    if evidence_class == "OBSERVATION" and type(backend) is not HuggingFacePyTorchBackend:
-        raise CaptureContractError("OBSERVATION capture requires the concrete HuggingFacePyTorchBackend")
+    if evidence_class == "OBSERVATION":
+        if type(backend) is not HuggingFacePyTorchBackend:
+            raise CaptureContractError("OBSERVATION capture requires the concrete HuggingFacePyTorchBackend")
+        backend.assert_execution_request(validated)
     steps, prefix_ids = _capture_steps(validated, backend)
     observed = dict(backend.metadata())
     _validate_backend_metadata(observed, validated, evidence_class)

@@ -8,7 +8,15 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping
 from .canonical import sha256_json
-from .capture_common import (_BLOCK_CONTAINER_PATHS, _CAPTURE_PHASE, _PRODUCTION_BACKEND, _PRODUCTION_BACKEND_KEYS, _SIMULATION_BACKEND_KEYS, CaptureContractError, _require_exact_keys)
+from .capture_common import (
+    _BLOCK_CONTAINER_PATHS,
+    _CAPTURE_PHASE,
+    _PRODUCTION_BACKEND,
+    _PRODUCTION_BACKEND_KEYS,
+    _SIMULATION_BACKEND_KEYS,
+    CaptureContractError,
+    _require_exact_keys,
+)
 
 
 def _validate_backend_identity(observed: Mapping[str, Any], request: Mapping[str, Any]) -> None:
@@ -55,6 +63,78 @@ def _validate_required_determinism(observed: Mapping[str, Any], request: Mapping
         )
 
 
+def _validate_nullable_string(value: Any, where: str) -> None:
+    if value is not None and not isinstance(value, str):
+        raise CaptureContractError(f"{where} must be string or null")
+
+
+def _validate_nullable_integer(value: Any, where: str) -> None:
+    if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+        raise CaptureContractError(f"{where} must be integer or null")
+
+
+def _validate_nullable_boolean(value: Any, where: str) -> None:
+    if value is not None and not isinstance(value, bool):
+        raise CaptureContractError(f"{where} must be boolean or null")
+
+
+def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Mapping[str, Any]) -> None:
+    """Mirror the production run-manifest schema's field types and domains."""
+    nonempty_strings = (
+        "python_version", "platform", "torch_version", "transformers_version",
+        "model_class", "tokenizer_class", "device",
+    )
+    for field in nonempty_strings:
+        value = observed.get(field)
+        if not isinstance(value, str) or not value:
+            raise CaptureContractError(f"production backend field {field} must be a non-empty string")
+
+    nullable_strings = (
+        "tokenizers_version", "huggingface_hub_version", "attention_implementation",
+        "cpu_machine", "cpu_processor", "cpu_instruction_flags", "omp_num_threads",
+        "mkl_num_threads", "cuda_device_name", "cuda_device_capability",
+        "cuda_build_version", "nvidia_driver_version", "float32_matmul_precision",
+        "nvidia_tf32_override", "torch_allow_tf32_cublas_override",
+        "cublas_workspace_config", "mps_mac_model", "mps_cpu_brand", "mps_macos_version",
+    )
+    for field in nullable_strings:
+        _validate_nullable_string(observed.get(field), f"production backend field {field}")
+
+    for field in ("torch_num_threads", "torch_num_interop_threads", "cudnn_version"):
+        _validate_nullable_integer(observed.get(field), f"production backend field {field}")
+    for field in ("cuda_matmul_allow_tf32", "cudnn_allow_tf32"):
+        _validate_nullable_boolean(observed.get(field), f"production backend field {field}")
+    for field in ("mps_device_active", "mps_built", "mps_available"):
+        if not isinstance(observed.get(field), bool):
+            raise CaptureContractError(f"production backend field {field} must be boolean")
+
+    block_path = observed.get("hidden_state_block_path")
+    if block_path not in _BLOCK_CONTAINER_PATHS:
+        raise CaptureContractError("hidden_state_block_path is not a recognized canonical decoder block path")
+    hidden_state_count = observed.get("hidden_state_count")
+    if isinstance(hidden_state_count, bool) or not isinstance(hidden_state_count, int) or hidden_state_count < 2:
+        raise CaptureContractError("hidden_state_count must be an integer >= 2")
+    requested_layers = request["capture"]["layers"]
+    if any(layer >= hidden_state_count for layer in requested_layers):
+        raise CaptureContractError("hidden_state_count does not cover every requested capture layer")
+
+    dtype_map = observed.get("observed_hidden_state_dtypes")
+    if not isinstance(dtype_map, dict):
+        raise CaptureContractError("observed_hidden_state_dtypes must be an object")
+    expected_keys = {str(layer) for layer in requested_layers}
+    if set(dtype_map) != expected_keys:
+        raise CaptureContractError("observed_hidden_state_dtypes keys do not match requested layers")
+    for layer, values in dtype_map.items():
+        if (
+            not isinstance(layer, str)
+            or not isinstance(values, list)
+            or not values
+            or len(values) != len(set(values))
+            or any(not isinstance(value, str) or not value for value in values)
+        ):
+            raise CaptureContractError("observed_hidden_state_dtypes has an invalid layer dtype set")
+
+
 def _validate_backend_metadata(observed: Mapping[str, Any], request: Mapping[str, Any], evidence_class: str) -> None:
     required = _PRODUCTION_BACKEND_KEYS if evidence_class == "OBSERVATION" else _SIMULATION_BACKEND_KEYS
     _require_exact_keys(observed, required=set(required), where=f"{evidence_class.lower()} backend_observed")
@@ -74,6 +154,7 @@ def _validate_backend_metadata(observed: Mapping[str, Any], request: Mapping[str
         if observed.get(key) != value:
             raise CaptureContractError(f"backend provenance field {key} does not match the capture contract")
     if evidence_class == "OBSERVATION":
+        _validate_production_metadata_shape(observed, request)
         production_constants = {
             "checkpoint_loading_clean": True, "quantization_config_present": False,
             "model_reports_quantized": False, "offloading": "none",

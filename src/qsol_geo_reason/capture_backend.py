@@ -39,10 +39,11 @@ class HuggingFacePyTorchBackend:
         self._device = backend["device"]
         self._dtype_name = backend["dtype"]
         self._determinism_mode = determinism["mode"]
+        self._applied_seed = determinism["seed"]
 
-        torch.manual_seed(determinism["seed"])
+        torch.manual_seed(self._applied_seed)
         if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(determinism["seed"])
+            torch.cuda.manual_seed_all(self._applied_seed)
         if determinism["mode"] == "required":
             torch.use_deterministic_algorithms(True)
 
@@ -72,6 +73,14 @@ class HuggingFacePyTorchBackend:
             self._force_sdpa_math_policy()
         self._model.to(self._device)
         self._model.eval()
+
+    def assert_execution_request(self, request: Mapping[str, Any]) -> None:
+        """Refuse reuse when the request seed differs from the applied backend seed."""
+        seed = request["determinism"]["seed"]
+        if seed != self._applied_seed:
+            raise CaptureContractError(
+                f"backend applied seed {self._applied_seed} does not match execution request seed {seed}"
+            )
 
     def _force_sdpa_math_policy(self) -> None:
         """Force canonical CUDA SDPA policy to math-only for reproducible capture."""

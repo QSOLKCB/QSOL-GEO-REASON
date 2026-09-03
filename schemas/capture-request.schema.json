@@ -2,6 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/QSOLKCB/QSOL-GEO-REASON/schemas/capture-request.schema.json",
   "title": "QSOL-GEO-REASON GEO-CAP-001 canonical capture request",
+  "description": "Structural schema for GEO-CAP-001. Canonical acceptance additionally requires the repository semantic validator because JSON Schema draft 2020-12 cannot express uniqueness by the step_id property across an array of step objects.",
+  "x-qsol-semantic-validation": {
+    "required": true,
+    "command": "qsol-geo-capture --validate-only REQUEST.json",
+    "constraints": ["steps[].step_id must be unique"]
+  },
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "protocol_id", "run_id", "model", "backend", "capture", "determinism", "generation_parameters", "steps"],
@@ -14,7 +20,12 @@
     "capture": {"$ref": "#/$defs/capture"},
     "determinism": {"$ref": "#/$defs/determinism"},
     "generation_parameters": {"$ref": "#/$defs/generationParameters"},
-    "steps": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/step"}},
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/step"},
+      "description": "Ordered steps. step_id uniqueness is a required semantic constraint enforced by the canonical post-schema validator declared in x-qsol-semantic-validation."
+    },
     "notes": {"type": "string"}
   },
   "$defs": {
