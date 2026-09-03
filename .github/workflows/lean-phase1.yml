@@ -14,11 +14,28 @@ on:
       - "LEAN-FORMALIZATION.md"
       - "LEAN-CACHE-POLICY.md"
       - ".github/workflows/lean-phase1.yml"
+  push:
+    branches: ["main"]
+    paths:
+      - "Lean/**"
+      - "scripts/lean_dependency_receipt.py"
+      - "scripts/verify_lean_source_state.py"
+      - "scripts/verify_lean_source_purity.py"
+      - "scripts/protected_lean_recompile.sh"
+      - "lean-toolchain"
+      - "lakefile.lean"
+      - "LEAN-FORMALIZATION.md"
+      - "LEAN-CACHE-POLICY.md"
+      - ".github/workflows/lean-phase1.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-# This workflow is the performance-oriented verified-cache PR lane only.
+# This workflow is the performance-oriented verified-cache regression and
+# cache-maintenance lane. Pull requests validate the current candidate; pushes
+# to main and manual dispatches can seed the same authenticated source/build
+# cache identities for later PRs. It is never release-grade cold authority.
 # Release-grade cold reconstruction is owned exclusively by the isolated
 # workflow's manually dispatched `isolated-cold-trust` job.
 env:

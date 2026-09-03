@@ -1,0 +1,11 @@
+{
+  "fixture_kind": "software_only",
+  "evidence_class": "SIMULATION",
+  "production_artifact_evidence_class": "OBSERVATION",
+  "implementation_revision": "dddddddddddddddddddddddddddddddddddddddd",
+  "expected_run_manifest_id": "ef6e708a48132cc612afe0d2b05b95dcbe14db5d629523a725efee127d575ec1",
+  "expected_manifest_sha256": "a3e292af73f6a4e38892d9f39b54eedddfd24daee85a0c7ce7d891e7d17de75c",
+  "expected_trajectory_sha256": "ebcc68962992edf550b411bb8e2772a019a268ef9b1f47f0490c151e392ddf26",
+  "expected_changed_token_spans": [[1, 4], [4, 7]],
+  "note": "These values come from a deterministic fake/test-double backend and validate software contracts only. They are not empirical hidden-state evidence from an LLM."
+}

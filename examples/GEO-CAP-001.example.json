@@ -1,0 +1,50 @@
+{
+  "schema_version": "1.0.0",
+  "protocol_id": "GEO-CAP-001",
+  "run_id": "replace-with-frozen-run-id",
+  "model": {
+    "identifier": "replace-namespace/replace-model",
+    "revision": "0000000000000000000000000000000000000000",
+    "revision_kind": "hf_commit",
+    "tokenizer_identifier": "replace-namespace/replace-tokenizer",
+    "tokenizer_revision": "0000000000000000000000000000000000000000",
+    "tokenizer_revision_kind": "hf_commit"
+  },
+  "backend": {
+    "name": "huggingface-pytorch",
+    "local_files_only": true,
+    "trust_remote_code": false,
+    "device": "cpu",
+    "dtype": "float32",
+    "quantization": "none"
+  },
+  "capture": {
+    "context_mode": "cumulative",
+    "phase": "replayed_prefix",
+    "layers": [0, 1],
+    "pooling": {"mode": "step_mean"},
+    "prefix_text": "Reason through the following steps carefully.",
+    "step_joiner": "\n"
+  },
+  "determinism": {
+    "mode": "required",
+    "seed": 0
+  },
+  "generation_parameters": {
+    "generation_used": false,
+    "temperature": null,
+    "top_p": null,
+    "top_k": null
+  },
+  "steps": [
+    {
+      "step_id": "step-001",
+      "text": "Replace this with the first preregistered reasoning segment."
+    },
+    {
+      "step_id": "step-002",
+      "text": "Replace this with the second preregistered reasoning segment."
+    }
+  ],
+  "notes": "Template only. Replace the repository identifiers and zero revisions with exact immutable Hugging Face Hub repository IDs and 40-hex commits already available locally before treating the request as production evidence."
+}

@@ -34,9 +34,9 @@ A later phase may prototype early, but its scientific claims must not outrun the
 
 ---
 
-## Phase 1 — Deterministic geometry reference simulation
+## Phase 1 — Deterministic geometry reference simulation and exact formal layer
 
-**Status:** **immutable numerical release complete; all twelve Lean theorem targets implemented in PR #3 as a separate candidate proof layer; final exact-head review and merge of PR #3 remain pending.**
+**Status:** **complete and frozen in two immutable releases: `v0.1.0` for the numerical mathematical kernel and `v0.2.0` for the separate Lean 4 formal evidence layer. Phase 2A instrumentation begins in PR #4; no empirical local-model result exists yet.**
 
 **Goal:** prove that the measurement machinery can recover known geometry before touching model hidden states, while freezing the exact mathematical semantics before later model work depends on them.
 
@@ -47,25 +47,27 @@ A later phase may prototype early, but its scientific claims must not outrun the
 - [x] Implement known causal/control perturbation analogues by construction.
 - [x] Implement order-0, order-1, order-2, and configurable order-k finite differences.
 - [x] Implement path length and cosine alignment primitives.
-- [x] Implement at least one explicitly defined curvature statistic, initially Menger curvature if retained.
+- [x] Implement an explicitly defined curvature statistic using Menger curvature.
 - [x] Implement deterministic alignment/resampling with edge-case tests.
 - [x] Freeze the pairwise arc-length count rule as `m = max(n_X, n_Y)` in the exact mathematical contract.
 - [x] Add degenerate-path, zero-length, repeated-point, short-sequence, and dimension-mismatch tests.
 - [x] Add tiny/large-scale numerical regressions so absolute magnitude alone cannot erase valid geometry.
 - [x] Evaluate represented binary64 Menger `kappa^2` with exact dyadic-rational arithmetic so exact collinearity and genuinely near-collinear nonzero curvature remain distinguishable without an epsilon.
 - [x] Canonicalize emitted coordinates relative to each trajectory origin so representable local geometry survives large absolute coordinate offsets.
-- [x] Preserve ULP-sized canonical offsets at binary64 spacing boundaries by escalating the origin to 17-digit round-trip precision only when the ordinary evidence precision would erase a nonzero displacement.
+- [x] Preserve ULP-sized canonical offsets at binary64 spacing boundaries by escalating the origin to 17-digit round-trip precision only when ordinary evidence precision would erase a nonzero displacement.
 - [x] Verify every nonzero canonical consecutive displacement survives reconstruction, including later steps that do not involve the origin.
 - [x] Derive trajectory metrics and cross-trajectory comparisons from the exact emitted coordinate arrays so serialized points and metrics cannot describe different trajectories.
-- [x] Reject any finite-difference subtraction that overflows to a non-finite binary64 value before it can reach downstream metrics.
+- [x] Reject finite-difference subtraction that overflows to a non-finite binary64 value before it reaches downstream metrics.
 - [x] Reject undefined empty finite-difference comparisons rather than encoding them as zero.
 - [x] Produce frozen reference fixtures with expected numerical outputs.
 - [x] Hash-bind simulation recipe, implementation revision, and result artifacts.
-- [x] Mark every generated result record `evidence_class: SIMULATION`.
+- [x] Mark every generated Phase 1 result record `evidence_class: SIMULATION`.
 
-**Evidence gate:** **PASS on immutable release `v0.1.0`** — numerical recovery of known synthetic properties within the preregistered tolerances in `GEO-SIM-001`, plus metadata-consistent byte-identical frozen replay across Python 3.11, 3.12, and 3.13.
+**Numerical evidence gate:** **PASS on immutable release `v0.1.0`** — numerical recovery of known synthetic properties within the preregistered tolerances in `GEO-SIM-001`, plus metadata-consistent byte-identical frozen replay across Python 3.11, 3.12, and 3.13.
 
-**Immutable release commit:** `1b5ab8b4543b20cdb6d439f7ad215c08e698188f`.
+**Immutable numerical release:** `v0.1.0 — Phase 1 Mathematical Kernel`.
+
+**Immutable numerical release commit:** `1b5ab8b4543b20cdb6d439f7ad215c08e698188f`.
 
 **Bound implementation / mathematical kernel:** `5f45b5e69bcab890a757fffa491cf787f92a5bea`.
 
@@ -75,26 +77,30 @@ A later phase may prototype early, but its scientific claims must not outrun the
 
 **Non-claim:** successful completion says nothing about real LLM reasoning.
 
-**Numerical delivery:** PR #2, merged and published as immutable `v0.1.0`.
-
 ### Phase 1 release/formalization gate
 
-The numerical kernel is frozen. The Lean work is additive evidence and must not alter that release identity.
+The numerical kernel is frozen. The Lean work is additive evidence and does not alter that release identity.
 
 - [x] Obtain a fresh Codex review on the exact PR #2 head with no unresolved correctness findings.
-- [x] Confirm the Python 3.11/3.12/3.13 conformance matrix on the latest frozen candidate.
+- [x] Confirm the Python 3.11/3.12/3.13 conformance matrix on the latest frozen numerical candidate.
 - [x] Merge PR #2 without changing the reviewed mathematical semantics.
 - [x] Create immutable Phase 1 release `v0.1.0` and bind it to commit `1b5ab8b4543b20cdb6d439f7ad215c08e698188f`.
 - [x] Treat that immutable release as the target for the first Lean 4 formalization.
 - [x] Implement all twelve `GEO-LEAN-TGT-*` theorem targets in PR #3 without silently strengthening the release claims.
 - [x] Keep Lean proofs as a separate formal evidence layer; do not claim they automatically prove CPython/IEEE-754 execution.
-- [ ] Obtain a fresh Codex review on the exact PR #3 head with no unresolved correctness findings.
-- [ ] Pass the exact-head routine, protected isolated, and immutable numerical reference checks for PR #3.
-- [ ] Merge PR #3 without rewriting or retagging immutable `v0.1.0`.
+- [x] Obtain final exact-head review on PR #3 with no unresolved correctness findings.
+- [x] Pass the exact-head routine, protected isolated, and immutable numerical reference checks for PR #3.
+- [x] Merge PR #3 without rewriting or retagging immutable `v0.1.0`.
+- [x] Publish the separate formal evidence release `v0.2.0` at merge commit `ec3312dcc102d859819c764a881e2d020662e880`.
+- [x] Make `v0.2.0` immutable.
 
-The sole release-grade cold proof authority is `lean-isolated-audit / isolated-cold-trust`. The routine `lean-phase1` workflow is pull-request-only and cannot serve as a competing manual cold-trust lane.
+**Immutable formal release:** `v0.2.0 — Phase 1 Lean 4 Formal Evidence Layer`.
 
-If the Lean work discovers a mathematical defect in the frozen specification, preserve the frozen release as historical evidence, amend the mathematical contract in a new release, and reprove affected theorem targets against the new identity.
+**Formal release commit:** `ec3312dcc102d859819c764a881e2d020662e880`.
+
+The sole release-grade cold proof authority remains `lean-isolated-audit / isolated-cold-trust`. `lean-phase1` is a verified-cache regression/cache-maintenance lane: PR runs validate candidates, while relevant `main` pushes or explicit maintenance dispatches may seed authenticated caches for later PRs. Those cache-maintenance runs are not a competing cold-trust authority.
+
+If later work discovers a mathematical defect in the frozen specification, preserve both immutable releases as historical evidence, amend the mathematical contract in a new release, and reprove affected theorem targets against the new identity.
 
 ---
 
@@ -104,29 +110,40 @@ If the Lean work discovers a mathematical defect in the frozen specification, pr
 
 ### Phase 2A — Canonical hidden-state capture
 
+**Status:** **instrument implementation introduced in PR #4 under `GEO-CAP-001`; empirical evidence gate remains open until a real frozen local-model capture is executed and reviewed.**
+
 Start with the simplest sufficiently transparent local capture path before introducing serving optimization.
 
 - [ ] Select an initial fully local Hugging Face-compatible model small enough for routine workstation runs.
-- [ ] Freeze model identifier and immutable revision/hash where available.
-- [ ] Record tokenizer revision.
-- [ ] Establish a canonical reference backend, initially a direct Hugging Face/PyTorch-style path unless a stronger reason is documented.
-- [ ] Implement hidden-state capture by layer.
-- [ ] Define step segmentation independently of analysis outcome.
-- [ ] Implement pooling modes such as step mean, last token, context mean, and explicitly bounded context-aware pooling.
-- [ ] Record cumulative versus isolated context mode.
-- [ ] Record dtype and quantization.
-- [ ] Record generation parameters and seeds.
-- [ ] Record repository commit, protocol ID/version, run ID, and run-manifest identity.
-- [ ] Record runtime/library/device metadata.
-- [ ] Define run-manifest and captured-trajectory schemas.
-- [ ] Distinguish prefill, decode, and replayed-prefix capture phases where applicable.
-- [ ] Verify deterministic replay where the backend permits it.
-- [ ] Explicitly record irreducible nondeterminism where it does not.
-- [ ] Add small frozen capture fixtures for CI that do not require shipping restricted model weights.
+- [ ] Freeze the selected production model identifier and immutable revision/hash.
+- [ ] Freeze the selected production tokenizer identifier and immutable revision/hash.
+- [x] Define the canonical reference backend as a direct local Hugging Face/PyTorch replay path in `GEO-CAP-001`.
+- [x] Require full 40-hex Hugging Face model/tokenizer commit identities for canonical production requests.
+- [x] Require `local_files_only=true`, `trust_remote_code=false`, and no quantization in the canonical capture lane.
+- [x] Implement hidden-state capture by explicit layer index.
+- [x] Define step segmentation independently of analysis outcome.
+- [x] Record exact token IDs and derive each changed token span from the longest common token-ID prefix, exposing tokenizer boundary retokenization.
+- [x] Implement `step_mean`, `last_token`, `context_mean`, and explicitly bounded context pooling.
+- [x] Record cumulative versus isolated context mode.
+- [x] Record dtype and quantization policy.
+- [x] Record generation parameters and seeds even when generation itself is not used by replay capture.
+- [x] Record repository commit, protocol ID/version, run ID, and content-addressed run-manifest identity.
+- [x] Record runtime/library/device, attention implementation, cache, offloading, and determinism metadata where available.
+- [x] Define strict capture-request, run-manifest, and captured-trajectory schemas.
+- [x] Make `replayed_prefix` an explicit capture phase and distinguish it from future prefill/decode/cache-reuse measurements.
+- [x] Record per-vector SHA-256, trajectory SHA-256, request SHA-256, run-manifest identity, and manifest SHA-256.
+- [x] Add a software-only deterministic capture-contract fixture for CI without shipping or downloading model weights.
+- [x] Label that test-double fixture `SIMULATION` and forbid interpreting it as a model observation.
+- [ ] Execute the first production `GEO-CAP-001` local-model capture under a frozen request.
+- [ ] Verify deterministic replay for the selected backend where the backend permits it.
+- [ ] Explicitly record irreducible nondeterminism if deterministic replay cannot be established.
+- [ ] Freeze and review the first production capture evidence artifact.
 
-**Evidence gate:** capture provenance is sufficient to identify exactly what vector each trajectory point represents.
+**Evidence gate:** capture provenance is sufficient to identify exactly what vector each trajectory point represents **and an actual frozen local-model capture artifact exists**.
 
-**Claim ceiling:** `OBSERVATION` only after an actual model run is performed.
+**Claim ceiling:** `OBSERVATION` only after an actual model run is performed. Code, schemas, and fake-backend fixtures do not create empirical evidence.
+
+**Protocol:** `protocols/GEO-CAP-001.md`.
 
 ### Phase 2B — Serving-equivalence study
 
@@ -208,8 +225,10 @@ Candidate serving ideas include those motivated by edge-serving systems such as 
 - [ ] Use label permutation or equivalent null analysis where appropriate.
 - [ ] Quantify uncertainty/repeatability across item families and seeds.
 - [ ] Record both positive and null primary outcomes.
+- [ ] Consider `GEO-HYP-002A` and `GEO-HYP-002B` as explicit competing curvature/instability hypotheses rather than merging their directional claims.
+- [ ] Evaluate `GEO-HYP-003` cycle-consistency residual only after its transform cycle and simpler confound controls are frozen.
 
-**Primary motivating hypothesis:** higher-order trajectory structure may align more strongly by logic than absolute representation position does across semantic carriers.
+**Primary motivating hypothesis (`GEO-HYP-001`):** higher-order trajectory structure may align more strongly by logic than absolute representation position does across semantic carriers.
 
 **Falsifier:** logic-conditioned geometry does not exceed matched carrier/control structure under the frozen protocol.
 
@@ -238,9 +257,9 @@ Candidate serving ideas include those motivated by edge-serving systems such as 
 
 ---
 
-## Phase 6 — Cross-model replication and scaling
+## Phase 6 — Cross-model replication, scaling, and lineage extension
 
-**Goal:** determine what aspects of the observed geometry generalize across models and scale.
+**Goal:** determine what aspects of the observed geometry generalize across models, scale, and eventually frozen model lineages.
 
 - [ ] Select multiple sizes within one model family where feasible.
 - [ ] Add at least one different model family.
@@ -261,6 +280,8 @@ Candidate serving ideas include those motivated by edge-serving systems such as 
 - [ ] Re-run frozen primary analyses without retuning thresholds per model.
 - [ ] Preserve the evidence class of the experiment being replicated.
 - [ ] Record replication status as `replicated`, `failed`, or `mixed` according to the declared replication scope.
+- [ ] If earlier evidence warrants it, preregister the checkpoint-lineage transition study in `GEO-HYP-004`.
+- [ ] If earlier evidence warrants it, preregister the matched fine-tuning resistance study in `GEO-HYP-005`.
 
 **Falsifier:** apparent geometric signatures fail to replicate outside the original model/protocol configuration, or an apparent cross-model advantage cannot be separated from material exposure or serving differences.
 
@@ -286,6 +307,7 @@ Only begin confirmatory work after Phases 4–6 identify a reproducible candidat
 - [ ] Test whether geometry changes without reasoning improvement.
 - [ ] Test whether reasoning improves without the targeted geometry change.
 - [ ] Compare against a non-geometric auxiliary-loss control.
+- [ ] Consider `GEO-HYP-006` control-effort scaling only after a reproducible observational instability metric exists.
 
 **Falsifiers include:**
 
@@ -309,6 +331,8 @@ Only begin confirmatory work after Phases 4–6 identify a reproducible candidat
 - [ ] Compare predictions against simpler alternatives such as lexical similarity, confidence, token position, sequence length, generic activation magnitude, and serving-backend artefacts.
 - [ ] Test whether the proposed mechanism predicts failures, not only successes.
 - [ ] Document unresolved alternative explanations.
+- [ ] Consider `GEO-HYP-007` sidecar control first in prediction-only shadow mode before any actuation.
+- [ ] Consider `GEO-HYP-009` error-correction/robustness tests without assuming a quantum-code mechanism.
 
 **Claim ceiling:** `MECHANISM` only if the high bar in `SCIENTIFIC-CONTRACT.md` is satisfied.
 
@@ -332,13 +356,18 @@ Only begin confirmatory work after Phases 4–6 identify a reproducible candidat
 
 ## Deferred / conditional research branches
 
-These are deliberately not assumed to be useful until earlier evidence warrants them:
+These are deliberately not assumed to be useful until earlier evidence warrants them. Candidate theory-derived branches are registered in `RESEARCH-HYPOTHESIS-MAP.md`, which is non-normative and cannot promote a source idea into evidence.
 
 - [ ] intrinsic-dimension estimation of reasoning trajectories;
 - [ ] topology/manifold-learning analysis beyond simple trajectory metrics;
 - [ ] tangent-space transport across semantic carriers;
 - [ ] attractor-state analysis;
 - [ ] information-geometric metrics;
+- [ ] curvature/entropy coupling (`GEO-HYP-008`) only after both observables are independently defined;
+- [ ] SU(3) relational structure (`GEO-HYP-010`) only against explicit lower-complexity alternatives;
+- [ ] E8/Weyl latent structure (`GEO-HYP-011`) only against generic lattice/projection/null alternatives;
+- [ ] qutrit/CP2 observer geometry (`GEO-HYP-012`) remains outside current repository scope absent an explicit empirical bridge;
+- [ ] semantic-reactor architecture (`GEO-HYP-013`) only after intervention evidence warrants a new architecture;
 - [ ] geometric regularization during pretraining rather than fine-tuning;
 - [ ] latent-step reasoning without explicit textual intermediate steps;
 - [ ] formal verification beyond the Phase 1 exact-math kernel where it reduces real ambiguity;
