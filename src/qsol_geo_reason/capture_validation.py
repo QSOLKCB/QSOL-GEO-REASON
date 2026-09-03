@@ -1,8 +1,13 @@
 """Request/checkpoint validation for GEO-CAP-001."""
 from __future__ import annotations
 import copy
+import re
 from typing import Any, Mapping
 from .capture_common import (CAPTURE_SCHEMA_VERSION, CAPTURE_PROTOCOL_ID, _ALLOWED_CONTEXT_MODES, _ALLOWED_DETERMINISM, _ALLOWED_DTYPES, _ALLOWED_POOLING_MODES, _CAPTURE_PHASE, _PRODUCTION_BACKEND, _LOADING_INFO_KEYS, CaptureContractError, _require_bool, _require_exact_keys, _require_git_sha, _require_hf_repo_id, _require_nonempty_string, _require_nonnegative_int, _require_object)
+
+_MAX_TORCH_SEED = (1 << 64) - 1
+_CUDA_DEVICE = re.compile(r"^cuda:[0-9]+$")
+
 
 def validate_capture_request(request: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(request, dict):
@@ -47,7 +52,9 @@ def validate_capture_request(request: Mapping[str, Any]) -> dict[str, Any]:
         raise CaptureContractError("backend.local_files_only must be true")
     if _require_bool(backend["trust_remote_code"], "backend.trust_remote_code") is not False:
         raise CaptureContractError("backend.trust_remote_code must be false")
-    _require_nonempty_string(backend["device"], "backend.device")
+    device = _require_nonempty_string(backend["device"], "backend.device")
+    if device.startswith("cuda") and not _CUDA_DEVICE.fullmatch(device):
+        raise CaptureContractError("canonical CUDA capture requires backend.device='cuda:N' with an explicit non-negative device index")
     if backend["dtype"] not in _ALLOWED_DTYPES:
         raise CaptureContractError(f"backend.dtype must be one of {sorted(_ALLOWED_DTYPES)}")
     if backend["quantization"] != "none":
@@ -92,7 +99,10 @@ def validate_capture_request(request: Mapping[str, Any]) -> dict[str, Any]:
     _require_exact_keys(determinism, required={"mode", "seed"}, where="determinism")
     if determinism["mode"] not in _ALLOWED_DETERMINISM:
         raise CaptureContractError(f"determinism.mode must be one of {sorted(_ALLOWED_DETERMINISM)}")
-    determinism["seed"] = _require_nonnegative_int(determinism["seed"], "determinism.seed")
+    seed = _require_nonnegative_int(determinism["seed"], "determinism.seed")
+    if seed > _MAX_TORCH_SEED:
+        raise CaptureContractError(f"determinism.seed must be <= {_MAX_TORCH_SEED} for torch.manual_seed")
+    determinism["seed"] = seed
 
     generation = _require_object(root["generation_parameters"], "generation_parameters")
     if "generation_used" not in generation:
