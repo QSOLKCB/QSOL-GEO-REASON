@@ -1,7 +1,10 @@
 """Atomic capture-bundle publication for GEO-CAP-001."""
 from __future__ import annotations
+import ctypes
+import errno
 import os
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping
@@ -15,7 +18,7 @@ def _fsync_directory(path: Path) -> None:
 
     Windows does not permit opening directories with ``os.open`` in the same
     way POSIX does. On Windows the writer still fsyncs every file and publishes
-    the staged directory with one same-volume ``os.replace``; the extra
+    the staged directory with one same-volume no-replace rename; the extra
     directory-metadata fsync step is therefore intentionally skipped.
     """
 
@@ -33,13 +36,72 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _raise_publish_error(error_number: int) -> None:
+    if error_number in {errno.EEXIST, errno.ENOTEMPTY}:
+        raise CaptureContractError(
+            "output_dir already exists; canonical capture bundles are immutable publications"
+        )
+    raise OSError(error_number, os.strerror(error_number))
+
+
+def _rename_directory_noreplace(source: Path, destination: Path) -> None:
+    """Atomically publish ``source`` only if ``destination`` does not exist.
+
+    Canonical publication fails closed when the platform does not expose an
+    atomic no-replace directory rename primitive. This removes the TOCTOU gap
+    inherent in an existence check followed by ``os.replace``.
+    """
+
+    source_bytes = os.fsencode(source)
+    destination_bytes = os.fsencode(destination)
+
+    if os.name == "nt":
+        try:
+            os.rename(source, destination)
+        except FileExistsError as exc:
+            raise CaptureContractError(
+                "output_dir already exists; canonical capture bundles are immutable publications"
+            ) from exc
+        return
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    if sys.platform.startswith("linux"):
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is None:
+            raise CaptureContractError(
+                "canonical publication requires Linux renameat2(RENAME_NOREPLACE)"
+            )
+        renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        renameat2.restype = ctypes.c_int
+        at_fdcwd = -100
+        rename_noreplace = 1
+        if renameat2(at_fdcwd, source_bytes, at_fdcwd, destination_bytes, rename_noreplace) != 0:
+            _raise_publish_error(ctypes.get_errno())
+        return
+
+    if sys.platform == "darwin":
+        renamex_np = getattr(libc, "renamex_np", None)
+        if renamex_np is None:
+            raise CaptureContractError(
+                "canonical publication requires macOS renamex_np(RENAME_EXCL)"
+            )
+        renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        renamex_np.restype = ctypes.c_int
+        rename_excl = 0x00000004
+        if renamex_np(source_bytes, destination_bytes, rename_excl) != 0:
+            _raise_publish_error(ctypes.get_errno())
+        return
+
+    raise CaptureContractError(
+        "canonical publication requires an atomic no-replace directory rename primitive"
+    )
+
+
 def write_capture_bundle(output_dir: Path, request: Mapping[str, Any], manifest: Mapping[str, Any], trajectory: Mapping[str, Any]) -> None:
     validated = verify_capture_bundle(request, manifest, trajectory)
     output_dir = Path(output_dir)
     parent = output_dir.parent
     parent.mkdir(parents=True, exist_ok=True)
-    if output_dir.exists() or output_dir.is_symlink():
-        raise CaptureContractError("output_dir already exists; canonical capture bundles are immutable publications")
     payloads = {"capture-request.json": validated, "run-manifest.json": manifest, "captured-trajectory.json": trajectory}
     staging = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.staging-", dir=str(parent)))
     published = False
@@ -50,9 +112,7 @@ def write_capture_bundle(output_dir: Path, request: Mapping[str, Any], manifest:
                 handle.flush()
                 os.fsync(handle.fileno())
         _fsync_directory(staging)
-        if output_dir.exists() or output_dir.is_symlink():
-            raise CaptureContractError("output_dir appeared during publication; refusing to replace it")
-        os.replace(staging, output_dir)
+        _rename_directory_noreplace(staging, output_dir)
         published = True
         _fsync_directory(parent)
     finally:
