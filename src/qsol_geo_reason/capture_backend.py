@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .canonical import sha256_json
-from .capture_common import _CAPTURE_PHASE, _PRODUCTION_BACKEND, CaptureBackendUnavailable, CaptureContractError
+from .capture_common import (
+    _ALLOWED_ATTENTION_IMPLEMENTATIONS,
+    _CAPTURE_PHASE,
+    _PRODUCTION_BACKEND,
+    CaptureBackendUnavailable,
+    CaptureContractError,
+)
 from .capture_validation import _quantization_reasons, _validate_loading_info, validate_capture_request
 from .capture_provenance import (
     _cpu_hardware_metadata, _extract_hidden_tensor, _resolve_hidden_state_layout,
@@ -35,6 +41,7 @@ class HuggingFacePyTorchBackend:
         self._transformers = transformers
         self._observed_hidden_state_dtypes: dict[int, set[str]] = {}
         self._last_sdpa_policy: dict[str, bool | None] | None = None
+        self._last_cuda_reduction_policy: dict[str, bool] | None = None
         backend, model_cfg, determinism = validated["backend"], validated["model"], validated["determinism"]
         dtype_map = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
         self._device = backend["device"]
@@ -94,8 +101,11 @@ class HuggingFacePyTorchBackend:
         self._hidden_state_count = len(self._blocks) + 1
         self._checkpoint_loading_clean = True
         self._attention_implementation = getattr(self._model.config, "_attn_implementation", None)
-        if self._device_type == "cuda" and self._attention_implementation == "sdpa":
-            self._force_sdpa_math_policy()
+        self._assert_attention_implementation()
+        if self._device_type == "cuda":
+            self._force_cuda_reduced_precision_policy()
+            if self._attention_implementation == "sdpa":
+                self._force_sdpa_math_policy()
         self._model.to(self._device)
         self._model.eval()
 
@@ -126,6 +136,13 @@ class HuggingFacePyTorchBackend:
     @staticmethod
     def _env_flag_enabled(value: str | None) -> bool:
         return value is not None and value.strip().lower() not in {"", "0", "false", "no", "off"}
+
+    def _assert_attention_implementation(self) -> None:
+        if self._attention_implementation not in _ALLOWED_ATTENTION_IMPLEMENTATIONS:
+            raise CaptureContractError(
+                "canonical capture requires attention implementation in "
+                f"{sorted(_ALLOWED_ATTENTION_IMPLEMENTATIONS)}; observed {self._attention_implementation!r}"
+            )
 
     def _assert_mps_execution_policy(self) -> None:
         if self._device_type != "mps":
@@ -158,6 +175,44 @@ class HuggingFacePyTorchBackend:
     def _assert_autocast_disabled(self) -> None:
         if self._autocast_enabled():
             raise CaptureContractError("canonical capture forbids ambient torch autocast")
+
+    def _cuda_reduced_precision_policy_state(self) -> dict[str, bool]:
+        cuda_backend = getattr(self._torch.backends, "cuda", None)
+        matmul = getattr(cuda_backend, "matmul", None) if cuda_backend is not None else None
+        if matmul is None:
+            raise CaptureContractError("CUDA matmul backend controls are unavailable")
+        state: dict[str, bool] = {}
+        for key, name in (
+            ("fp16", "allow_fp16_reduced_precision_reduction"),
+            ("bf16", "allow_bf16_reduced_precision_reduction"),
+        ):
+            value = getattr(matmul, name, None)
+            if not isinstance(value, bool):
+                raise CaptureContractError(f"canonical CUDA reduction policy requires torch.backends.cuda.matmul.{name}")
+            state[key] = value
+        return state
+
+    def _assert_cuda_reduced_precision_policy(self) -> dict[str, bool]:
+        state = self._cuda_reduced_precision_policy_state()
+        if state["fp16"] is not False or state["bf16"] is not False:
+            raise CaptureContractError(
+                f"canonical CUDA reduced-precision reduction policy drifted from disabled state: {state!r}"
+            )
+        return state
+
+    def _force_cuda_reduced_precision_policy(self) -> None:
+        cuda_backend = getattr(self._torch.backends, "cuda", None)
+        matmul = getattr(cuda_backend, "matmul", None) if cuda_backend is not None else None
+        if matmul is None:
+            raise CaptureContractError("CUDA matmul backend controls are unavailable")
+        for name in (
+            "allow_fp16_reduced_precision_reduction",
+            "allow_bf16_reduced_precision_reduction",
+        ):
+            if not hasattr(matmul, name):
+                raise CaptureContractError(f"canonical CUDA reduction policy requires torch.backends.cuda.matmul.{name}")
+            setattr(matmul, name, False)
+        self._last_cuda_reduction_policy = self._assert_cuda_reduced_precision_policy()
 
     def _sdpa_policy_state(self) -> dict[str, bool | None]:
         cuda_backend = getattr(self._torch.backends, "cuda", None)
@@ -247,8 +302,11 @@ class HuggingFacePyTorchBackend:
             raise CaptureContractError(f"requested layer {bad} outside backend hidden-state range [0, {self._hidden_state_count - 1}]")
         self._assert_mps_execution_policy()
         self._assert_autocast_disabled()
-        if self._device_type == "cuda" and self._attention_implementation == "sdpa":
-            self._force_sdpa_math_policy()
+        self._assert_attention_implementation()
+        if self._device_type == "cuda":
+            self._force_cuda_reduced_precision_policy()
+            if self._attention_implementation == "sdpa":
+                self._force_sdpa_math_policy()
         selected: dict[int, Mapping[str, Any]] = {}
         handles: list[Any] = []
         token_count = len(input_ids)
@@ -263,18 +321,18 @@ class HuggingFacePyTorchBackend:
                 capture(layer_index, kwargs.get("hidden_states") if kwargs.get("hidden_states") is not None else (args[0] if args else None))
             return hook
 
-        for layer_index in requested:
-            if layer_index < len(self._blocks):
-                handles.append(self._blocks[layer_index].register_forward_pre_hook(make_pre_hook(layer_index), with_kwargs=True))
-        if len(self._blocks) in requested:
-            final_index = len(self._blocks)
-            def final_hook(_module: Any, _args: tuple[Any, ...], output: Any) -> None:
-                capture(final_index, output)
-            handles.append(self._base_model.register_forward_hook(final_hook))
-
-        ids = torch.tensor([list(input_ids)], dtype=torch.long, device=self._device)
-        mask = torch.ones_like(ids)
         try:
+            for layer_index in requested:
+                if layer_index < len(self._blocks):
+                    handles.append(self._blocks[layer_index].register_forward_pre_hook(make_pre_hook(layer_index), with_kwargs=True))
+            if len(self._blocks) in requested:
+                final_index = len(self._blocks)
+                def final_hook(_module: Any, _args: tuple[Any, ...], output: Any) -> None:
+                    capture(final_index, output)
+                handles.append(self._base_model.register_forward_hook(final_hook))
+
+            ids = torch.tensor([list(input_ids)], dtype=torch.long, device=self._device)
+            mask = torch.ones_like(ids)
             with torch.inference_mode():
                 self._base_model(
                     input_ids=ids, attention_mask=mask, output_hidden_states=False,
@@ -283,8 +341,10 @@ class HuggingFacePyTorchBackend:
         finally:
             for handle in handles:
                 handle.remove()
-        if self._device_type == "cuda" and self._attention_implementation == "sdpa":
-            self._last_sdpa_policy = self._assert_sdpa_math_policy()
+        if self._device_type == "cuda":
+            self._last_cuda_reduction_policy = self._assert_cuda_reduced_precision_policy()
+            if self._attention_implementation == "sdpa":
+                self._last_sdpa_policy = self._assert_sdpa_math_policy()
         if set(selected) != set(requested):
             raise CaptureContractError(f"selective hidden-state hooks did not capture requested layers: {sorted(set(requested) - set(selected))}")
         return selected
@@ -340,6 +400,7 @@ class HuggingFacePyTorchBackend:
             cudnn_tf32 = bool(torch.backends.cudnn.allow_tf32)
         except Exception:
             cudnn_tf32 = None
+        reduction = self._last_cuda_reduction_policy if cuda_active else None
         mps_backend = getattr(torch.backends, "mps", None)
         try:
             mps_built = bool(mps_backend.is_built()) if mps_backend is not None else False
@@ -368,6 +429,8 @@ class HuggingFacePyTorchBackend:
             "nvidia_driver_version": self._nvidia_driver_version() if cuda_active else None,
             "float32_matmul_precision": matmul_precision, "cuda_matmul_allow_tf32": cuda_tf32,
             "cudnn_allow_tf32": cudnn_tf32,
+            "cuda_matmul_allow_fp16_reduced_precision_reduction": reduction["fp16"] if reduction is not None else None,
+            "cuda_matmul_allow_bf16_reduced_precision_reduction": reduction["bf16"] if reduction is not None else None,
             "sdpa_flash_enabled": sdpa["flash"], "sdpa_mem_efficient_enabled": sdpa["mem_efficient"],
             "sdpa_math_enabled": sdpa["math"], "sdpa_cudnn_enabled": sdpa["cudnn"],
             "nvidia_tf32_override": os.environ.get("NVIDIA_TF32_OVERRIDE"),
