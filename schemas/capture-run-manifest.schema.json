@@ -192,8 +192,8 @@
         "cpu_machine": {"$ref": "#/$defs/nullableString"},
         "cpu_processor": {"$ref": "#/$defs/nullableString"},
         "cpu_instruction_flags": {"$ref": "#/$defs/nullableString"},
-        "torch_num_threads": {"$ref": "#/$defs/nullableInteger"},
-        "torch_num_interop_threads": {"$ref": "#/$defs/nullableInteger"},
+        "torch_num_threads": {"type": "integer", "minimum": 1},
+        "torch_num_interop_threads": {"type": "integer", "minimum": 1},
         "omp_num_threads": {"$ref": "#/$defs/nullableString"},
         "mkl_num_threads": {"$ref": "#/$defs/nullableString"},
         "cpu_mkldnn_enabled": {"$ref": "#/$defs/nullableBoolean"},
@@ -262,6 +262,20 @@
               "mps_device_active": {"const": true},
               "mps_built": {"const": true},
               "mps_available": {"const": true}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "device": {"type": "string", "pattern": "^cuda:[0-9]+$"},
+              "determinism_mode": {"const": "required"}
+            },
+            "required": ["device", "determinism_mode"]
+          },
+          "then": {
+            "properties": {
+              "cublas_workspace_config": {"enum": [":4096:8", ":16:8"]}
             }
           }
         }

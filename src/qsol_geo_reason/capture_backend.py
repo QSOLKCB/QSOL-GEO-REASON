@@ -4,8 +4,10 @@ from __future__ import annotations
 import os
 from typing import Any, Mapping, Sequence
 
+from .canonical import sha256_json
 from .capture_common import CaptureContractError
 from .capture_validation import validate_capture_request
+from .capture_provenance import _DETERMINISTIC_CUBLAS_WORKSPACE_CONFIGS
 from .capture_backend_core import HuggingFacePyTorchBackend as _CoreHuggingFacePyTorchBackend
 
 
@@ -36,6 +38,7 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
     def __init__(self, request: Mapping[str, Any]):
         validated = validate_capture_request(request)
         device = validated["backend"]["device"]
+        self._validate_pre_cuda_environment(validated)
         self._canonical_cuda_environment: dict[str, str | None] | None = None
         if device.startswith("cuda:"):
             # Snapshot before the core imports/initializes CUDA or cuBLAS state.
@@ -43,6 +46,9 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
         self._canonical_deterministic_algorithms_enabled: bool | None = None
         self._canonical_deterministic_warn_only_enabled: bool | None = None
         self._canonical_evaluation_mode = False
+        self._canonical_model_live_state: tuple[tuple[Any, ...], ...] | None = None
+        self._canonical_tokenizer_live_state: str | None = None
+        self._live_state_seal_initialized = False
 
         super().__init__(validated)
 
@@ -71,9 +77,29 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
         self._canonical_evaluation_mode = True
         self._force_model_eval_policy()
 
+        # Seal the live objects after authenticated loading, device placement,
+        # and canonical evaluation-mode setup. Snapshot receipts authenticate the
+        # source files; these seals prevent later in-memory mutation from being
+        # misattributed to those immutable snapshot identities.
+        self._canonical_model_live_state = self._model_live_state_seal()
+        self._canonical_tokenizer_live_state = self._tokenizer_live_state_seal()
+        self._live_state_seal_initialized = True
+
         # The core forward remains unchanged; this proxy injects an explicit
         # output_attentions=False into every resolved base-model call.
         self._base_model = _ExplicitNoAttentionBaseModel(self._base_model)
+
+    @classmethod
+    def _validate_pre_cuda_environment(cls, request: Mapping[str, Any]) -> None:
+        device = request["backend"]["device"]
+        if not device.startswith("cuda:") or request["determinism"]["mode"] != "required":
+            return
+        workspace = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
+        if workspace not in _DETERMINISTIC_CUBLAS_WORKSPACE_CONFIGS:
+            raise CaptureContractError(
+                "required-determinism CUDA capture requires CUBLAS_WORKSPACE_CONFIG to be "
+                "':4096:8' or ':16:8' before CUDA initialization"
+            )
 
     def _cuda_environment_state(self) -> dict[str, str | None]:
         return {
@@ -184,6 +210,120 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
         evaluator()
         self._assert_model_eval_policy()
 
+    @staticmethod
+    def _runtime_json_value(value: Any) -> Any:
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+        if isinstance(value, Mapping):
+            return {
+                str(key): HuggingFacePyTorchBackend._runtime_json_value(item)
+                for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            }
+        if isinstance(value, (list, tuple)):
+            return [HuggingFacePyTorchBackend._runtime_json_value(item) for item in value]
+        return repr(value)
+
+    def _model_live_state_seal(self) -> tuple[tuple[Any, ...], ...]:
+        entries: list[tuple[Any, ...]] = []
+        for kind, getter_name in (
+            ("parameter", "named_parameters"),
+            ("buffer", "named_buffers"),
+        ):
+            getter = getattr(self._model, getter_name, None)
+            if not callable(getter):
+                raise CaptureContractError(
+                    f"canonical live-state authentication requires model.{getter_name}()"
+                )
+            for name, tensor in getter():
+                if not isinstance(name, str) or not name:
+                    raise CaptureContractError("canonical model state contains an invalid tensor name")
+                version = getattr(tensor, "_version", None)
+                if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+                    raise CaptureContractError(
+                        f"canonical model tensor {name!r} does not expose a valid mutation version"
+                    )
+                shape_value = getattr(tensor, "shape", None)
+                if shape_value is None:
+                    raise CaptureContractError(f"canonical model tensor {name!r} has no shape")
+                try:
+                    shape = tuple(int(dimension) for dimension in shape_value)
+                except (TypeError, ValueError) as exc:
+                    raise CaptureContractError(
+                        f"canonical model tensor {name!r} has an invalid shape"
+                    ) from exc
+                dtype = str(getattr(tensor, "dtype", ""))
+                device = str(getattr(tensor, "device", ""))
+                if not dtype or not device:
+                    raise CaptureContractError(
+                        f"canonical model tensor {name!r} lacks dtype/device identity"
+                    )
+                entries.append((kind, name, id(tensor), version, shape, dtype, device))
+        if not entries:
+            raise CaptureContractError("canonical model exposes no parameter or buffer state to authenticate")
+        return tuple(entries)
+
+    def _tokenizer_live_state_seal(self) -> str:
+        tokenizer = self._tokenizer
+        vocab_getter = getattr(tokenizer, "get_vocab", None)
+        if not callable(vocab_getter):
+            raise CaptureContractError("canonical tokenizer live-state authentication requires get_vocab()")
+        vocab = vocab_getter()
+        if not isinstance(vocab, Mapping) or not vocab:
+            raise CaptureContractError("canonical tokenizer vocabulary is missing")
+        normalized_vocab: dict[str, int] = {}
+        for token, index in vocab.items():
+            if not isinstance(token, str) or isinstance(index, bool) or not isinstance(index, int):
+                raise CaptureContractError("canonical tokenizer vocabulary is malformed")
+            normalized_vocab[token] = index
+
+        backend_state = None
+        backend_tokenizer = getattr(tokenizer, "backend_tokenizer", None)
+        serializer = getattr(backend_tokenizer, "to_str", None)
+        if callable(serializer):
+            backend_state = serializer()
+            if not isinstance(backend_state, str) or not backend_state:
+                raise CaptureContractError("canonical tokenizer backend serialization is invalid")
+
+        payload = {
+            "class": f"{type(tokenizer).__module__}.{type(tokenizer).__qualname__}",
+            "vocab": dict(sorted(normalized_vocab.items())),
+            "backend_tokenizer": backend_state,
+            "added_tokens_encoder": self._runtime_json_value(
+                getattr(tokenizer, "added_tokens_encoder", {})
+            ),
+            "special_tokens_map": self._runtime_json_value(
+                getattr(tokenizer, "special_tokens_map", {})
+            ),
+            "all_special_tokens": self._runtime_json_value(
+                getattr(tokenizer, "all_special_tokens", [])
+            ),
+            "all_special_ids": self._runtime_json_value(
+                getattr(tokenizer, "all_special_ids", [])
+            ),
+            "init_kwargs": self._runtime_json_value(getattr(tokenizer, "init_kwargs", {})),
+        }
+        return sha256_json(payload)
+
+    def _assert_live_state_authentication(self) -> None:
+        if not getattr(self, "_live_state_seal_initialized", False):
+            return
+        expected_model = getattr(self, "_canonical_model_live_state", None)
+        expected_tokenizer = getattr(self, "_canonical_tokenizer_live_state", None)
+        if expected_model is None or expected_tokenizer is None:
+            raise CaptureContractError("canonical live-state authentication seal is missing")
+        if self._model_live_state_seal() != expected_model:
+            raise CaptureContractError(
+                "live model state changed after authenticated checkpoint loading"
+            )
+        if self._tokenizer_live_state_seal() != expected_tokenizer:
+            raise CaptureContractError(
+                "live tokenizer state changed after authenticated snapshot loading"
+            )
+
+    def assert_execution_request(self, request: Mapping[str, Any]) -> None:
+        super().assert_execution_request(request)
+        self._assert_live_state_authentication()
+
     def _sdpa_policy_state(self) -> dict[str, bool | None]:
         state = dict(super()._sdpa_policy_state())
         cuda_backend = getattr(self._torch.backends, "cuda", None)
@@ -262,7 +402,10 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
         threads_frozen = getattr(self, "_canonical_cpu_thread_policy", None) is not None
         cuda_environment_frozen = getattr(self, "_canonical_cuda_environment", None) is not None
         evaluation_frozen = getattr(self, "_canonical_evaluation_mode", False)
+        live_state_frozen = getattr(self, "_live_state_seal_initialized", False)
 
+        if live_state_frozen:
+            self._assert_live_state_authentication()
         if determinism_frozen:
             self._force_canonical_determinism_policy()
         if threads_frozen:
@@ -275,8 +418,8 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
         result = super().hidden_states(input_ids, layer_indices, pool_span=pool_span)
 
         # Verify again after the entire base-model forward, not merely after an
-        # intermediate hook, so process-global and module-mode state cannot drift
-        # without invalidating the canonical capture.
+        # intermediate hook, so process-global, module-mode, and live object state
+        # cannot drift without invalidating the canonical capture.
         if determinism_frozen:
             self._last_deterministic_algorithms_enabled = self._assert_canonical_determinism_policy()
         if threads_frozen:
@@ -285,6 +428,8 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
             self._assert_cuda_environment_policy()
         if evaluation_frozen:
             self._assert_model_eval_policy()
+        if live_state_frozen:
+            self._assert_live_state_authentication()
         return result
 
     def metadata(self) -> Mapping[str, Any]:
@@ -296,6 +441,8 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
             self._last_cpu_thread_policy = self._assert_cpu_thread_policy()
         if getattr(self, "_canonical_evaluation_mode", False):
             self._assert_model_eval_policy()
+        if getattr(self, "_live_state_seal_initialized", False):
+            self._assert_live_state_authentication()
 
         data = dict(super().metadata())
 

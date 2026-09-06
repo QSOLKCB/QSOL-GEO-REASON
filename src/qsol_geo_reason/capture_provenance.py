@@ -20,6 +20,8 @@ from .capture_common import (
     _require_exact_keys,
 )
 
+_DETERMINISTIC_CUBLAS_WORKSPACE_CONFIGS = frozenset({":4096:8", ":16:8"})
+
 
 def _validate_backend_identity(
     observed: Mapping[str, Any], request: Mapping[str, Any], evidence_class: str
@@ -92,6 +94,11 @@ def _validate_nullable_integer(value: Any, where: str) -> None:
         raise CaptureContractError(f"{where} must be integer or null")
 
 
+def _validate_positive_integer(value: Any, where: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise CaptureContractError(f"{where} must be a positive integer")
+
+
 def _validate_nullable_boolean(value: Any, where: str) -> None:
     if value is not None and not isinstance(value, bool):
         raise CaptureContractError(f"{where} must be boolean or null")
@@ -140,7 +147,9 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
     for field in nullable_strings:
         _validate_nullable_string(observed.get(field), f"production backend field {field}")
 
-    for field in ("torch_num_threads", "torch_num_interop_threads", "cudnn_version", "cuda_resolved_device_index"):
+    for field in ("torch_num_threads", "torch_num_interop_threads"):
+        _validate_positive_integer(observed.get(field), f"production backend field {field}")
+    for field in ("cudnn_version", "cuda_resolved_device_index"):
         _validate_nullable_integer(observed.get(field), f"production backend field {field}")
     for field in (
         "cpu_mkldnn_enabled",
@@ -186,6 +195,15 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
     expected_cuda_index = int(device.split(":", 1)[1]) if cuda_active else None
     if observed.get("cuda_resolved_device_index") != expected_cuda_index:
         raise CaptureContractError("cuda_resolved_device_index does not match the explicit request device")
+    if (
+        cuda_active
+        and request["determinism"]["mode"] == "required"
+        and observed.get("cublas_workspace_config") not in _DETERMINISTIC_CUBLAS_WORKSPACE_CONFIGS
+    ):
+        raise CaptureContractError(
+            "required-determinism CUDA provenance requires CUBLAS_WORKSPACE_CONFIG "
+            "to be ':4096:8' or ':16:8'"
+        )
 
     cpu_policy_fields = ("cpu_mkldnn_enabled", "cpu_mkldnn_matmul_fp32_precision")
     if not cpu_active and any(observed.get(field) is not None for field in cpu_policy_fields):
