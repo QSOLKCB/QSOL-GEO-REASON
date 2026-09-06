@@ -204,6 +204,14 @@ class HuggingFacePyTorchBackend(_PolicyHuggingFacePyTorchBackend):
 
     def _assert_live_state_authentication(self) -> None:
         super()._assert_live_state_authentication()
+        # Keep the tensor-content seal explicit at this final evidence boundary,
+        # even though the inherited guard already checks it. This makes the
+        # authenticated bytes visible to source-audit tripwires as well.
+        expected_content = getattr(self, "_canonical_model_content_state", None)
+        if expected_content is not None and self._model_content_state_seal() != expected_content:
+            raise CaptureContractError(
+                "live model tensor contents changed after authenticated checkpoint loading"
+            )
         expected_graph = getattr(self, "_canonical_model_executable_state", None)
         if expected_graph is not None and self._model_executable_state_seal() != expected_graph:
             raise CaptureContractError(
@@ -212,6 +220,9 @@ class HuggingFacePyTorchBackend(_PolicyHuggingFacePyTorchBackend):
 
     def assert_execution_request(self, request: Mapping[str, Any]) -> None:
         super().assert_execution_request(request)
+        # Reassert the complete inherited + executable/tokenizer seal at the
+        # exported OBSERVATION boundary before deciding whether this backend is spent.
+        self._assert_live_state_authentication()
         if getattr(self, "_observation_consumed", False):
             raise CaptureContractError(
                 "canonical OBSERVATION backends are single-use and cannot be reused"
