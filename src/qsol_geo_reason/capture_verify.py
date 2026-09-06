@@ -34,6 +34,11 @@ def _without(mapping: Mapping[str, Any], field: str) -> dict[str, Any]:
     return {k: v for k, v in mapping.items() if k != field}
 
 
+def _json_equal(left: Any, right: Any) -> bool:
+    """Compare JSON-domain values without Python's bool/int equality coercion."""
+    return canonical_json_bytes(left) == canonical_json_bytes(right)
+
+
 def _require_span(value: Any, *, token_count: int, where: str) -> tuple[int, int]:
     if not isinstance(value, list) or len(value) != 2 or any(isinstance(v, bool) or not isinstance(v, int) for v in value):
         raise CaptureContractError(f"{where} must be a two-integer span")
@@ -50,7 +55,7 @@ def _validate_observed_dtype_map(
         str(layer_index): sorted(values)
         for layer_index, values in sorted(recorded_dtypes.items())
     }
-    if observed_backend.get("observed_hidden_state_dtypes") != expected:
+    if not _json_equal(observed_backend.get("observed_hidden_state_dtypes"), expected):
         raise CaptureContractError(
             "backend observed_hidden_state_dtypes does not match trajectory layer records"
         )
@@ -98,7 +103,7 @@ def verify_capture_bundle(request: Mapping[str, Any], manifest: Mapping[str, Any
         "pooling": validated["capture"]["pooling"], "step_span_semantics": _STEP_SPAN_SEMANTICS,
     }
     for key, expected in expected_representation.items():
-        if representation[key] != expected:
+        if not _json_equal(representation[key], expected):
             raise CaptureContractError(f"trajectory representation_definition.{key} does not match request")
 
     steps = trajectory["steps"]
@@ -187,9 +192,9 @@ def verify_capture_bundle(request: Mapping[str, Any], manifest: Mapping[str, Any
         if trajectory[field] != manifest[field]:
             raise CaptureContractError(f"trajectory {field} does not match manifest")
     for field in ("model", "capture", "determinism", "generation_parameters"):
-        if manifest[field] != validated[field]:
+        if not _json_equal(manifest[field], validated[field]):
             raise CaptureContractError(f"manifest {field} does not match request")
-    if manifest["backend_request"] != validated["backend"]:
+    if not _json_equal(manifest["backend_request"], validated["backend"]):
         raise CaptureContractError("manifest backend_request does not match request")
     observed = _require_object(manifest["backend_observed"], "manifest backend_observed")
     _validate_backend_metadata(observed, validated, trajectory["evidence_class"])
