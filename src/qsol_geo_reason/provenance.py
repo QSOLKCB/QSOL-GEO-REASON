@@ -97,9 +97,15 @@ def git_source_revision(*, require_clean: bool = True) -> str | None:
     return head
 
 
-def resolve_implementation_revision(explicit: str | None = None) -> str:
-    """Resolve and, when possible, verify the implementation revision."""
+def resolve_implementation_revision(
+    explicit: str | None = None, *, require_checkout: bool = False
+) -> str:
+    """Resolve and, when requested, require a clean checkout-bound revision."""
     observed = git_source_revision(require_clean=True)
+    if require_checkout and observed is None:
+        raise SourceIdentityError(
+            "canonical observation requires execution from the clean QSOL-GEO-REASON Git checkout"
+        )
     if explicit:
         if observed is not None and observed != explicit:
             raise SourceIdentityError(
