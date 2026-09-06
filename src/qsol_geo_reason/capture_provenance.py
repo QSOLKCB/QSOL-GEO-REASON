@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping
 from .canonical import sha256_json
 from .capture_common import (
+    _ALLOWED_ATTENTION_IMPLEMENTATIONS,
     _BLOCK_CONTAINER_PATHS,
     _CAPTURE_PHASE,
     _PRODUCTION_BACKEND,
@@ -86,6 +87,14 @@ def _env_flag_enabled(value: Any) -> bool:
     return isinstance(value, str) and value.strip().lower() not in {"", "0", "false", "no", "off"}
 
 
+def _validate_expected_value(observed: Mapping[str, Any], key: str, expected: Any, where: str) -> None:
+    actual = observed.get(key)
+    if isinstance(expected, bool) and not isinstance(actual, bool):
+        raise CaptureContractError(f"{where} {key} must be boolean")
+    if actual != expected:
+        raise CaptureContractError(f"{where} {key} does not match the capture contract")
+
+
 def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Mapping[str, Any]) -> None:
     """Mirror the production run-manifest schema's field types and domains."""
     nonempty_strings = (
@@ -97,8 +106,15 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
         if not isinstance(value, str) or not value:
             raise CaptureContractError(f"production backend field {field} must be a non-empty string")
 
+    attention = observed.get("attention_implementation")
+    if attention not in _ALLOWED_ATTENTION_IMPLEMENTATIONS:
+        raise CaptureContractError(
+            "attention_implementation must be one of "
+            f"{sorted(_ALLOWED_ATTENTION_IMPLEMENTATIONS)} for canonical observation"
+        )
+
     nullable_strings = (
-        "tokenizers_version", "huggingface_hub_version", "attention_implementation",
+        "tokenizers_version", "huggingface_hub_version",
         "cpu_machine", "cpu_processor", "cpu_instruction_flags", "omp_num_threads",
         "mkl_num_threads", "cuda_device_name", "cuda_device_capability", "cuda_device_uuid",
         "cuda_visible_devices", "cuda_build_version", "nvidia_driver_version",
@@ -112,8 +128,10 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
     for field in ("torch_num_threads", "torch_num_interop_threads", "cudnn_version", "cuda_resolved_device_index"):
         _validate_nullable_integer(observed.get(field), f"production backend field {field}")
     for field in (
-        "cuda_matmul_allow_tf32", "cudnn_allow_tf32", "sdpa_flash_enabled",
-        "sdpa_mem_efficient_enabled", "sdpa_math_enabled", "sdpa_cudnn_enabled",
+        "cuda_matmul_allow_tf32", "cudnn_allow_tf32",
+        "cuda_matmul_allow_fp16_reduced_precision_reduction",
+        "cuda_matmul_allow_bf16_reduced_precision_reduction",
+        "sdpa_flash_enabled", "sdpa_mem_efficient_enabled", "sdpa_math_enabled", "sdpa_cudnn_enabled",
     ):
         _validate_nullable_boolean(observed.get(field), f"production backend field {field}")
     for field in ("mps_device_active", "mps_built", "mps_available", "autocast_disabled"):
@@ -151,7 +169,18 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
     expected_cuda_index = int(device.split(":", 1)[1]) if cuda_active else None
     if observed.get("cuda_resolved_device_index") != expected_cuda_index:
         raise CaptureContractError("cuda_resolved_device_index does not match the explicit request device")
-    attention = observed.get("attention_implementation")
+
+    reduced_precision_fields = (
+        "cuda_matmul_allow_fp16_reduced_precision_reduction",
+        "cuda_matmul_allow_bf16_reduced_precision_reduction",
+    )
+    if cuda_active:
+        for field in reduced_precision_fields:
+            if observed.get(field) is not False:
+                raise CaptureContractError(f"canonical CUDA capture requires {field}=false")
+    elif any(observed.get(field) is not None for field in reduced_precision_fields):
+        raise CaptureContractError("CUDA reduced-precision reduction fields must be null outside CUDA")
+
     sdpa_fields = {
         "sdpa_flash_enabled": observed.get("sdpa_flash_enabled"),
         "sdpa_mem_efficient_enabled": observed.get("sdpa_mem_efficient_enabled"),
@@ -196,8 +225,7 @@ def _validate_backend_metadata(observed: Mapping[str, Any], request: Mapping[str
         "determinism_mode": request["determinism"]["mode"],
     }
     for key, value in expected.items():
-        if observed.get(key) != value:
-            raise CaptureContractError(f"backend provenance field {key} does not match the capture contract")
+        _validate_expected_value(observed, key, value, "backend provenance field")
     if evidence_class == "OBSERVATION":
         _validate_production_metadata_shape(observed, request)
         production_constants = {
@@ -209,7 +237,10 @@ def _validate_backend_metadata(observed: Mapping[str, Any], request: Mapping[str
             "autocast_disabled": True,
         }
         for key, value in production_constants.items():
-            if observed.get(key) != value:
+            actual = observed.get(key)
+            if isinstance(value, bool) and not isinstance(actual, bool):
+                raise CaptureContractError(f"observation backend provenance field {key} must be boolean")
+            if actual != value:
                 raise CaptureContractError(f"observation backend provenance field {key} is invalid")
         _validate_required_determinism(observed, request)
         for prefix in ("model", "tokenizer"):
