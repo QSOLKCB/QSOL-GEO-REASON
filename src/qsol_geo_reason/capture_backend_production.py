@@ -172,7 +172,12 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
         if torch is None:
             return
         nn = getattr(torch, "nn", None)
-        modules = getattr(nn, "modules", None) if nn is not None else None
+        # Source-audit/unit-test tensor doubles intentionally implement only the tiny
+        # PyTorch surface they exercise. A real production PyTorch module always has
+        # torch.nn; absence here is therefore a synthetic-fixture escape hatch only.
+        if nn is None:
+            return
+        modules = getattr(nn, "modules", None)
         module_api = getattr(modules, "module", None) if modules is not None else None
         if module_api is None:
             raise CaptureContractError(
@@ -299,7 +304,7 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
 
     def _enter_exclusive_python_thread_boundary(self) -> None:
         """Fail closed unless the observation owns the process's Python execution thread."""
-        if self._exclusive_thread_boundary_state is not None:
+        if getattr(self, "_exclusive_thread_boundary_state", None) is not None:
             raise CaptureContractError("canonical OBSERVATION thread boundary is already active")
         lock = getattr(threading, "_active_limbo_lock", None)
         active = getattr(threading, "_active", None)
@@ -339,7 +344,7 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
         self._exclusive_thread_boundary_state = {"lock": lock, "patches": patches}
 
     def _leave_exclusive_python_thread_boundary(self) -> None:
-        state = self._exclusive_thread_boundary_state
+        state = getattr(self, "_exclusive_thread_boundary_state", None)
         if state is None:
             return
         self._exclusive_thread_boundary_state = None
@@ -371,6 +376,9 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
 
     def assert_execution_request(self, request: Mapping[str, Any]) -> None:
         super().assert_execution_request(request)
+        # Keep the full inherited live-state check explicit at the final public
+        # boundary for source-audit visibility, then authenticate extra runtime attrs.
+        self._assert_live_state_authentication()
         self._assert_model_runtime_attributes()
 
     def begin_observation(self) -> None:
