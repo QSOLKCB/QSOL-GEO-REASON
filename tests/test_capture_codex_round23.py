@@ -192,14 +192,19 @@ class CaptureRound23RegressionTests(unittest.TestCase):
     def test_compiled_call_substitution_is_rejected_at_each_module(self):
         backend = object.__new__(HuggingFacePyTorchBackend)
         backend._model = round19.FakeGraphModel()
+        original_forward = IsolatedBackend._model_executable_state_seal(backend)
         original = backend._model_executable_state_seal()
         for module in (backend._model, backend._model.child):
             module._compiled_call_impl = lambda *args, **kwargs: "compiled"
-            # Forward identity has not changed: this is a separate call-dispatch path.
-            self.assertEqual(backend._model_executable_state_seal(), original)
+            # The forward-only seal remains unchanged, but the stronger dependency
+            # seal now also binds added callable attributes. Keep both assertions
+            # and the independent explicit compiled-call rejection regression.
+            self.assertEqual(IsolatedBackend._model_executable_state_seal(backend), original_forward)
+            self.assertNotEqual(backend._model_executable_state_seal(), original)
             with self.assertRaisesRegex(CaptureContractError, "compiled module call"):
                 backend._assert_live_state_authentication()
             module._compiled_call_impl = None
+            self.assertEqual(backend._model_executable_state_seal(), original)
         backend._assert_live_state_authentication()
 
     def _sealed_backend(self):
