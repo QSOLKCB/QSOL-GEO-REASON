@@ -6,6 +6,7 @@ from .capture_backend import HuggingFacePyTorchBackend
 from .capture_common import (CAPTURE_PROTOCOL_ID, CAPTURE_SCHEMA_VERSION, _ALLOWED_EVIDENCE, _CAPTURE_PHASE, _LAYER_INDEX_SEMANTICS, _SIMULATION_BACKEND, _STEP_SPAN_SEMANTICS, CaptureBackend, CaptureContractError, _common_prefix_length, _compose_text, _pool_span, _require_git_sha, _sha256_text, _validate_backend_layer, _validate_token_ids)
 from .capture_validation import validate_capture_request
 from .capture_provenance import _validate_backend_metadata
+from .provenance import SourceIdentityError, resolve_implementation_revision
 
 def _capture_steps(request: Mapping[str, Any], backend: CaptureBackend) -> tuple[list[dict[str, Any]], list[int]]:
     cfg = request["capture"]
@@ -72,6 +73,14 @@ def execute_capture(
     if evidence_class == "OBSERVATION":
         if type(backend) is not HuggingFacePyTorchBackend:
             raise CaptureContractError("OBSERVATION capture requires the concrete HuggingFacePyTorchBackend")
+        try:
+            implementation_revision = resolve_implementation_revision(
+                implementation_revision, require_checkout=True
+            )
+        except SourceIdentityError as exc:
+            raise CaptureContractError(
+                f"OBSERVATION implementation revision is not bound to the executing checkout: {exc}"
+            ) from exc
         backend.assert_execution_request(validated)
         backend._observed_hidden_state_dtypes.clear()
     steps, prefix_ids = _capture_steps(validated, backend)
