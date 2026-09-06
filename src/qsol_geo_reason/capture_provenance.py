@@ -124,8 +124,10 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
     )
     for field in nonempty_strings:
         value = observed.get(field)
-        if not isinstance(value, str) or not value:
-            raise CaptureContractError(f"production backend field {field} must be a non-empty string")
+        if not isinstance(value, str) or not value.strip():
+            raise CaptureContractError(
+                f"production backend field {field} must be a non-whitespace string"
+            )
 
     attention = observed.get("attention_implementation")
     if attention not in _ALLOWED_ATTENTION_IMPLEMENTATIONS:
