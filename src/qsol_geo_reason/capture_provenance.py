@@ -170,6 +170,19 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
     if observed.get("cuda_resolved_device_index") != expected_cuda_index:
         raise CaptureContractError("cuda_resolved_device_index does not match the explicit request device")
 
+    float32_policy_fields = (
+        "float32_matmul_precision", "cuda_matmul_allow_tf32", "cudnn_allow_tf32",
+    )
+    if cuda_active:
+        precision = observed.get("float32_matmul_precision")
+        if precision not in {"highest", "high", "medium"}:
+            raise CaptureContractError("canonical CUDA float32_matmul_precision is invalid")
+        for field in ("cuda_matmul_allow_tf32", "cudnn_allow_tf32"):
+            if not isinstance(observed.get(field), bool):
+                raise CaptureContractError(f"canonical CUDA capture requires boolean {field}")
+    elif any(observed.get(field) is not None for field in float32_policy_fields):
+        raise CaptureContractError("CUDA float32/TF32 policy fields must be null outside CUDA")
+
     reduced_precision_fields = (
         "cuda_matmul_allow_fp16_reduced_precision_reduction",
         "cuda_matmul_allow_bf16_reduced_precision_reduction",
