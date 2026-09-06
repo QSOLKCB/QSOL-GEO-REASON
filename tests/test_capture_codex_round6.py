@@ -39,6 +39,10 @@ def valid_production_shape(request: dict) -> dict:
         "cpu_machine": None,
         "cpu_processor": None,
         "cpu_instruction_flags": None,
+        "cpu_aten_capability": "DEFAULT" if device == "cpu" else None,
+        "aten_cpu_capability_env": None,
+        "aten_cpu_capability_env_known": False if device == "cpu" else None,
+        "cuda_matmul_allow_fp16_accumulation": None,
         "omp_num_threads": None,
         "mkl_num_threads": None,
         "cpu_mkldnn_enabled": None,
@@ -147,7 +151,9 @@ class CaptureRound6RegressionTests(unittest.TestCase):
 
     def test_schema_declares_required_semantic_unique_step_validator(self):
         schema = json.loads(
-            (ROOT / "schemas" / "capture-request.schema.json").read_text(encoding="utf-8")
+            (ROOT / "schemas" / "capture-request.schema.json").read_text(
+                encoding="utf-8"
+            )
         )
         semantic = schema["x-qsol-semantic-validation"]
         self.assertIs(semantic["required"], True)
@@ -163,7 +169,7 @@ class CaptureRound6RegressionTests(unittest.TestCase):
 
     def test_capture_cli_exposes_no_model_validate_only_path(self):
         source = inspect.getsource(capture_cli_main)
-        self.assertIn('"--validate-only"', source)
+        self.assertIn('\"--validate-only\"', source)
         self.assertIn("validate_capture_request(request)", source)
         self.assertIn("if args.validate_only:", source)
 

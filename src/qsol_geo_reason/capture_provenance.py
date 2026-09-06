@@ -21,6 +21,7 @@ from .capture_common import (
     _require_observed_dtype,
 )
 from .capture_runtime import _validate_torch_build_metadata
+from .capture_dispatch import _validate_dispatch_metadata
 
 _DETERMINISTIC_CUBLAS_WORKSPACE_CONFIGS = frozenset({":4096:8", ":16:8"})
 
@@ -197,6 +198,7 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
             raise CaptureContractError("observed_hidden_state_dtypes has an invalid layer dtype set")
 
     device = request["backend"]["device"]
+    _validate_dispatch_metadata(observed, device)
     cpu_active = device == "cpu"
     cuda_active = device.startswith("cuda:")
     if cuda_active:
@@ -260,17 +262,17 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
         "sdpa_math_enabled": observed.get("sdpa_math_enabled"),
         "sdpa_cudnn_enabled": observed.get("sdpa_cudnn_enabled"),
     }
-    if cuda_active and attention == "sdpa":
+    if attention == "sdpa":
         if sdpa_fields["sdpa_flash_enabled"] is not False:
-            raise CaptureContractError("canonical CUDA SDPA requires Flash SDPA disabled")
+            raise CaptureContractError("canonical SDPA requires Flash SDPA disabled")
         if sdpa_fields["sdpa_mem_efficient_enabled"] is not False:
-            raise CaptureContractError("canonical CUDA SDPA requires memory-efficient SDPA disabled")
+            raise CaptureContractError("canonical SDPA requires memory-efficient SDPA disabled")
         if sdpa_fields["sdpa_math_enabled"] is not True:
-            raise CaptureContractError("canonical CUDA SDPA requires math SDPA enabled")
+            raise CaptureContractError("canonical SDPA requires math SDPA enabled")
         if sdpa_fields["sdpa_cudnn_enabled"] is True:
-            raise CaptureContractError("canonical CUDA SDPA requires cuDNN SDPA disabled")
+            raise CaptureContractError("canonical SDPA requires cuDNN SDPA disabled")
     elif any(value is not None for value in sdpa_fields.values()):
-        raise CaptureContractError("SDPA policy fields must be null outside the canonical CUDA SDPA lane")
+        raise CaptureContractError("SDPA policy fields must be null outside the canonical SDPA lane")
 
     mps_active = device == "mps"
     if observed.get("mps_device_active") is not mps_active:

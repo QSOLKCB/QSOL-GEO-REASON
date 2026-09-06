@@ -153,6 +153,7 @@
         "observed_model_commit", "observed_tokenizer_commit", "checkpoint_loading_clean",
         "quantization_config_present", "model_reports_quantized", "attention_implementation",
         "device", "cpu_machine", "cpu_processor", "cpu_instruction_flags", "torch_num_threads",
+        "cpu_aten_capability", "aten_cpu_capability_env", "aten_cpu_capability_env_known",
         "torch_num_interop_threads", "omp_num_threads", "mkl_num_threads",
         "cpu_mkldnn_enabled", "cpu_mkldnn_matmul_fp32_precision", "cuda_device_name",
         "cuda_device_capability", "cuda_resolved_device_index", "cuda_device_uuid",
@@ -161,6 +162,7 @@
         "cudnn_benchmark", "cudnn_deterministic",
         "cuda_matmul_allow_fp16_reduced_precision_reduction",
         "cuda_matmul_allow_bf16_reduced_precision_reduction",
+        "cuda_matmul_allow_fp16_accumulation",
         "sdpa_flash_enabled", "sdpa_mem_efficient_enabled", "sdpa_math_enabled", "sdpa_cudnn_enabled",
         "nvidia_tf32_override", "torch_allow_tf32_cublas_override", "cublas_workspace_config",
         "mps_device_active", "mps_built", "mps_available", "mps_mac_model", "mps_cpu_brand",
@@ -202,6 +204,9 @@
         "cpu_machine": {"$ref": "#/$defs/nullableString"},
         "cpu_processor": {"$ref": "#/$defs/nullableString"},
         "cpu_instruction_flags": {"$ref": "#/$defs/nullableString"},
+        "cpu_aten_capability": {"$ref": "#/$defs/nullableString", "description": "Effective ATen ISA returned by torch.backends.cpu.get_cpu_capability(), not advertised hardware flags."},
+        "aten_cpu_capability_env": {"$ref": "#/$defs/nullableString", "description": "Initialization-time override only when captured before the first PyTorch import. Otherwise unknown/null."},
+        "aten_cpu_capability_env_known": {"$ref": "#/$defs/nullableBoolean", "description": "On CPU, false means the historical override is unknown; the effective runtime capability is still mandatory."},
         "torch_num_threads": {"type": "integer", "minimum": 1},
         "torch_num_interop_threads": {"type": "integer", "minimum": 1},
         "omp_num_threads": {"$ref": "#/$defs/nullableString"},
@@ -223,6 +228,7 @@
         "cudnn_deterministic": {"$ref": "#/$defs/nullableBoolean"},
         "cuda_matmul_allow_fp16_reduced_precision_reduction": {"$ref": "#/$defs/nullableBoolean"},
         "cuda_matmul_allow_bf16_reduced_precision_reduction": {"$ref": "#/$defs/nullableBoolean"},
+        "cuda_matmul_allow_fp16_accumulation": {"enum": [false, null], "description": "False when exposed by the CUDA build; null when unavailable or outside CUDA."},
         "sdpa_flash_enabled": {"$ref": "#/$defs/nullableBoolean"},
         "sdpa_mem_efficient_enabled": {"$ref": "#/$defs/nullableBoolean"},
         "sdpa_math_enabled": {"$ref": "#/$defs/nullableBoolean"},
@@ -306,7 +312,21 @@
         {
           "if": {"properties": {"device": {"type": "string", "pattern": "^cuda:[0-9]+$"}}, "required": ["device"]},
           "then": {"properties": {"cudnn_benchmark": {"type": "boolean"}, "cudnn_deterministic": {"type": "boolean"}}},
-          "else": {"properties": {"cudnn_benchmark": {"type": "null"}, "cudnn_deterministic": {"type": "null"}}}
+          "else": {"properties": {"cudnn_benchmark": {"type": "null"}, "cudnn_deterministic": {"type": "null"}, "cuda_matmul_allow_fp16_accumulation": {"type": "null"}}}
+        },
+        {
+          "if": {"properties": {"device": {"const": "cpu"}}, "required": ["device"]},
+          "then": {"properties": {"cpu_aten_capability": {"enum": ["DEFAULT", "VSX", "Z VECTOR", "NO AVX", "AVX2", "AVX512", "SVE256"]}, "aten_cpu_capability_env_known": {"type": "boolean"}}},
+          "else": {"properties": {"cpu_aten_capability": {"type": "null"}, "aten_cpu_capability_env": {"type": "null"}, "aten_cpu_capability_env_known": {"type": "null"}}}
+        },
+        {
+          "if": {"properties": {"aten_cpu_capability_env_known": {"const": false}}, "required": ["aten_cpu_capability_env_known"]},
+          "then": {"properties": {"aten_cpu_capability_env": {"type": "null"}}}
+        },
+        {
+          "if": {"properties": {"attention_implementation": {"const": "sdpa"}}, "required": ["attention_implementation"]},
+          "then": {"properties": {"sdpa_flash_enabled": {"const": false}, "sdpa_mem_efficient_enabled": {"const": false}, "sdpa_math_enabled": {"const": true}, "sdpa_cudnn_enabled": {"enum": [false, null]}}},
+          "else": {"properties": {"sdpa_flash_enabled": {"type": "null"}, "sdpa_mem_efficient_enabled": {"type": "null"}, "sdpa_math_enabled": {"type": "null"}, "sdpa_cudnn_enabled": {"type": "null"}}}
         }
       ]
     }

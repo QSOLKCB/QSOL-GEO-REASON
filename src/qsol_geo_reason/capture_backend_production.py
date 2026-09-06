@@ -20,6 +20,13 @@ from .capture_execution_state import (
     _callable_execution_identity,
     _cudnn_algorithm_policy_state,
 )
+from .capture_dispatch import (
+    _MathSDPABaseModel,
+    _effective_cpu_capability,
+    _execution_dependencies_sha256,
+    _fp16_accumulation_state,
+    _model_execution_dependency_roots,
+)
 
 
 class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
@@ -133,6 +140,9 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
         self._exclusive_thread_boundary_state: dict[str, Any] | None = None
         self._canonical_cudnn_algorithm_policy: dict[str, bool] | None = None
         self._last_cudnn_algorithm_policy: dict[str, bool] | None = None
+        self._canonical_cpu_dispatch: dict[str, Any] | None = None
+        self._canonical_fp16_accumulation_supported: bool | None = None
+        self._last_fp16_accumulation: bool | None = None
         # Construction mutates the same process-global state as observation.
         # Own the thread boundary before import, snapshot, initialization or cleanup.
         self._enter_exclusive_python_thread_boundary()
@@ -144,14 +154,26 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
                 self._canonical_cuda_environment = self._cuda_environment_state()
 
             self._assert_pristine_mps_import_state(device)
+            cpu_override_known = "torch" not in sys.modules
+            cpu_override = os.environ.get("ATEN_CPU_CAPABILITY")
             try:
                 import torch as process_torch
             except ImportError as exc:
                 raise CaptureBackendUnavailable("canonical capture requires PyTorch") from exc
 
             self._assert_pristine_cuda_runtime(process_torch, device)
+            if device == "cpu":
+                self._canonical_cpu_dispatch = {
+                    "cpu_aten_capability": _effective_cpu_capability(process_torch),
+                    "aten_cpu_capability_env": cpu_override if cpu_override_known else None,
+                    "aten_cpu_capability_env_known": cpu_override_known,
+                }
+                self._canonical_cpu_environment = cpu_override
+                if os.environ.get("ATEN_CPU_CAPABILITY") != cpu_override:
+                    raise CaptureContractError("ATen CPU override changed during initialization")
             if device.startswith("cuda:"):
                 self._canonical_cudnn_algorithm_policy = _cudnn_algorithm_policy_state(process_torch)
+                self._canonical_fp16_accumulation_supported = _fp16_accumulation_state(process_torch) is not None
             ambient = self._snapshot_torch_process_state(process_torch, device)
             try:
                 super().__init__(validated)
@@ -160,6 +182,11 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
                 # including constructor failures and interrupted initialization.
                 self._restore_torch_process_state(process_torch, ambient)
 
+            # The core already brackets CUDA SDPA. Its CPU/MPS execution needs the
+            # identical math-only boundary at the delegated base-model call.
+            if device in {"cpu", "mps"} and self._attention_implementation == "sdpa":
+                self._base_model = _MathSDPABaseModel(self._base_model, self)
+            self._assert_cpu_dispatch_policy()
             self._canonical_model_runtime_attributes = self._model_runtime_attributes_seal()
             self._assert_no_registered_module_hooks()
         finally:
@@ -175,6 +202,9 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
                 if not isinstance(value, bool):
                     raise CaptureContractError(f"ambient torch.backends.cudnn.{name} must be boolean")
                 state[f"cudnn_{name}"] = value
+        accumulation = _fp16_accumulation_state(torch)
+        if accumulation is not None:
+            state["cuda_matmul_allow_fp16_accumulation"] = accumulation
         return state
 
     @classmethod
@@ -187,8 +217,43 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
             if cudnn is None or not hasattr(cudnn, name) or not isinstance(state[key], bool):
                 raise CaptureContractError(f"unable to restore ambient cuDNN {name} policy")
             setattr(cudnn, name, state[key])
+        key = "cuda_matmul_allow_fp16_accumulation"
+        if key in state:
+            if type(state[key]) is not bool or _fp16_accumulation_state(torch) is None:
+                raise CaptureContractError("unable to restore ambient CUDA FP16 accumulation")
+            torch.backends.cuda.matmul.allow_fp16_accumulation = state[key]
         # The inherited exact-equality check dynamically calls our full snapshot.
         super()._restore_torch_execution_policy_state(torch, state)
+
+    def _assert_cpu_dispatch_policy(self) -> None:
+        expected = getattr(self, "_canonical_cpu_dispatch", None)
+        if expected is None:
+            return
+        if _effective_cpu_capability(self._torch) != expected["cpu_aten_capability"]:
+            raise CaptureContractError("effective ATen CPU dispatch policy drifted")
+        if os.environ.get("ATEN_CPU_CAPABILITY") != self._canonical_cpu_environment:
+            raise CaptureContractError("ATen CPU override drifted after construction")
+
+    def _assert_fp16_accumulation_policy(self) -> bool | None:
+        value = _fp16_accumulation_state(self._torch)
+        supported = getattr(self, "_canonical_fp16_accumulation_supported", None)
+        if supported is not None and (value is not None) is not supported:
+            raise CaptureContractError("CUDA FP16 accumulation control availability changed")
+        if value is True:
+            raise CaptureContractError("canonical CUDA capture forbids FP16 accumulation")
+        self._last_fp16_accumulation = value
+        return value
+
+    def _force_cuda_reduced_precision_policy(self) -> None:
+        value = _fp16_accumulation_state(self._torch)
+        if value is not None:
+            self._torch.backends.cuda.matmul.allow_fp16_accumulation = False
+        self._assert_fp16_accumulation_policy()
+        super()._force_cuda_reduced_precision_policy()
+
+    def _assert_cuda_reduced_precision_policy(self) -> dict[str, bool]:
+        self._assert_fp16_accumulation_policy()
+        return super()._assert_cuda_reduced_precision_policy()
 
     def _assert_cudnn_algorithm_policy(self) -> None:
         expected = getattr(self, "_canonical_cudnn_algorithm_policy", None)
@@ -216,11 +281,31 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
 
     def metadata(self) -> Mapping[str, Any]:
         self._assert_cudnn_algorithm_policy()
+        self._assert_cpu_dispatch_policy()
+        if getattr(self, "_device_type", None) == "cuda":
+            self._assert_fp16_accumulation_policy()
+        if getattr(self, "_attention_implementation", None) == "sdpa":
+            self._last_sdpa_policy = self._assert_sdpa_math_policy()
         data = dict(super().metadata())
         policy = getattr(self, "_last_cudnn_algorithm_policy", None)
         for field in ("cudnn_benchmark", "cudnn_deterministic"):
             data[field] = policy[field] if policy is not None else None
+        data["cuda_matmul_allow_fp16_accumulation"] = (
+            getattr(self, "_last_fp16_accumulation", None)
+            if getattr(self, "_device_type", None) == "cuda" else None
+        )
+        dispatch = getattr(self, "_canonical_cpu_dispatch", None)
+        for field in ("cpu_aten_capability", "aten_cpu_capability_env", "aten_cpu_capability_env_known"):
+            data[field] = dispatch[field] if dispatch is not None else None
         return data
+
+    def _model_executable_state_seal(self) -> str:
+        base = super()._model_executable_state_seal()
+        roots = _model_execution_dependency_roots(self._model)
+        return sha256_json({
+            "module_graph": base,
+            "execution_dependencies": _execution_dependencies_sha256(roots),
+        })
 
     def _assert_no_global_module_hooks(self) -> None:
         """Reject PyTorch process-global module hooks that can rewrite any model execution."""
@@ -434,6 +519,7 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
         # Cheap dispatch checks precede the inherited content-bound authentication.
         # Each layer adds its own checks; none rehashes tensors checked by its parent.
         self._assert_no_registered_module_hooks()
+        self._assert_cpu_dispatch_policy()
         super()._assert_live_state_authentication()
 
     def assert_execution_request(self, request: Mapping[str, Any]) -> None:

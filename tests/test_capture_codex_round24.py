@@ -59,6 +59,7 @@ class HelperModel:
 
 def policy_torch():
     torch = FakePolicyTorch()
+    torch.backends.cpu = SimpleNamespace(get_cpu_capability=lambda: "DEFAULT")
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.deterministic = False
     return torch
@@ -114,6 +115,7 @@ class CaptureRound24RegressionTests(unittest.TestCase):
                     self.assert_starts_blocked()
                     calls.append("load")
                     backend._torch = torch
+                    backend._attention_implementation = "eager"
                     torch.cpu_rng = b"changed by constructor"
                     torch.backends.cudnn.benchmark = False
                     torch.backends.cudnn.deterministic = True
@@ -211,7 +213,7 @@ class CaptureRound24RegressionTests(unittest.TestCase):
                 backend._canonical_model_runtime_attributes = backend._model_runtime_attributes_seal()
                 backend._assert_model_runtime_attributes()
                 backend._model.attention._attn = lambda value: ("changed", value)
-                self.assertEqual(backend._model_executable_state_seal(), forward_seal)
+                self.assertNotEqual(backend._model_executable_state_seal(), forward_seal)
                 with self.assertRaisesRegex(CaptureContractError, "runtime execution attributes changed"):
                     backend._assert_model_runtime_attributes()
                 with patch.object(IsolatedBackend, "begin_observation") as begin:
@@ -258,7 +260,9 @@ class CaptureRound24RegressionTests(unittest.TestCase):
         self.assertEqual(_cudnn_algorithm_policy_state(backend._torch), backend._canonical_cudnn_algorithm_policy)
         with patch.object(IsolatedBackend, "metadata", return_value={"inherited": "preserved"}):
             observed = backend.metadata()
-            self.assertEqual(observed, {"inherited": "preserved", "cudnn_benchmark": True, "cudnn_deterministic": False})
+            self.assertEqual(observed, {"inherited": "preserved", "cudnn_benchmark": True, "cudnn_deterministic": False,
+                                        "cuda_matmul_allow_fp16_accumulation": None, "cpu_aten_capability": None,
+                                        "aten_cpu_capability_env": None, "aten_cpu_capability_env_known": None})
             backend._torch.backends.cudnn.deterministic = True
             with self.assertRaisesRegex(CaptureContractError, "cuDNN.*drifted"):
                 backend.metadata()
