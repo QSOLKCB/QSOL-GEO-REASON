@@ -5,6 +5,7 @@ windows that cannot be represented truthfully by ordinary manifest metadata.
 """
 from __future__ import annotations
 
+import sys
 from typing import Any, Mapping
 
 from .capture_backend_isolated import HuggingFacePyTorchBackend as _IsolatedHuggingFacePyTorchBackend
@@ -23,6 +24,15 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
         "_forward_pre_hooks_with_kwargs",
         "_forward_hooks_with_kwargs",
         "_forward_hooks_always_called",
+    )
+    _GLOBAL_EXECUTION_HOOK_REGISTRIES = (
+        "_global_forward_pre_hooks",
+        "_global_forward_hooks",
+        "_global_backward_pre_hooks",
+        "_global_backward_hooks",
+        "_global_forward_pre_hooks_with_kwargs",
+        "_global_forward_hooks_with_kwargs",
+        "_global_forward_hooks_always_called",
     )
 
     @classmethod
@@ -59,6 +69,20 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
                 "environment controls govern device mapping and cuBLAS/TF32 initialization"
             )
 
+    @staticmethod
+    def _assert_pristine_mps_import_state(
+        device: str, modules: Mapping[str, Any] | None = None
+    ) -> None:
+        """Require MPS capture to begin before any PyTorch import in this process."""
+        if device != "mps":
+            return
+        module_table = sys.modules if modules is None else modules
+        if "torch" in module_table:
+            raise CaptureContractError(
+                "canonical MPS capture requires a fresh PyTorch import boundary so frozen "
+                "MPS environment controls govern first runtime/kernel initialization"
+            )
+
     def __init__(self, request: Mapping[str, Any]):
         validated = validate_capture_request(request)
         # Keep the required cuBLAS environment check and the exact environment
@@ -71,6 +95,10 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
         if device.startswith("cuda:"):
             self._canonical_cuda_environment = self._cuda_environment_state()
 
+        # PyTorch does not expose a reliable public MPS runtime-initialized predicate.
+        # Fail closed instead: an MPS observation must own the process's first torch
+        # import, before any process-state snapshot can touch MPS RNG/runtime state.
+        self._assert_pristine_mps_import_state(device)
         try:
             import torch as process_torch
         except ImportError:
@@ -92,8 +120,44 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
 
         self._assert_no_registered_module_hooks()
 
+    def _assert_no_global_module_hooks(self) -> None:
+        """Reject PyTorch process-global module hooks that can rewrite any model execution."""
+        torch = getattr(self, "_torch", None)
+        if torch is None:
+            return
+        nn = getattr(torch, "nn", None)
+        modules = getattr(nn, "modules", None) if nn is not None else None
+        module_api = getattr(modules, "module", None) if modules is not None else None
+        if module_api is None:
+            raise CaptureContractError(
+                "canonical OBSERVATION requires access to PyTorch global module-hook registries"
+            )
+
+        found_registry = False
+        for registry_name in self._GLOBAL_EXECUTION_HOOK_REGISTRIES:
+            registry = getattr(module_api, registry_name, None)
+            if registry is None:
+                continue
+            found_registry = True
+            try:
+                populated = bool(registry)
+            except Exception as exc:
+                raise CaptureContractError(
+                    f"unable to authenticate process-global hook registry {registry_name}"
+                ) from exc
+            if populated:
+                raise CaptureContractError(
+                    "canonical OBSERVATION forbids process-global PyTorch execution hooks; "
+                    f"registry={registry_name!r}"
+                )
+        if not found_registry:
+            raise CaptureContractError(
+                "canonical OBSERVATION cannot authenticate PyTorch global module-hook state"
+            )
+
     def _assert_no_registered_module_hooks(self) -> None:
-        """Reject externally registered execution hooks on the authenticated model graph."""
+        """Reject process-global and per-module execution hooks on the authenticated graph."""
+        self._assert_no_global_module_hooks()
         model = getattr(self, "_model", None)
         if model is None:
             return
