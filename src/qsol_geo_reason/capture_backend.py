@@ -132,10 +132,13 @@ class HuggingFacePyTorchBackend:
             return
         fallback = os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK")
         fast_math = os.environ.get("PYTORCH_MPS_FAST_MATH")
+        prefer_metal = os.environ.get("PYTORCH_MPS_PREFER_METAL")
         if self._env_flag_enabled(fallback):
             raise CaptureContractError("canonical MPS capture forbids PYTORCH_ENABLE_MPS_FALLBACK")
         if self._env_flag_enabled(fast_math):
             raise CaptureContractError("canonical MPS capture forbids PYTORCH_MPS_FAST_MATH")
+        if self._env_flag_enabled(prefer_metal):
+            raise CaptureContractError("canonical MPS capture forbids PYTORCH_MPS_PREFER_METAL")
 
     def _autocast_enabled(self) -> bool:
         torch = self._torch
