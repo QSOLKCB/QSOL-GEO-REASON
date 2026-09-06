@@ -42,6 +42,8 @@ class HuggingFacePyTorchBackend:
         self._observed_hidden_state_dtypes: dict[int, set[str]] = {}
         self._last_sdpa_policy: dict[str, bool | None] | None = None
         self._last_cuda_reduction_policy: dict[str, bool] | None = None
+        self._canonical_cuda_float32_policy: dict[str, str | bool] | None = None
+        self._last_cuda_float32_policy: dict[str, str | bool] | None = None
         backend, model_cfg, determinism = validated["backend"], validated["model"], validated["determinism"]
         dtype_map = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
         self._device = backend["device"]
@@ -62,6 +64,7 @@ class HuggingFacePyTorchBackend:
                 raise CaptureContractError(
                     f"canonical CUDA device index {self._cuda_resolved_device_index} is outside available range"
                 )
+            self._canonical_cuda_float32_policy = self._cuda_float32_policy_state()
         self._assert_mps_execution_policy()
         self._assert_autocast_disabled()
 
@@ -103,6 +106,7 @@ class HuggingFacePyTorchBackend:
         self._attention_implementation = getattr(self._model.config, "_attn_implementation", None)
         self._assert_attention_implementation()
         if self._device_type == "cuda":
+            self._force_cuda_float32_policy()
             self._force_cuda_reduced_precision_policy()
             if self._attention_implementation == "sdpa":
                 self._force_sdpa_math_policy()
@@ -175,6 +179,56 @@ class HuggingFacePyTorchBackend:
     def _assert_autocast_disabled(self) -> None:
         if self._autocast_enabled():
             raise CaptureContractError("canonical capture forbids ambient torch autocast")
+
+    def _cuda_float32_policy_state(self) -> dict[str, str | bool]:
+        torch = self._torch
+        getter = getattr(torch, "get_float32_matmul_precision", None)
+        if not callable(getter):
+            raise CaptureContractError("canonical CUDA capture requires torch.get_float32_matmul_precision")
+        precision = getter()
+        if precision not in {"highest", "high", "medium"}:
+            raise CaptureContractError(f"canonical CUDA float32 matmul precision is invalid: {precision!r}")
+        cuda_backend = getattr(torch.backends, "cuda", None)
+        matmul = getattr(cuda_backend, "matmul", None) if cuda_backend is not None else None
+        cudnn = getattr(torch.backends, "cudnn", None)
+        if matmul is None or cudnn is None:
+            raise CaptureContractError("CUDA TF32 backend controls are unavailable")
+        cuda_tf32 = getattr(matmul, "allow_tf32", None)
+        cudnn_tf32 = getattr(cudnn, "allow_tf32", None)
+        if not isinstance(cuda_tf32, bool) or not isinstance(cudnn_tf32, bool):
+            raise CaptureContractError("canonical CUDA TF32 policy requires boolean matmul and cuDNN controls")
+        return {
+            "float32_matmul_precision": precision,
+            "cuda_matmul_allow_tf32": cuda_tf32,
+            "cudnn_allow_tf32": cudnn_tf32,
+        }
+
+    def _assert_cuda_float32_policy(self) -> dict[str, str | bool]:
+        expected = self._canonical_cuda_float32_policy
+        if expected is None:
+            raise CaptureContractError("canonical CUDA float32 policy was not frozen at backend construction")
+        state = self._cuda_float32_policy_state()
+        if state != expected:
+            raise CaptureContractError(
+                f"canonical CUDA float32/TF32 policy drifted from construction state: expected={expected!r} observed={state!r}"
+            )
+        return state
+
+    def _force_cuda_float32_policy(self) -> None:
+        expected = self._canonical_cuda_float32_policy
+        if expected is None:
+            raise CaptureContractError("canonical CUDA float32 policy was not frozen at backend construction")
+        torch = self._torch
+        setter = getattr(torch, "set_float32_matmul_precision", None)
+        cuda_backend = getattr(torch.backends, "cuda", None)
+        matmul = getattr(cuda_backend, "matmul", None) if cuda_backend is not None else None
+        cudnn = getattr(torch.backends, "cudnn", None)
+        if not callable(setter) or matmul is None or cudnn is None:
+            raise CaptureContractError("canonical CUDA float32/TF32 controls are unavailable")
+        setter(expected["float32_matmul_precision"])
+        matmul.allow_tf32 = expected["cuda_matmul_allow_tf32"]
+        cudnn.allow_tf32 = expected["cudnn_allow_tf32"]
+        self._last_cuda_float32_policy = self._assert_cuda_float32_policy()
 
     def _cuda_reduced_precision_policy_state(self) -> dict[str, bool]:
         cuda_backend = getattr(self._torch.backends, "cuda", None)
@@ -304,6 +358,7 @@ class HuggingFacePyTorchBackend:
         self._assert_autocast_disabled()
         self._assert_attention_implementation()
         if self._device_type == "cuda":
+            self._force_cuda_float32_policy()
             self._force_cuda_reduced_precision_policy()
             if self._attention_implementation == "sdpa":
                 self._force_sdpa_math_policy()
@@ -342,6 +397,7 @@ class HuggingFacePyTorchBackend:
             for handle in handles:
                 handle.remove()
         if self._device_type == "cuda":
+            self._last_cuda_float32_policy = self._assert_cuda_float32_policy()
             self._last_cuda_reduction_policy = self._assert_cuda_reduced_precision_policy()
             if self._attention_implementation == "sdpa":
                 self._last_sdpa_policy = self._assert_sdpa_math_policy()
@@ -388,18 +444,7 @@ class HuggingFacePyTorchBackend:
             cudnn_version = torch.backends.cudnn.version()
         except Exception:
             cudnn_version = None
-        try:
-            matmul_precision = torch.get_float32_matmul_precision()
-        except Exception:
-            matmul_precision = None
-        try:
-            cuda_tf32 = bool(torch.backends.cuda.matmul.allow_tf32)
-        except Exception:
-            cuda_tf32 = None
-        try:
-            cudnn_tf32 = bool(torch.backends.cudnn.allow_tf32)
-        except Exception:
-            cudnn_tf32 = None
+        float32_policy = self._last_cuda_float32_policy if cuda_active else None
         reduction = self._last_cuda_reduction_policy if cuda_active else None
         mps_backend = getattr(torch.backends, "mps", None)
         try:
@@ -427,8 +472,9 @@ class HuggingFacePyTorchBackend:
             "cuda_device_uuid": cuda_uuid, "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
             "cuda_build_version": getattr(torch.version, "cuda", None), "cudnn_version": cudnn_version,
             "nvidia_driver_version": self._nvidia_driver_version() if cuda_active else None,
-            "float32_matmul_precision": matmul_precision, "cuda_matmul_allow_tf32": cuda_tf32,
-            "cudnn_allow_tf32": cudnn_tf32,
+            "float32_matmul_precision": float32_policy["float32_matmul_precision"] if float32_policy is not None else None,
+            "cuda_matmul_allow_tf32": float32_policy["cuda_matmul_allow_tf32"] if float32_policy is not None else None,
+            "cudnn_allow_tf32": float32_policy["cudnn_allow_tf32"] if float32_policy is not None else None,
             "cuda_matmul_allow_fp16_reduced_precision_reduction": reduction["fp16"] if reduction is not None else None,
             "cuda_matmul_allow_bf16_reduced_precision_reduction": reduction["bf16"] if reduction is not None else None,
             "sdpa_flash_enabled": sdpa["flash"], "sdpa_mem_efficient_enabled": sdpa["mem_efficient"],
