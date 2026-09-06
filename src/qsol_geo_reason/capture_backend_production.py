@@ -6,6 +6,7 @@ windows that cannot be represented truthfully by ordinary manifest metadata.
 from __future__ import annotations
 
 import _thread
+import os
 import sys
 import threading
 from typing import Any, Mapping
@@ -93,6 +94,21 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
                 "environment controls govern device mapping and cuBLAS/TF32 initialization"
             )
 
+    @classmethod
+    def _validate_pre_mps_environment(cls, request: Mapping[str, Any]) -> None:
+        """Reject noncanonical MPS environment policy before importing PyTorch."""
+        if request["backend"]["device"] != "mps":
+            return
+        for variable in (
+            "PYTORCH_ENABLE_MPS_FALLBACK",
+            "PYTORCH_MPS_FAST_MATH",
+            "PYTORCH_MPS_PREFER_METAL",
+        ):
+            if cls._env_flag_enabled(os.environ.get(variable)):
+                raise CaptureContractError(
+                    f"canonical MPS capture forbids {variable} before PyTorch import"
+                )
+
     @staticmethod
     def _assert_pristine_mps_import_state(
         device: str, modules: Mapping[str, Any] | None = None
@@ -114,6 +130,7 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
         # even though the inherited policy layer also binds it, so the public
         # evidence boundary visibly authenticates initialization-time controls.
         self._validate_pre_cuda_environment(validated)
+        self._validate_pre_mps_environment(validated)
         device = validated["backend"]["device"]
         self._canonical_cuda_environment = None
         if device.startswith("cuda:"):
