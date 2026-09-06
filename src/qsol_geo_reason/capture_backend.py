@@ -41,6 +41,8 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
             # Snapshot before the core imports/initializes CUDA or cuBLAS state.
             self._canonical_cuda_environment = self._cuda_environment_state()
         self._canonical_deterministic_algorithms_enabled: bool | None = None
+        self._canonical_deterministic_warn_only_enabled: bool | None = None
+        self._canonical_evaluation_mode = False
 
         super().__init__(validated)
 
@@ -55,10 +57,19 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
                 "required determinism requires deterministic algorithms enabled at construction"
             )
         self._canonical_deterministic_algorithms_enabled = deterministic_state
-        self._last_deterministic_algorithms_enabled = deterministic_state
+        # Warn-only would allow a required deterministic violation to continue.
+        # Canonical capture therefore fixes this process-global switch to false
+        # in both required and best-effort modes.
+        self._canonical_deterministic_warn_only_enabled = False
+        self._force_canonical_determinism_policy()
 
         if self._canonical_cuda_environment is not None:
             self._assert_cuda_environment_policy()
+
+        # The construction-time core already called model.eval(); make the
+        # evaluation lane an explicit reusable-backend invariant as well.
+        self._canonical_evaluation_mode = True
+        self._force_model_eval_policy()
 
         # The core forward remains unchanged; this proxy injects an explicit
         # output_attentions=False into every resolved base-model call.
@@ -82,6 +93,17 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
             )
         return observed
 
+    def _deterministic_warn_only_state(self) -> bool:
+        getter = getattr(self._torch, "is_deterministic_algorithms_warn_only_enabled", None)
+        if not callable(getter):
+            raise CaptureContractError(
+                "canonical capture requires torch.is_deterministic_algorithms_warn_only_enabled"
+            )
+        value = getter()
+        if not isinstance(value, bool):
+            raise CaptureContractError("deterministic warn-only state must be boolean")
+        return value
+
     def _assert_canonical_determinism_policy(self) -> bool:
         enabled = self._deterministic_algorithms_state()
         expected = getattr(self, "_canonical_deterministic_algorithms_enabled", None)
@@ -95,6 +117,15 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
                 "canonical deterministic-algorithm policy drifted from construction state: "
                 f"expected={expected!r} observed={enabled!r}"
             )
+
+        warn_expected = getattr(self, "_canonical_deterministic_warn_only_enabled", None)
+        if warn_expected is not None:
+            warn_only = self._deterministic_warn_only_state()
+            if warn_only is not warn_expected:
+                raise CaptureContractError(
+                    "canonical deterministic warn-only policy drifted from the required false state: "
+                    f"observed={warn_only!r}"
+                )
         self._last_deterministic_algorithms_enabled = enabled
         return enabled
 
@@ -110,8 +141,21 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
             raise CaptureContractError(
                 "canonical capture requires torch.use_deterministic_algorithms to restore execution policy"
             )
-        if self._deterministic_algorithms_state() is not expected:
-            setter(expected)
+
+        warn_expected = getattr(self, "_canonical_deterministic_warn_only_enabled", None)
+        enabled_now = self._deterministic_algorithms_state()
+        if warn_expected is None:
+            if enabled_now is not expected:
+                setter(expected)
+        else:
+            warn_now = self._deterministic_warn_only_state()
+            if enabled_now is not expected or warn_now is not warn_expected:
+                try:
+                    setter(expected, warn_only=warn_expected)
+                except TypeError as exc:
+                    raise CaptureContractError(
+                        "canonical capture requires warn_only control on torch.use_deterministic_algorithms"
+                    ) from exc
         self._last_deterministic_algorithms_enabled = self._assert_canonical_determinism_policy()
 
     # Preserve historical helper names used by the audited core, but enforce
@@ -122,9 +166,63 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
     def _force_required_determinism_policy(self) -> None:
         self._force_canonical_determinism_policy()
 
+    def _assert_model_eval_policy(self) -> None:
+        if not getattr(self, "_canonical_evaluation_mode", False):
+            return
+        training = getattr(self._model, "training", None)
+        if training is not False:
+            raise CaptureContractError(
+                "canonical capture requires the model to remain in evaluation mode"
+            )
+
+    def _force_model_eval_policy(self) -> None:
+        if not getattr(self, "_canonical_evaluation_mode", False):
+            return
+        evaluator = getattr(self._model, "eval", None)
+        if not callable(evaluator):
+            raise CaptureContractError("canonical capture requires model.eval()")
+        evaluator()
+        self._assert_model_eval_policy()
+
+    def _sdpa_policy_state(self) -> dict[str, bool | None]:
+        state = dict(super()._sdpa_policy_state())
+        cuda_backend = getattr(self._torch.backends, "cuda", None)
+        getter = getattr(cuda_backend, "fp16_bf16_reduction_math_sdp_allowed", None)
+        if not callable(getter):
+            raise CaptureContractError(
+                "canonical CUDA SDPA policy requires torch.backends.cuda."
+                "fp16_bf16_reduction_math_sdp_allowed"
+            )
+        reduced_math = getter()
+        if not isinstance(reduced_math, bool):
+            raise CaptureContractError("math SDPA reduced-precision reduction state must be boolean")
+        state["fp16_bf16_math_reduction"] = reduced_math
+        return state
+
+    def _assert_sdpa_math_policy(self) -> dict[str, bool | None]:
+        state = super()._assert_sdpa_math_policy()
+        if state.get("fp16_bf16_math_reduction") is not False:
+            raise CaptureContractError(
+                "canonical CUDA math SDPA requires FP16/BF16 reduced-precision reductions disabled"
+            )
+        return state
+
+    def _force_sdpa_math_policy(self) -> None:
+        cuda_backend = getattr(self._torch.backends, "cuda", None)
+        toggle = getattr(cuda_backend, "allow_fp16_bf16_reduction_math_sdp", None)
+        if not callable(toggle):
+            raise CaptureContractError(
+                "canonical CUDA SDPA policy requires torch.backends.cuda."
+                "allow_fp16_bf16_reduction_math_sdp"
+            )
+        toggle(False)
+        super()._force_sdpa_math_policy()
+
     def _assert_attention_implementation(self) -> None:
         super()._assert_attention_implementation()
         # The core invokes this immediately before every forward.
+        if getattr(self, "_canonical_evaluation_mode", False):
+            self._force_model_eval_policy()
         if getattr(self, "_canonical_deterministic_algorithms_enabled", None) is not None:
             self._force_canonical_determinism_policy()
         if getattr(self, "_canonical_cuda_environment", None) is not None:
@@ -163,6 +261,7 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
         determinism_frozen = getattr(self, "_canonical_deterministic_algorithms_enabled", None) is not None
         threads_frozen = getattr(self, "_canonical_cpu_thread_policy", None) is not None
         cuda_environment_frozen = getattr(self, "_canonical_cuda_environment", None) is not None
+        evaluation_frozen = getattr(self, "_canonical_evaluation_mode", False)
 
         if determinism_frozen:
             self._force_canonical_determinism_policy()
@@ -170,18 +269,22 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
             self._force_cpu_thread_policy()
         if cuda_environment_frozen:
             self._assert_cuda_environment_policy()
+        if evaluation_frozen:
+            self._force_model_eval_policy()
 
         result = super().hidden_states(input_ids, layer_indices, pool_span=pool_span)
 
         # Verify again after the entire base-model forward, not merely after an
-        # intermediate hook, so best_effort and accelerator-backed captures have
-        # no late-forward provenance gap.
+        # intermediate hook, so process-global and module-mode state cannot drift
+        # without invalidating the canonical capture.
         if determinism_frozen:
             self._last_deterministic_algorithms_enabled = self._assert_canonical_determinism_policy()
         if threads_frozen:
             self._last_cpu_thread_policy = self._assert_cpu_thread_policy()
         if cuda_environment_frozen:
             self._assert_cuda_environment_policy()
+        if evaluation_frozen:
+            self._assert_model_eval_policy()
         return result
 
     def metadata(self) -> Mapping[str, Any]:
@@ -191,6 +294,8 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
             self._last_deterministic_algorithms_enabled = self._assert_canonical_determinism_policy()
         if getattr(self, "_canonical_cpu_thread_policy", None) is not None:
             self._last_cpu_thread_policy = self._assert_cpu_thread_policy()
+        if getattr(self, "_canonical_evaluation_mode", False):
+            self._assert_model_eval_policy()
 
         data = dict(super().metadata())
 
