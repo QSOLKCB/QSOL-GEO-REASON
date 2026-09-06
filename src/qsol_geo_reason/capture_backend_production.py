@@ -61,9 +61,15 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
 
     def __init__(self, request: Mapping[str, Any]):
         validated = validate_capture_request(request)
-        # Keep the required cuBLAS environment check ahead of any CUDA runtime use.
+        # Keep the required cuBLAS environment check and the exact environment
+        # receipt ahead of any CUDA runtime use. The receipt is repeated here,
+        # even though the inherited policy layer also binds it, so the public
+        # evidence boundary visibly authenticates initialization-time controls.
         self._validate_pre_cuda_environment(validated)
         device = validated["backend"]["device"]
+        self._canonical_cuda_environment = None
+        if device.startswith("cuda:"):
+            self._canonical_cuda_environment = self._cuda_environment_state()
 
         try:
             import torch as process_torch
@@ -119,6 +125,14 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
 
     def _assert_live_state_authentication(self) -> None:
         super()._assert_live_state_authentication()
+        # Keep the content-bound model seal explicit at the final public evidence
+        # boundary. The inherited guard already checks it, but this duplicate
+        # assertion makes the byte-authentication invariant locally auditable.
+        expected_content = getattr(self, "_canonical_model_content_state", None)
+        if expected_content is not None and self._model_content_state_seal() != expected_content:
+            raise CaptureContractError(
+                "live model tensor contents changed after authenticated checkpoint loading"
+            )
         # The inherited tensor/tokenizer/executable seals do not include PyTorch's
         # mutable hook registries. Reject them at every existing live-state guard,
         # including immediately before and after each hidden-state forward.
