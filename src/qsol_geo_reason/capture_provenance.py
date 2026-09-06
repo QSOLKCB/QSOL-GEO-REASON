@@ -5,7 +5,7 @@ import os
 import platform
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 from .canonical import sha256_json
 from .capture_common import (
@@ -41,6 +41,20 @@ def _is_lower_sha256(value: Any) -> bool:
     )
 
 
+def _is_canonical_snapshot_path(value: Any) -> bool:
+    if not isinstance(value, str) or not value or "\\" in value or "//" in value:
+        return False
+    candidate = PurePosixPath(value)
+    if candidate.is_absolute() or candidate.as_posix() != value:
+        return False
+    parts = candidate.parts
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        return False
+    if len(parts[0]) == 2 and parts[0][0].isalpha() and parts[0][1] == ":":
+        return False
+    return True
+
+
 def _validate_snapshot_receipt(observed: Mapping[str, Any], prefix: str) -> None:
     hashes = observed.get(f"{prefix}_snapshot_file_sha256")
     count = observed.get(f"{prefix}_snapshot_file_count")
@@ -52,7 +66,7 @@ def _validate_snapshot_receipt(observed: Mapping[str, Any], prefix: str) -> None
     if count != len(hashes):
         raise CaptureContractError(f"{prefix} snapshot file count does not match artifact hashes")
     for path, digest in hashes.items():
-        if not isinstance(path, str) or not path or not _is_lower_sha256(digest):
+        if not _is_canonical_snapshot_path(path) or not _is_lower_sha256(digest):
             raise CaptureContractError(f"{prefix} snapshot artifact hashes are malformed")
     if not _is_lower_sha256(receipt) or receipt != sha256_json(hashes):
         raise CaptureContractError(f"{prefix} snapshot receipt SHA-256 is invalid")
@@ -116,7 +130,8 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
     nullable_strings = (
         "tokenizers_version", "huggingface_hub_version",
         "cpu_machine", "cpu_processor", "cpu_instruction_flags", "omp_num_threads",
-        "mkl_num_threads", "cuda_device_name", "cuda_device_capability", "cuda_device_uuid",
+        "mkl_num_threads", "cpu_mkldnn_matmul_fp32_precision",
+        "cuda_device_name", "cuda_device_capability", "cuda_device_uuid",
         "cuda_visible_devices", "cuda_build_version", "nvidia_driver_version",
         "float32_matmul_precision", "nvidia_tf32_override", "torch_allow_tf32_cublas_override",
         "cublas_workspace_config", "mps_mac_model", "mps_cpu_brand", "mps_macos_version",
@@ -128,6 +143,7 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
     for field in ("torch_num_threads", "torch_num_interop_threads", "cudnn_version", "cuda_resolved_device_index"):
         _validate_nullable_integer(observed.get(field), f"production backend field {field}")
     for field in (
+        "cpu_mkldnn_enabled",
         "cuda_matmul_allow_tf32", "cudnn_allow_tf32",
         "cuda_matmul_allow_fp16_reduced_precision_reduction",
         "cuda_matmul_allow_bf16_reduced_precision_reduction",
@@ -160,15 +176,20 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
             or not isinstance(values, list)
             or not values
             or len(values) != len(set(values))
-            or any(not isinstance(value, str) or not value for value in values)
+            or any(not isinstance(value, str) or not value.strip() for value in values)
         ):
             raise CaptureContractError("observed_hidden_state_dtypes has an invalid layer dtype set")
 
     device = request["backend"]["device"]
+    cpu_active = device == "cpu"
     cuda_active = device.startswith("cuda:")
     expected_cuda_index = int(device.split(":", 1)[1]) if cuda_active else None
     if observed.get("cuda_resolved_device_index") != expected_cuda_index:
         raise CaptureContractError("cuda_resolved_device_index does not match the explicit request device")
+
+    cpu_policy_fields = ("cpu_mkldnn_enabled", "cpu_mkldnn_matmul_fp32_precision")
+    if not cpu_active and any(observed.get(field) is not None for field in cpu_policy_fields):
+        raise CaptureContractError("CPU MKLDNN policy fields must be null outside CPU")
 
     float32_policy_fields = (
         "float32_matmul_precision", "cuda_matmul_allow_tf32", "cudnn_allow_tf32",
@@ -212,10 +233,12 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
     elif any(value is not None for value in sdpa_fields.values()):
         raise CaptureContractError("SDPA policy fields must be null outside the canonical CUDA SDPA lane")
 
-    mps_active = device.startswith("mps")
+    mps_active = device == "mps"
     if observed.get("mps_device_active") is not mps_active:
         raise CaptureContractError("mps_device_active does not match the requested device")
     if mps_active:
+        if observed.get("mps_built") is not True or observed.get("mps_available") is not True:
+            raise CaptureContractError("canonical MPS observation requires mps_built=true and mps_available=true")
         if _env_flag_enabled(observed.get("mps_fallback_env")):
             raise CaptureContractError("canonical MPS provenance forbids fallback enablement")
         if _env_flag_enabled(observed.get("mps_fast_math_env")):
@@ -365,9 +388,11 @@ def _snapshot_file_hashes(snapshot: Path, expected_commit: str, where: str) -> d
         if path.is_dir():
             continue
         try:
-            if not path.is_file():
+            if path.is_symlink() or not path.is_file():
                 raise CaptureContractError(f"{where} snapshot contains a non-regular artifact: {path}")
             rel = path.relative_to(snapshot).as_posix()
+            if not _is_canonical_snapshot_path(rel):
+                raise CaptureContractError(f"{where} snapshot contains a noncanonical artifact path: {rel!r}")
             hashes[rel] = _sha256_file(path)
         except OSError as exc:
             raise CaptureContractError(f"unable to hash {where} snapshot artifact {path}: {exc}") from exc
