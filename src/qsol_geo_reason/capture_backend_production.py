@@ -56,7 +56,6 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
             "_state_dict_pre_hooks",
             "_load_state_dict_pre_hooks",
             "_load_state_dict_post_hooks",
-            "_compiled_call_impl",
         }
     )
 
@@ -150,7 +149,7 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
         # This check must precede process-state snapshotting because querying CUDA RNG
         # state can itself initialize the runtime. ROCm is also rejected before that point.
         self._assert_pristine_cuda_runtime(process_torch, device)
-        ambient = self._snapshot_torch_process_state(process_torch)
+        ambient = self._snapshot_torch_process_state(process_torch, device)
         try:
             super().__init__(validated)
         finally:
@@ -207,7 +206,7 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
             )
 
     def _assert_no_registered_module_hooks(self) -> None:
-        """Reject process-global and per-module execution hooks on the authenticated graph."""
+        """Reject hooks and compiled call substitutions on the authenticated graph."""
         self._assert_no_global_module_hooks()
         model = getattr(self, "_model", None)
         if model is None:
@@ -221,6 +220,14 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
         for module_name, module in named_modules():
             if not isinstance(module_name, str):
                 raise CaptureContractError("canonical model graph contains an invalid module name")
+            # nn.Module.compile() changes __call__ dispatch without changing forward.
+            # Reject it independently of the forward/config/tensor seals, including
+            # before the single observation and at every pre/post-forward guard.
+            if getattr(module, "_compiled_call_impl", None) is not None:
+                raise CaptureContractError(
+                    "canonical OBSERVATION forbids compiled module call implementations; "
+                    f"module={module_name or '<root>'!r}"
+                )
             for registry_name in self._EXECUTION_HOOK_REGISTRIES:
                 registry = getattr(module, registry_name, None)
                 if registry is None:
@@ -360,25 +367,14 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
             ) from exc
 
     def _assert_live_state_authentication(self) -> None:
-        super()._assert_live_state_authentication()
-        # Keep the content-bound model seal explicit at the final public evidence
-        # boundary. The inherited guard already checks it, but this duplicate
-        # assertion makes the byte-authentication invariant locally auditable.
-        expected_content = getattr(self, "_canonical_model_content_state", None)
-        if expected_content is not None and self._model_content_state_seal() != expected_content:
-            raise CaptureContractError(
-                "live model tensor contents changed after authenticated checkpoint loading"
-            )
-        # The inherited tensor/tokenizer/executable seals do not include PyTorch's
-        # mutable hook registries. Reject them at every existing live-state guard,
-        # including immediately before and after each hidden-state forward.
+        # Cheap dispatch checks precede the inherited content-bound authentication.
+        # Each layer adds its own checks; none rehashes tensors checked by its parent.
         self._assert_no_registered_module_hooks()
+        super()._assert_live_state_authentication()
 
     def assert_execution_request(self, request: Mapping[str, Any]) -> None:
+        # The policy layer dispatches the full live-state chain exactly once.
         super().assert_execution_request(request)
-        # Keep the full inherited live-state check explicit at the final public
-        # boundary for source-audit visibility, then authenticate extra runtime attrs.
-        self._assert_live_state_authentication()
         self._assert_model_runtime_attributes()
 
     def begin_observation(self) -> None:

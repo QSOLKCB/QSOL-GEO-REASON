@@ -24,6 +24,7 @@ from .capture_provenance import (
     _sysctl_value,
 )
 from .capture_snapshot import _snapshot_file_hashes
+from .capture_runtime import _cuda_device_identity, _seed_capture_generators, _torch_build_metadata
 
 
 class HuggingFacePyTorchBackend:
@@ -40,6 +41,8 @@ class HuggingFacePyTorchBackend:
             raise CaptureBackendUnavailable("canonical capture requires optional capture dependencies; install qsol-geo-reason[capture]") from exc
         self._torch = torch
         self._transformers = transformers
+        # The loaded build, not only its package version, is part of the instrument.
+        self._torch_build_provenance = _torch_build_metadata(torch)
         self._observed_hidden_state_dtypes: dict[int, set[str]] = {}
         self._last_sdpa_policy: dict[str, bool | None] | None = None
         self._last_cuda_reduction_policy: dict[str, bool] | None = None
@@ -62,6 +65,7 @@ class HuggingFacePyTorchBackend:
         self._tokenizer_identifier = model_cfg["tokenizer_identifier"]
         self._tokenizer_revision = model_cfg["tokenizer_revision"]
         self._cuda_resolved_device_index: int | None = None
+        self._cuda_hardware_identity: dict[str, str | None] | None = None
         if self._device_type == "cuda":
             self._cuda_resolved_device_index = int(self._device.split(":", 1)[1])
             if not torch.cuda.is_available():
@@ -70,6 +74,8 @@ class HuggingFacePyTorchBackend:
                 raise CaptureContractError(
                     f"canonical CUDA device index {self._cuda_resolved_device_index} is outside available range"
                 )
+            # Missing mandatory device identity fails before loading model weights.
+            self._cuda_hardware_identity = _cuda_device_identity(torch, self._cuda_resolved_device_index)
             self._canonical_cuda_float32_policy = self._cuda_float32_policy_state()
         if self._device_type == "cpu":
             self._canonical_cpu_matmul_policy = self._cpu_matmul_policy_state()
@@ -78,9 +84,7 @@ class HuggingFacePyTorchBackend:
         self._assert_mps_execution_policy()
         self._assert_autocast_disabled()
 
-        torch.manual_seed(self._applied_seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(self._applied_seed)
+        _seed_capture_generators(torch, self._device, self._applied_seed)
         if determinism["mode"] == "required":
             torch.use_deterministic_algorithms(True)
         self._last_deterministic_algorithms_enabled = self._assert_required_determinism_policy()
@@ -619,20 +623,14 @@ class HuggingFacePyTorchBackend:
         config = self._model.config
         model_commit = getattr(config, "_commit_hash", None) or Path(getattr(self._model, "name_or_path", "")).name
         tokenizer_commit = getattr(self._tokenizer, "_commit_hash", None) or self._tokenizer.init_kwargs.get("_commit_hash") or Path(getattr(self._tokenizer, "name_or_path", "")).name
-        cuda_active = self._device_type == "cuda" and torch.cuda.is_available()
+        cuda_active = self._device_type == "cuda"
         mps_active = self._device_type == "mps"
-        cuda_device = cuda_capability = cuda_uuid = None
-        if cuda_active and self._cuda_resolved_device_index is not None:
-            try:
-                index = self._cuda_resolved_device_index
-                cuda_device = torch.cuda.get_device_name(index)
-                cap = torch.cuda.get_device_capability(index)
-                cuda_capability = f"{cap[0]}.{cap[1]}"
-                properties = torch.cuda.get_device_properties(index)
-                raw_uuid = getattr(properties, "uuid", None)
-                cuda_uuid = str(raw_uuid) if raw_uuid is not None else None
-            except Exception:
-                pass
+        cuda_identity = self._cuda_hardware_identity if cuda_active else None
+        if cuda_active and cuda_identity is None:
+            raise CaptureContractError("canonical CUDA hardware identity was not recorded at construction")
+        cuda_device = cuda_identity["cuda_device_name"] if cuda_identity is not None else None
+        cuda_capability = cuda_identity["cuda_device_capability"] if cuda_identity is not None else None
+        cuda_uuid = cuda_identity["cuda_device_uuid"] if cuda_identity is not None else None
         try:
             cudnn_version = torch.backends.cudnn.version()
         except Exception:
@@ -656,6 +654,7 @@ class HuggingFacePyTorchBackend:
             "name": _PRODUCTION_BACKEND,
             "python_version": sys.version.split()[0], "platform": platform.platform(),
             "torch_version": torch.__version__, "transformers_version": self._transformers.__version__,
+            **self._torch_build_provenance,
             "tokenizers_version": self._installed_version("tokenizers"), "huggingface_hub_version": self._installed_version("huggingface-hub"),
             "model_class": type(self._model).__name__, "tokenizer_class": type(self._tokenizer).__name__,
             "observed_model_commit": model_commit, "observed_tokenizer_commit": tokenizer_commit,

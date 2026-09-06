@@ -13,6 +13,7 @@ from qsol_geo_reason.capture_provenance import (
     _DETERMINISTIC_CUBLAS_WORKSPACE_CONFIGS,
     _validate_production_metadata_shape,
 )
+from test_capture_codex_round6 import valid_production_shape
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUEST = ROOT / "fixtures" / "capture-contract-request.json"
@@ -23,62 +24,7 @@ def fixture_request() -> dict:
 
 
 def production_shape(request: dict) -> dict:
-    device = request["backend"]["device"]
-    return {
-        "python_version": "3.13.0",
-        "platform": "test-platform",
-        "torch_version": "2.9.0",
-        "transformers_version": "4.56.0",
-        "model_class": "Model",
-        "tokenizer_class": "Tokenizer",
-        "device": device,
-        "tokenizers_version": None,
-        "huggingface_hub_version": None,
-        "attention_implementation": "eager",
-        "cpu_machine": None,
-        "cpu_processor": None,
-        "cpu_instruction_flags": None,
-        "torch_num_threads": 1,
-        "torch_num_interop_threads": 1,
-        "omp_num_threads": None,
-        "mkl_num_threads": None,
-        "cpu_mkldnn_enabled": None,
-        "cpu_mkldnn_matmul_fp32_precision": None,
-        "cuda_device_name": None,
-        "cuda_device_capability": None,
-        "cuda_resolved_device_index": None,
-        "cuda_device_uuid": None,
-        "cuda_visible_devices": None,
-        "cuda_build_version": None,
-        "cudnn_version": None,
-        "nvidia_driver_version": None,
-        "float32_matmul_precision": None,
-        "cuda_matmul_allow_tf32": None,
-        "cudnn_allow_tf32": None,
-        "cuda_matmul_allow_fp16_reduced_precision_reduction": None,
-        "cuda_matmul_allow_bf16_reduced_precision_reduction": None,
-        "sdpa_flash_enabled": None,
-        "sdpa_mem_efficient_enabled": None,
-        "sdpa_math_enabled": None,
-        "sdpa_cudnn_enabled": None,
-        "nvidia_tf32_override": None,
-        "torch_allow_tf32_cublas_override": None,
-        "cublas_workspace_config": None,
-        "mps_device_active": device == "mps",
-        "mps_built": device == "mps",
-        "mps_available": device == "mps",
-        "mps_mac_model": None,
-        "mps_cpu_brand": None,
-        "mps_macos_version": None,
-        "mps_fallback_env": None,
-        "mps_fast_math_env": None,
-        "autocast_disabled": True,
-        "hidden_state_block_path": "layers",
-        "hidden_state_count": max(request["capture"]["layers"]) + 2,
-        "observed_hidden_state_dtypes": {
-            str(layer): ["float32"] for layer in request["capture"]["layers"]
-        },
-    }
+    return valid_production_shape(request)
 
 
 class FakeTensor:
@@ -205,9 +151,18 @@ class CaptureRound17RegressionTests(unittest.TestCase):
         with self.assertRaisesRegex(CaptureContractError, "live model state changed"):
             backend._assert_live_state_authentication()
 
-        request_guard = inspect.getsource(HuggingFacePyTorchBackend.assert_execution_request)
+        # Audit the complete dispatch chain instead of requiring each wrapper to
+        # duplicate an expensive guard already supplied by its parent.
+        request_guards = [
+            inspect.getsource(cls.__dict__["assert_execution_request"])
+            for cls in HuggingFacePyTorchBackend.__mro__
+            if "assert_execution_request" in cls.__dict__
+        ]
+        self.assertEqual(
+            sum(source.count("self._assert_live_state_authentication()") for source in request_guards),
+            1,
+        )
         capture_guard = inspect.getsource(HuggingFacePyTorchBackend.hidden_states)
-        self.assertIn("self._assert_live_state_authentication()", request_guard)
         self.assertGreaterEqual(capture_guard.count("self._assert_live_state_authentication()"), 2)
 
 

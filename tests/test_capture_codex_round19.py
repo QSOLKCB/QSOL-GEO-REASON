@@ -69,6 +69,7 @@ class FakeProcessTorch:
         self.cpu_rng = b"ambient-cpu-rng"
         self.deterministic = False
         self.warn_only = True
+        self.default_generator = SimpleNamespace(manual_seed=self.manual_seed)
         self.cuda = SimpleNamespace(
             is_available=lambda: False,
         )
@@ -140,6 +141,7 @@ class CaptureRound19RegressionTests(unittest.TestCase):
     def test_observation_session_restores_host_rng_and_determinism(self):
         backend = object.__new__(HuggingFacePyTorchBackend)
         backend._torch = FakeProcessTorch()
+        backend._device = "cpu"
         backend._applied_seed = 17
         backend._determinism_mode = "required"
         backend._canonical_deterministic_algorithms_enabled = True

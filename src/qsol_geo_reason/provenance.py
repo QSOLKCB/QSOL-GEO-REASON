@@ -35,7 +35,9 @@ def _is_generated_untracked(path: str) -> bool:
         return True
     if parts[0] in _GENERATED_TOP_LEVEL:
         return True
-    if normalized == ".coverage" or normalized.endswith((".pyc", ".pyo", ".pyd")):
+    # A .pyd in the importable source tree is executable source, not bytecode.
+    # Build/cache directories are handled above; never exempt it by suffix.
+    if normalized == ".coverage" or normalized.endswith((".pyc", ".pyo")):
         return True
     return False
 

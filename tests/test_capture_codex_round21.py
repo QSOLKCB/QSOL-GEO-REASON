@@ -66,7 +66,7 @@ class CaptureRound21RegressionTests(unittest.TestCase):
         source = inspect.getsource(HuggingFacePyTorchBackend.__init__)
         self.assertLess(
             source.index("self._assert_pristine_cuda_runtime(process_torch, device)"),
-            source.index("self._snapshot_torch_process_state(process_torch)"),
+            source.index("self._snapshot_torch_process_state(process_torch, device)"),
         )
 
     def test_rocm_build_cannot_enter_cuda_observation_lane(self):

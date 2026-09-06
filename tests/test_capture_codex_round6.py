@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import unittest
@@ -13,6 +14,7 @@ from qsol_geo_reason.capture_validation import validate_capture_request
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUEST = ROOT / "fixtures" / "capture-contract-request.json"
+TEST_BUILD_CONFIG = "SYNTHETIC build fixture (not a measured runtime)\n"
 
 
 def fixture_request() -> dict:
@@ -20,14 +22,17 @@ def fixture_request() -> dict:
 
 
 def valid_production_shape(request: dict) -> dict:
+    device = request["backend"]["device"]
     return {
         "python_version": "3.13.0",
         "platform": "Linux",
         "torch_version": "2.9.0",
         "transformers_version": "4.56.0",
+        "torch_build_config": TEST_BUILD_CONFIG,
+        "torch_build_config_sha256": hashlib.sha256(TEST_BUILD_CONFIG.encode("utf-8")).hexdigest(),
         "model_class": "Model",
         "tokenizer_class": "Tokenizer",
-        "device": request["backend"]["device"],
+        "device": device,
         "tokenizers_version": None,
         "huggingface_hub_version": None,
         "attention_implementation": "eager",
@@ -36,6 +41,8 @@ def valid_production_shape(request: dict) -> dict:
         "cpu_instruction_flags": None,
         "omp_num_threads": None,
         "mkl_num_threads": None,
+        "cpu_mkldnn_enabled": None,
+        "cpu_mkldnn_matmul_fp32_precision": None,
         "cuda_device_name": None,
         "cuda_device_capability": None,
         "cuda_resolved_device_index": None,
@@ -57,13 +64,15 @@ def valid_production_shape(request: dict) -> dict:
         "cudnn_version": None,
         "cuda_matmul_allow_tf32": None,
         "cudnn_allow_tf32": None,
+        "cuda_matmul_allow_fp16_reduced_precision_reduction": None,
+        "cuda_matmul_allow_bf16_reduced_precision_reduction": None,
         "sdpa_flash_enabled": None,
         "sdpa_mem_efficient_enabled": None,
         "sdpa_math_enabled": None,
         "sdpa_cudnn_enabled": None,
-        "mps_device_active": False,
-        "mps_built": False,
-        "mps_available": False,
+        "mps_device_active": device == "mps",
+        "mps_built": device == "mps",
+        "mps_available": device == "mps",
         "autocast_disabled": True,
         "hidden_state_block_path": "layers",
         "hidden_state_count": max(request["capture"]["layers"]) + 2,

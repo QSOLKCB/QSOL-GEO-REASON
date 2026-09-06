@@ -148,6 +148,7 @@
       "additionalProperties": false,
       "required": [
         "name", "python_version", "platform", "torch_version", "transformers_version",
+        "torch_build_config", "torch_build_config_sha256",
         "tokenizers_version", "huggingface_hub_version", "model_class", "tokenizer_class",
         "observed_model_commit", "observed_tokenizer_commit", "checkpoint_loading_clean",
         "quantization_config_present", "model_reports_quantized", "attention_implementation",
@@ -178,6 +179,14 @@
         "platform": {"type": "string", "minLength": 1, "pattern": "\\S"},
         "torch_version": {"type": "string", "minLength": 1, "pattern": "\\S"},
         "transformers_version": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "torch_build_config": {
+          "type": "string", "minLength": 1, "pattern": "\\S",
+          "description": "Verbatim torch.__config__.show() result captured at backend construction, including compiler, BLAS/MKL/oneDNN and CPU build settings."
+        },
+        "torch_build_config_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 of the UTF-8 bytes of torch_build_config; the canonical bundle verifier recomputes this receipt."
+        },
         "tokenizers_version": {"$ref": "#/$defs/nullableString"},
         "huggingface_hub_version": {"$ref": "#/$defs/nullableString"},
         "model_class": {"type": "string", "minLength": 1, "pattern": "\\S"},
@@ -276,6 +285,18 @@
           "then": {
             "properties": {
               "cublas_workspace_config": {"enum": [":4096:8", ":16:8"]}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"device": {"type": "string", "pattern": "^cuda:[0-9]+$"}},
+            "required": ["device"]
+          },
+          "then": {
+            "properties": {
+              "cuda_device_name": {"type": "string", "minLength": 1, "pattern": "\\S"},
+              "cuda_device_capability": {"type": "string", "minLength": 1, "pattern": "\\S"}
             }
           }
         }

@@ -1,8 +1,8 @@
-"""Process-isolated, single-use canonical OBSERVATION backend.
+"""State-restoring, single-use canonical OBSERVATION backend.
 
-This layer wraps the audited capture backend with host-process state restoration and
-an explicit single-use evidence boundary. It also seals executable module-forward
-identity and mutable tokenizer behavior that are not represented by tensor bytes.
+This layer restores host-process execution policy and the requested device's RNG.
+It also seals executable module-forward identity and mutable tokenizer behavior.
+The production layer supplies the observation's Python-thread exclusion boundary.
 """
 from __future__ import annotations
 
@@ -12,11 +12,12 @@ from typing import Any, Mapping
 from .canonical import sha256_json
 from .capture_backend import HuggingFacePyTorchBackend as _PolicyHuggingFacePyTorchBackend
 from .capture_common import CaptureBackendUnavailable, CaptureContractError
+from .capture_runtime import _restore_accelerator_rng, _seed_capture_generators, _snapshot_accelerator_rng
 from .capture_validation import validate_capture_request
 
 
 class HuggingFacePyTorchBackend(_PolicyHuggingFacePyTorchBackend):
-    """Canonical production backend with process isolation and single-use execution."""
+    """Canonical backend with scoped process-state restoration and single-use execution."""
 
     _TOKENIZER_BEHAVIOR_FIELDS = (
         "add_prefix_space",
@@ -50,13 +51,12 @@ class HuggingFacePyTorchBackend(_PolicyHuggingFacePyTorchBackend):
             super().__init__(validated)
             raise CaptureBackendUnavailable("canonical capture requires PyTorch")
 
-        ambient = self._snapshot_torch_process_state(process_torch)
+        ambient = self._snapshot_torch_process_state(process_torch, device)
         try:
             super().__init__(validated)
         finally:
-            # Construction seeds RNGs and rewrites process-global numerical policies.
-            # A backend object must not leave any of those settings behind, even if
-            # construction fails after only part of the canonical policy is applied.
+            # Restore construction-time changes, including partial initialization.
+            # CPU capture never snapshots or seeds an unrelated accelerator.
             self._restore_torch_process_state(process_torch, ambient)
 
         self._canonical_model_executable_state = self._model_executable_state_seal()
@@ -255,7 +255,7 @@ class HuggingFacePyTorchBackend(_PolicyHuggingFacePyTorchBackend):
             )
 
     @classmethod
-    def _snapshot_torch_process_state(cls, torch: Any) -> dict[str, Any]:
+    def _snapshot_torch_process_state(cls, torch: Any, device: str = "cpu") -> dict[str, Any]:
         get_cpu = getattr(torch, "get_rng_state", None)
         set_cpu = getattr(torch, "set_rng_state", None)
         deterministic = getattr(torch, "are_deterministic_algorithms_enabled", None)
@@ -270,43 +270,15 @@ class HuggingFacePyTorchBackend(_PolicyHuggingFacePyTorchBackend):
         if not isinstance(enabled, bool) or not isinstance(warned, bool):
             raise CaptureContractError("ambient deterministic policy must be boolean")
 
-        state: dict[str, Any] = {
+        return {
             "cpu_rng": cls._clone_rng_state(get_cpu()),
             "deterministic_algorithms_enabled": enabled,
             "deterministic_warn_only_enabled": warned,
-            "cuda_rng": None,
-            "mps_rng": None,
-            "xpu_rng": None,
             "execution_policies": cls._snapshot_torch_execution_policy_state(torch),
+            # Reading an uninitialized accelerator's RNG creates its runtime.
+            # Only the explicit capture device may be touched here.
+            "accelerator_rng": _snapshot_accelerator_rng(torch, device),
         }
-
-        cuda = getattr(torch, "cuda", None)
-        cuda_available = getattr(cuda, "is_available", None)
-        if cuda is not None and callable(cuda_available) and bool(cuda_available()):
-            get_all = getattr(cuda, "get_rng_state_all", None)
-            set_all = getattr(cuda, "set_rng_state_all", None)
-            if not callable(get_all) or not callable(set_all):
-                raise CaptureContractError("canonical process isolation requires CUDA RNG state APIs")
-            state["cuda_rng"] = [cls._clone_rng_state(item) for item in get_all()]
-
-        mps = getattr(torch, "mps", None)
-        mps_available = getattr(mps, "is_available", None)
-        if mps is not None and callable(mps_available) and bool(mps_available()):
-            get_mps = getattr(mps, "get_rng_state", None)
-            set_mps = getattr(mps, "set_rng_state", None)
-            if not callable(get_mps) or not callable(set_mps):
-                raise CaptureContractError("canonical process isolation requires MPS RNG state APIs")
-            state["mps_rng"] = cls._clone_rng_state(get_mps())
-
-        xpu = getattr(torch, "xpu", None)
-        xpu_available = getattr(xpu, "is_available", None)
-        if xpu is not None and callable(xpu_available) and bool(xpu_available()):
-            get_all = getattr(xpu, "get_rng_state_all", None)
-            set_all = getattr(xpu, "set_rng_state_all", None)
-            if not callable(get_all) or not callable(set_all):
-                raise CaptureContractError("canonical process isolation requires XPU RNG state APIs")
-            state["xpu_rng"] = [cls._clone_rng_state(item) for item in get_all()]
-        return state
 
     @classmethod
     def _restore_torch_process_state(cls, torch: Any, state: Mapping[str, Any]) -> None:
@@ -316,12 +288,7 @@ class HuggingFacePyTorchBackend(_PolicyHuggingFacePyTorchBackend):
                 raise CaptureContractError("ambient PyTorch execution-policy snapshot is malformed")
             cls._restore_torch_execution_policy_state(torch, policies)
             torch.set_rng_state(state["cpu_rng"])
-            if state.get("cuda_rng") is not None:
-                torch.cuda.set_rng_state_all(state["cuda_rng"])
-            if state.get("mps_rng") is not None:
-                torch.mps.set_rng_state(state["mps_rng"])
-            if state.get("xpu_rng") is not None:
-                torch.xpu.set_rng_state_all(state["xpu_rng"])
+            _restore_accelerator_rng(torch, state["accelerator_rng"])
             try:
                 torch.use_deterministic_algorithms(
                     state["deterministic_algorithms_enabled"],
@@ -394,15 +361,9 @@ class HuggingFacePyTorchBackend(_PolicyHuggingFacePyTorchBackend):
         return sha256_json({"base_state": base, "behavior": behavior})
 
     def _assert_live_state_authentication(self) -> None:
+        # The policy layer performs the single tensor-content check. This layer
+        # adds executable identity without copying/hashing all weights again.
         super()._assert_live_state_authentication()
-        # Keep the tensor-content seal explicit at this final evidence boundary,
-        # even though the inherited guard already checks it. This makes the
-        # authenticated bytes visible to source-audit tripwires as well.
-        expected_content = getattr(self, "_canonical_model_content_state", None)
-        if expected_content is not None and self._model_content_state_seal() != expected_content:
-            raise CaptureContractError(
-                "live model tensor contents changed after authenticated checkpoint loading"
-            )
         expected_graph = getattr(self, "_canonical_model_executable_state", None)
         if expected_graph is not None and self._model_executable_state_seal() != expected_graph:
             raise CaptureContractError(
@@ -410,10 +371,8 @@ class HuggingFacePyTorchBackend(_PolicyHuggingFacePyTorchBackend):
             )
 
     def assert_execution_request(self, request: Mapping[str, Any]) -> None:
+        # The inherited request guard dispatches the complete live-state check once.
         super().assert_execution_request(request)
-        # Reassert the complete inherited + executable/tokenizer seal at the
-        # exported OBSERVATION boundary before deciding whether this backend is spent.
-        self._assert_live_state_authentication()
         if getattr(self, "_observation_consumed", False):
             raise CaptureContractError(
                 "canonical OBSERVATION backends are single-use and cannot be reused"
@@ -425,18 +384,12 @@ class HuggingFacePyTorchBackend(_PolicyHuggingFacePyTorchBackend):
                 "canonical OBSERVATION backends are single-use and cannot be reused"
             )
         self._observation_consumed = True
+        ambient = self._snapshot_torch_process_state(self._torch, self._device)
         self._observation_active = True
-        ambient = self._snapshot_torch_process_state(self._torch)
         self._observation_ambient_process_state = ambient
         try:
             # Establish the frozen run seed only inside the observation session.
-            self._torch.manual_seed(self._applied_seed)
-            cuda = getattr(self._torch, "cuda", None)
-            if cuda is not None and callable(getattr(cuda, "is_available", None)) and cuda.is_available():
-                manual_seed_all = getattr(cuda, "manual_seed_all", None)
-                if not callable(manual_seed_all):
-                    raise CaptureContractError("canonical capture requires CUDA manual_seed_all")
-                manual_seed_all(self._applied_seed)
+            _seed_capture_generators(self._torch, self._device, self._applied_seed)
             self._force_canonical_determinism_policy()
             self._assert_live_state_authentication()
         except Exception:
@@ -457,12 +410,23 @@ class HuggingFacePyTorchBackend(_PolicyHuggingFacePyTorchBackend):
             raise CaptureContractError("canonical OBSERVATION ambient process-state snapshot is missing")
         self._restore_torch_process_state(self._torch, ambient)
 
+    def _assert_tokenizer_state_authentication(self) -> None:
+        if not getattr(self, "_live_state_seal_initialized", False):
+            return
+        expected = getattr(self, "_canonical_tokenizer_live_state", None)
+        if expected is None:
+            raise CaptureContractError("canonical tokenizer authentication seal is missing")
+        if self._tokenizer_live_state_seal() != expected:
+            raise CaptureContractError(
+                "live tokenizer state changed after authenticated snapshot loading"
+            )
+
     def tokenize(self, text: str) -> list[int]:
-        if getattr(self, "_live_state_seal_initialized", False):
-            self._assert_live_state_authentication()
+        # Tokenization never reads model weights. Authenticate the tokenizer here;
+        # the full model still has content checks before and after every forward.
+        self._assert_tokenizer_state_authentication()
         tokens = super().tokenize(text)
-        if getattr(self, "_live_state_seal_initialized", False):
-            self._assert_live_state_authentication()
+        self._assert_tokenizer_state_authentication()
         return tokens
 
 

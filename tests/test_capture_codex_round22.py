@@ -164,7 +164,7 @@ class CaptureRound22RegressionTests(unittest.TestCase):
         )
         self.assertLess(
             source.index("import torch as process_torch"),
-            source.index("self._snapshot_torch_process_state(process_torch)"),
+            source.index("self._snapshot_torch_process_state(process_torch, device)"),
         )
 
 

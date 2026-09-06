@@ -19,6 +19,7 @@ from .capture_common import (
     CaptureContractError,
     _require_exact_keys,
 )
+from .capture_runtime import _validate_torch_build_metadata
 
 _DETERMINISTIC_CUBLAS_WORKSPACE_CONFIGS = frozenset({":4096:8", ":16:8"})
 
@@ -128,6 +129,7 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
             raise CaptureContractError(
                 f"production backend field {field} must be a non-whitespace string"
             )
+    _validate_torch_build_metadata(observed)
 
     attention = observed.get("attention_implementation")
     if attention not in _ALLOWED_ATTENTION_IMPLEMENTATIONS:
@@ -194,6 +196,13 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
     device = request["backend"]["device"]
     cpu_active = device == "cpu"
     cuda_active = device.startswith("cuda:")
+    if cuda_active:
+        for field in ("cuda_device_name", "cuda_device_capability"):
+            value = observed.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise CaptureContractError(
+                    f"canonical CUDA provenance requires non-whitespace {field}"
+                )
     expected_cuda_index = int(device.split(":", 1)[1]) if cuda_active else None
     if observed.get("cuda_resolved_device_index") != expected_cuda_index:
         raise CaptureContractError("cuda_resolved_device_index does not match the explicit request device")

@@ -98,12 +98,21 @@ class CaptureRound18RegressionTests(unittest.TestCase):
     def test_live_state_seal_hashes_tensor_bytes_and_checks_each_capture(self):
         content_source = inspect.getsource(HuggingFacePyTorchBackend._model_content_state_seal)
         tensor_source = inspect.getsource(HuggingFacePyTorchBackend._tensor_content_sha256)
-        auth_source = inspect.getsource(HuggingFacePyTorchBackend._assert_live_state_authentication)
+        auth_sources = [
+            inspect.getsource(cls.__dict__["_assert_live_state_authentication"])
+            for cls in HuggingFacePyTorchBackend.__mro__
+            if "_assert_live_state_authentication" in cls.__dict__
+        ]
         capture_source = inspect.getsource(HuggingFacePyTorchBackend.hidden_states)
 
         self.assertIn("self._tensor_content_sha256", content_source)
         self.assertIn("hashlib.sha256", tensor_source)
-        self.assertIn("_model_content_state_seal()", auth_source)
+        # Exactly one layer owns the content check. Requiring a duplicate in the
+        # public wrapper would reintroduce the full-model transfer regression.
+        self.assertEqual(
+            sum(source.count("self._model_content_state_seal()") for source in auth_sources),
+            1,
+        )
         self.assertGreaterEqual(capture_source.count("self._assert_live_state_authentication()"), 2)
 
 
