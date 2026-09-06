@@ -1,6 +1,7 @@
 """Canonical execution-policy facade over the audited Hugging Face/PyTorch backend core."""
 from __future__ import annotations
 
+import hashlib
 import os
 from typing import Any, Mapping, Sequence
 
@@ -47,6 +48,7 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
         self._canonical_deterministic_warn_only_enabled: bool | None = None
         self._canonical_evaluation_mode = False
         self._canonical_model_live_state: tuple[tuple[Any, ...], ...] | None = None
+        self._canonical_model_content_state: tuple[tuple[str, str, str], ...] | None = None
         self._canonical_tokenizer_live_state: str | None = None
         self._live_state_seal_initialized = False
 
@@ -79,9 +81,10 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
 
         # Seal the live objects after authenticated loading, device placement,
         # and canonical evaluation-mode setup. Snapshot receipts authenticate the
-        # source files; these seals prevent later in-memory mutation from being
-        # misattributed to those immutable snapshot identities.
+        # source files; object/version identity catches ordinary mutation while
+        # content SHA-256 catches .data/shared-storage edits that bypass _version.
         self._canonical_model_live_state = self._model_live_state_seal()
+        self._canonical_model_content_state = self._model_content_state_seal()
         self._canonical_tokenizer_live_state = self._tokenizer_live_state_seal()
         self._live_state_seal_initialized = True
 
@@ -262,6 +265,64 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
             raise CaptureContractError("canonical model exposes no parameter or buffer state to authenticate")
         return tuple(entries)
 
+    def _tensor_content_sha256(self, tensor: Any, name: str) -> str:
+        """Hash exact tensor bytes after a bounded one-tensor-at-a-time CPU transfer."""
+        try:
+            torch_uint8 = getattr(getattr(self, "_torch", None), "uint8", None)
+            if torch_uint8 is None:
+                raise CaptureContractError(
+                    "canonical tensor-content authentication requires torch.uint8"
+                )
+            detached = tensor.detach()
+            cpu = detached.to("cpu")
+            contiguous = cpu.contiguous().reshape(-1)
+            byte_view = contiguous.view(torch_uint8)
+            array = byte_view.numpy()
+            if isinstance(array, (bytes, bytearray, memoryview)):
+                raw = bytes(array)
+            else:
+                serializer = getattr(array, "tobytes", None)
+                if not callable(serializer):
+                    raise CaptureContractError(
+                        f"canonical model tensor {name!r} cannot expose raw bytes"
+                    )
+                try:
+                    raw = serializer(order="C")
+                except TypeError:
+                    raw = serializer()
+            if not isinstance(raw, (bytes, bytearray)):
+                raise CaptureContractError(
+                    f"canonical model tensor {name!r} raw-byte serialization is invalid"
+                )
+            return hashlib.sha256(raw).hexdigest()
+        except CaptureContractError:
+            raise
+        except Exception as exc:
+            raise CaptureContractError(
+                f"unable to authenticate live content of model tensor {name!r}"
+            ) from exc
+
+    def _model_content_state_seal(self) -> tuple[tuple[str, str, str], ...]:
+        entries: list[tuple[str, str, str]] = []
+        for kind, getter_name in (
+            ("parameter", "named_parameters"),
+            ("buffer", "named_buffers"),
+        ):
+            getter = getattr(self._model, getter_name, None)
+            if not callable(getter):
+                raise CaptureContractError(
+                    f"canonical tensor-content authentication requires model.{getter_name}()"
+                )
+            for name, tensor in getter():
+                if not isinstance(name, str) or not name:
+                    raise CaptureContractError("canonical model state contains an invalid tensor name")
+                entries.append((kind, name, self._tensor_content_sha256(tensor, name)))
+        if not entries:
+            raise CaptureContractError(
+                "canonical model exposes no parameter or buffer contents to authenticate"
+            )
+        return tuple(entries)
+
     def _tokenizer_live_state_seal(self) -> str:
         tokenizer = self._tokenizer
         vocab_getter = getattr(tokenizer, "get_vocab", None)
@@ -308,12 +369,17 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
         if not getattr(self, "_live_state_seal_initialized", False):
             return
         expected_model = getattr(self, "_canonical_model_live_state", None)
+        expected_content = getattr(self, "_canonical_model_content_state", None)
         expected_tokenizer = getattr(self, "_canonical_tokenizer_live_state", None)
         if expected_model is None or expected_tokenizer is None:
             raise CaptureContractError("canonical live-state authentication seal is missing")
         if self._model_live_state_seal() != expected_model:
             raise CaptureContractError(
                 "live model state changed after authenticated checkpoint loading"
+            )
+        if expected_content is not None and self._model_content_state_seal() != expected_content:
+            raise CaptureContractError(
+                "live model tensor contents changed after authenticated checkpoint loading"
             )
         if self._tokenizer_live_state_seal() != expected_tokenizer:
             raise CaptureContractError(
