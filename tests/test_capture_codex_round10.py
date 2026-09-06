@@ -9,6 +9,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from qsol_geo_reason.capture import CaptureContractError, HuggingFacePyTorchBackend
+from qsol_geo_reason.capture_backend_core import (
+    HuggingFacePyTorchBackend as CoreHuggingFacePyTorchBackend,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -22,8 +25,8 @@ class CaptureRound10RegressionTests(unittest.TestCase):
                 backend._assert_mps_execution_policy()
 
     def test_mps_policy_guard_runs_at_construction_and_each_forward(self):
-        init_source = inspect.getsource(HuggingFacePyTorchBackend.__init__)
-        forward_source = inspect.getsource(HuggingFacePyTorchBackend.hidden_states)
+        init_source = inspect.getsource(CoreHuggingFacePyTorchBackend.__init__)
+        forward_source = inspect.getsource(CoreHuggingFacePyTorchBackend.hidden_states)
         self.assertIn("self._assert_mps_execution_policy()", init_source)
         self.assertLess(
             forward_source.index("self._assert_mps_execution_policy()"),

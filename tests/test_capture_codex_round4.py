@@ -8,6 +8,9 @@ from pathlib import Path
 
 from qsol_geo_reason.canonical import sha256_json
 from qsol_geo_reason.capture import CaptureContractError, HuggingFacePyTorchBackend, execute_capture, verify_capture_bundle
+from qsol_geo_reason.capture_backend_core import (
+    HuggingFacePyTorchBackend as CoreHuggingFacePyTorchBackend,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUEST = ROOT / "fixtures" / "capture-contract-request.json"
@@ -122,8 +125,8 @@ class CaptureRound4RegressionTests(unittest.TestCase):
             verify_capture_bundle(request, manifest, trajectory)
 
     def test_cuda_sdpa_policy_is_forced_to_math_only(self):
-        init_source = inspect.getsource(HuggingFacePyTorchBackend.__init__)
-        policy_source = inspect.getsource(HuggingFacePyTorchBackend._force_sdpa_math_policy)
+        init_source = inspect.getsource(CoreHuggingFacePyTorchBackend.__init__)
+        policy_source = inspect.getsource(CoreHuggingFacePyTorchBackend._force_sdpa_math_policy)
         self.assertIn('self._attention_implementation == "sdpa"', init_source)
         self.assertIn("self._force_sdpa_math_policy()", init_source)
         self.assertIn('(\"enable_flash_sdp\", False)', policy_source)

@@ -16,6 +16,9 @@ from qsol_geo_reason.capture import (
     execute_capture,
     verify_capture_bundle,
 )
+from qsol_geo_reason.capture_backend_core import (
+    HuggingFacePyTorchBackend as CoreHuggingFacePyTorchBackend,
+)
 from qsol_geo_reason.capture_validation import validate_capture_request
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -81,7 +84,7 @@ def rehash_trajectory_and_manifest(manifest: dict, trajectory: dict) -> None:
 
 class CaptureRound8RegressionTests(unittest.TestCase):
     def test_snapshot_receipts_bracket_checkpoint_loading(self):
-        source = inspect.getsource(HuggingFacePyTorchBackend.__init__)
+        source = inspect.getsource(CoreHuggingFacePyTorchBackend.__init__)
         before_model = source.index("model_hashes_before =")
         before_tokenizer = source.index("tokenizer_hashes_before =")
         load_tokenizer = source.index("AutoTokenizer.from_pretrained")
@@ -97,7 +100,7 @@ class CaptureRound8RegressionTests(unittest.TestCase):
         self.assertIn("tokenizer_hashes_before != tokenizer_hashes_after", source)
 
     def test_sdpa_policy_is_reasserted_and_verified_per_forward(self):
-        source = inspect.getsource(HuggingFacePyTorchBackend.hidden_states)
+        source = inspect.getsource(CoreHuggingFacePyTorchBackend.hidden_states)
         force = source.index("self._force_sdpa_math_policy()")
         forward = source.index("self._base_model(")
         verify = source.index("self._assert_sdpa_math_policy()")
@@ -105,7 +108,7 @@ class CaptureRound8RegressionTests(unittest.TestCase):
         self.assertLess(forward, verify)
 
     def test_ambient_autocast_is_rejected_before_forward(self):
-        source = inspect.getsource(HuggingFacePyTorchBackend.hidden_states)
+        source = inspect.getsource(CoreHuggingFacePyTorchBackend.hidden_states)
         self.assertLess(
             source.index("self._assert_autocast_disabled()"),
             source.index("self._base_model("),

@@ -17,6 +17,9 @@ from qsol_geo_reason.capture import (
     execute_capture,
     verify_capture_bundle,
 )
+from qsol_geo_reason.capture_backend_core import (
+    HuggingFacePyTorchBackend as CoreHuggingFacePyTorchBackend,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -97,14 +100,14 @@ def rehash_manifest(manifest: dict) -> None:
 
 class SelectiveCaptureRegressionTests(unittest.TestCase):
     def test_production_backend_does_not_request_full_hidden_state_tuple(self):
-        source = inspect.getsource(HuggingFacePyTorchBackend.hidden_states)
+        source = inspect.getsource(CoreHuggingFacePyTorchBackend.hidden_states)
         self.assertIn("output_hidden_states=False", source)
         self.assertNotIn("output_hidden_states=True", source)
         self.assertIn("register_forward_pre_hook", source)
         self.assertIn("register_forward_hook", source)
 
     def test_pooling_moves_selected_span_to_cpu_before_float64(self):
-        source = inspect.getsource(HuggingFacePyTorchBackend._pool_tensor_record)
+        source = inspect.getsource(CoreHuggingFacePyTorchBackend._pool_tensor_record)
         self.assertIn('to(device="cpu")', source)
         self.assertIn("to(dtype=torch.float64)", source)
         self.assertLess(

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from .capture_common import CaptureContractError
 from .capture_validation import validate_capture_request
@@ -111,8 +111,8 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
             setter(expected)
         self._last_deterministic_algorithms_enabled = self._assert_canonical_determinism_policy()
 
-    # Preserve the historical method names used by the audited core and tests,
-    # but make them type the entire canonical determinism policy, including best_effort.
+    # Preserve historical helper names used by the audited core, but enforce
+    # the complete frozen state even when determinism.mode is best_effort.
     def _assert_required_determinism_policy(self) -> bool:
         return self._assert_canonical_determinism_policy()
 
@@ -121,7 +121,7 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
 
     def _assert_attention_implementation(self) -> None:
         super()._assert_attention_implementation()
-        # This method is called immediately before every core forward.
+        # The core invokes this immediately before every forward.
         if getattr(self, "_canonical_deterministic_algorithms_enabled", None) is not None:
             self._force_canonical_determinism_policy()
         if getattr(self, "_canonical_cuda_environment", None) is not None:
@@ -147,6 +147,31 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
             self._assert_cuda_environment_policy()
         return record
 
+    def hidden_states(
+        self,
+        input_ids: Sequence[int],
+        layer_indices: Sequence[int],
+        *,
+        pool_span: tuple[int, int],
+    ) -> Mapping[int, Mapping[str, Any]]:
+        # Stabilize every process-global policy that can affect either the model
+        # forward or the CPU float64 pooling path before the step begins.
+        self._force_canonical_determinism_policy()
+        self._force_cpu_thread_policy()
+        if self._canonical_cuda_environment is not None:
+            self._assert_cuda_environment_policy()
+
+        result = super().hidden_states(input_ids, layer_indices, pool_span=pool_span)
+
+        # Verify again after the entire base-model forward, not merely after an
+        # intermediate hook, so best_effort and accelerator-backed captures have
+        # no late-forward provenance gap.
+        self._last_deterministic_algorithms_enabled = self._assert_canonical_determinism_policy()
+        self._last_cpu_thread_policy = self._assert_cpu_thread_policy()
+        if self._canonical_cuda_environment is not None:
+            self._assert_cuda_environment_policy()
+        return result
+
     def metadata(self) -> Mapping[str, Any]:
         if getattr(self, "_canonical_cuda_environment", None) is not None:
             self._assert_cuda_environment_policy()
@@ -160,19 +185,9 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
         # Preserve the verified per-pooling thread policy for every device rather
         # than a late ambient sample from _cpu_hardware_metadata.
         cpu_threads = self._last_cpu_thread_policy
-        cpu_hardware = {
-            "torch_num_threads": data.get("torch_num_threads"),
-            "torch_num_interop_threads": data.get("torch_num_interop_threads"),
-        }
         if cpu_threads is not None:
-            cpu_hardware["torch_num_threads"] = cpu_threads["torch_num_threads"]
-            cpu_hardware["torch_num_interop_threads"] = cpu_threads["torch_num_interop_threads"]
-            data.update(cpu_hardware)
-
-        # Keep prior provenance-source guarantees visible in this facade.
-        _ = self._last_cuda_float32_policy
-        data["cpu_mkldnn_enabled"] = data.get("cpu_mkldnn_enabled")
-        data["cpu_mkldnn_matmul_fp32_precision"] = data.get("cpu_mkldnn_matmul_fp32_precision")
+            data["torch_num_threads"] = cpu_threads["torch_num_threads"]
+            data["torch_num_interop_threads"] = cpu_threads["torch_num_interop_threads"]
 
         if self._canonical_cuda_environment is not None:
             for field, value in self._canonical_cuda_environment.items():

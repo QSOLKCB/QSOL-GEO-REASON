@@ -16,6 +16,9 @@ from qsol_geo_reason.capture import (
     execute_capture,
     verify_capture_bundle,
 )
+from qsol_geo_reason.capture_backend_core import (
+    HuggingFacePyTorchBackend as CoreHuggingFacePyTorchBackend,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUEST = ROOT / "fixtures" / "capture-contract-request.json"
@@ -99,7 +102,7 @@ def rebind_run_manifest_id(manifest: dict, trajectory: dict) -> None:
 
 class CaptureRound3RegressionTests(unittest.TestCase):
     def test_base_model_is_invoked_without_language_model_logits(self):
-        source = inspect.getsource(HuggingFacePyTorchBackend.hidden_states)
+        source = inspect.getsource(CoreHuggingFacePyTorchBackend.hidden_states)
         self.assertIn("self._base_model(", source)
         self.assertNotIn("self._model(", source)
         self.assertIn("output_hidden_states=False", source)
@@ -159,7 +162,7 @@ class CaptureRound3RegressionTests(unittest.TestCase):
             verify_capture_bundle(request, manifest, trajectory)
 
     def test_production_metadata_records_precision_mps_and_snapshot_receipts(self):
-        source = inspect.getsource(HuggingFacePyTorchBackend.metadata)
+        source = inspect.getsource(CoreHuggingFacePyTorchBackend.metadata)
         for marker in (
             "self._last_cuda_float32_policy", "cuda_matmul_allow_tf32", "cudnn_allow_tf32",
             "NVIDIA_TF32_OVERRIDE", "TORCH_ALLOW_TF32_CUBLAS_OVERRIDE", "CUBLAS_WORKSPACE_CONFIG",

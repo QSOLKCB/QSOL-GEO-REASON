@@ -3,7 +3,6 @@ from __future__ import annotations
 import inspect
 import os
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from qsol_geo_reason.capture import CaptureContractError, HuggingFacePyTorchBackend
@@ -96,6 +95,14 @@ class CaptureRound15RegressionTests(unittest.TestCase):
         with self.assertRaisesRegex(CaptureContractError, "deterministic-algorithm policy drifted"):
             backend._assert_canonical_determinism_policy()
 
+    def test_best_effort_and_cpu_threads_are_rechecked_after_entire_forward(self):
+        source = inspect.getsource(HuggingFacePyTorchBackend.hidden_states)
+        forward = source.index("result = super().hidden_states")
+        self.assertLess(source.index("self._force_canonical_determinism_policy()"), forward)
+        self.assertLess(source.index("self._force_cpu_thread_policy()"), forward)
+        self.assertGreater(source.index("self._assert_canonical_determinism_policy()", forward), forward)
+        self.assertGreater(source.index("self._assert_cpu_thread_policy()", forward), forward)
+
     def test_cuda_environment_controls_are_snapshotted_and_drift_rejected(self):
         backend = object.__new__(HuggingFacePyTorchBackend)
         backend._canonical_cuda_environment = {
@@ -131,16 +138,18 @@ class CaptureRound15RegressionTests(unittest.TestCase):
                 with self.assertRaisesRegex(CaptureContractError, "invalid shape"):
                     _validate_loading_info(malformed)
 
-    def test_existing_source_level_capture_guards_remain_visible(self):
-        hidden_source = inspect.getsource(HuggingFacePyTorchBackend.hidden_states)
-        self.assertIn("self._base_model(", hidden_source)
-        self.assertIn("output_hidden_states=False", hidden_source)
-        self.assertIn("use_cache=False", hidden_source)
-        metadata_source = inspect.getsource(HuggingFacePyTorchBackend.metadata)
-        self.assertIn("self._last_cuda_float32_policy", metadata_source)
-        self.assertNotIn("get_float32_matmul_precision", metadata_source)
-        self.assertIn('"cpu_mkldnn_enabled"', metadata_source)
-        self.assertIn('cpu_hardware["torch_num_threads"]', metadata_source)
+    def test_existing_core_and_facade_capture_guards_remain_visible(self):
+        core_hidden = inspect.getsource(_CoreHuggingFacePyTorchBackend.hidden_states)
+        self.assertIn("self._base_model(", core_hidden)
+        self.assertIn("output_hidden_states=False", core_hidden)
+        self.assertIn("use_cache=False", core_hidden)
+        core_metadata = inspect.getsource(_CoreHuggingFacePyTorchBackend.metadata)
+        self.assertIn("self._last_cuda_float32_policy", core_metadata)
+        self.assertNotIn("get_float32_matmul_precision", core_metadata)
+        self.assertIn('"cpu_mkldnn_enabled"', core_metadata)
+        facade_metadata = inspect.getsource(HuggingFacePyTorchBackend.metadata)
+        self.assertIn('data["torch_num_threads"]', facade_metadata)
+        self.assertIn("self._canonical_cuda_environment", facade_metadata)
 
 
 if __name__ == "__main__":
