@@ -125,6 +125,8 @@ def production_observed(request: dict) -> dict:
         "torch_num_interop_threads": 1,
         "omp_num_threads": None,
         "mkl_num_threads": None,
+        "cpu_mkldnn_enabled": None,
+        "cpu_mkldnn_matmul_fp32_precision": None,
         "cuda_device_name": None,
         "cuda_device_capability": None,
         "cuda_resolved_device_index": None,
