@@ -44,6 +44,9 @@ class HuggingFacePyTorchBackend:
         self._last_cuda_reduction_policy: dict[str, bool] | None = None
         self._canonical_cuda_float32_policy: dict[str, str | bool] | None = None
         self._last_cuda_float32_policy: dict[str, str | bool] | None = None
+        self._canonical_cpu_matmul_policy: dict[str, bool | str | None] | None = None
+        self._last_cpu_matmul_policy: dict[str, bool | str | None] | None = None
+        self._last_deterministic_algorithms_enabled: bool | None = None
         backend, model_cfg, determinism = validated["backend"], validated["model"], validated["determinism"]
         dtype_map = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
         self._device = backend["device"]
@@ -65,6 +68,9 @@ class HuggingFacePyTorchBackend:
                     f"canonical CUDA device index {self._cuda_resolved_device_index} is outside available range"
                 )
             self._canonical_cuda_float32_policy = self._cuda_float32_policy_state()
+        if self._device_type == "cpu":
+            self._canonical_cpu_matmul_policy = self._cpu_matmul_policy_state()
+        self._assert_mps_backend_available()
         self._assert_mps_execution_policy()
         self._assert_autocast_disabled()
 
@@ -73,6 +79,7 @@ class HuggingFacePyTorchBackend:
             torch.cuda.manual_seed_all(self._applied_seed)
         if determinism["mode"] == "required":
             torch.use_deterministic_algorithms(True)
+        self._last_deterministic_algorithms_enabled = self._assert_required_determinism_policy()
 
         model_snapshot = Path(snapshot_download(repo_id=model_cfg["identifier"], revision=model_cfg["revision"], local_files_only=True))
         tokenizer_snapshot = Path(snapshot_download(repo_id=model_cfg["tokenizer_identifier"], revision=model_cfg["tokenizer_revision"], local_files_only=True))
@@ -105,6 +112,8 @@ class HuggingFacePyTorchBackend:
         self._checkpoint_loading_clean = True
         self._attention_implementation = getattr(self._model.config, "_attn_implementation", None)
         self._assert_attention_implementation()
+        if self._device_type == "cpu":
+            self._force_cpu_matmul_policy()
         if self._device_type == "cuda":
             self._force_cuda_float32_policy()
             self._force_cuda_reduced_precision_policy()
@@ -148,6 +157,24 @@ class HuggingFacePyTorchBackend:
                 f"{sorted(_ALLOWED_ATTENTION_IMPLEMENTATIONS)}; observed {self._attention_implementation!r}"
             )
 
+    def _mps_backend_state(self) -> tuple[bool, bool]:
+        backend = getattr(self._torch.backends, "mps", None)
+        try:
+            built = bool(backend.is_built()) if backend is not None else False
+            available = bool(backend.is_available()) if backend is not None else False
+        except Exception as exc:
+            raise CaptureContractError("unable to determine canonical MPS backend availability") from exc
+        return built, available
+
+    def _assert_mps_backend_available(self) -> None:
+        if self._device_type != "mps":
+            return
+        built, available = self._mps_backend_state()
+        if not built or not available:
+            raise CaptureContractError(
+                "canonical MPS capture requires a built and available PyTorch MPS backend"
+            )
+
     def _assert_mps_execution_policy(self) -> None:
         if self._device_type != "mps":
             return
@@ -179,6 +206,94 @@ class HuggingFacePyTorchBackend:
     def _assert_autocast_disabled(self) -> None:
         if self._autocast_enabled():
             raise CaptureContractError("canonical capture forbids ambient torch autocast")
+
+    def _deterministic_algorithms_state(self) -> bool:
+        checker = getattr(self._torch, "are_deterministic_algorithms_enabled", None)
+        if not callable(checker):
+            raise CaptureContractError(
+                "canonical capture requires torch.are_deterministic_algorithms_enabled"
+            )
+        enabled = checker()
+        if not isinstance(enabled, bool):
+            raise CaptureContractError("deterministic algorithm state must be boolean")
+        return enabled
+
+    def _assert_required_determinism_policy(self) -> bool:
+        enabled = self._deterministic_algorithms_state()
+        if self._determinism_mode == "required" and enabled is not True:
+            raise CaptureContractError(
+                "required determinism policy drifted: deterministic algorithms are disabled"
+            )
+        self._last_deterministic_algorithms_enabled = enabled
+        return enabled
+
+    def _force_required_determinism_policy(self) -> None:
+        if self._determinism_mode == "required":
+            setter = getattr(self._torch, "use_deterministic_algorithms", None)
+            if not callable(setter):
+                raise CaptureContractError(
+                    "required determinism requires torch.use_deterministic_algorithms"
+                )
+            setter(True)
+        self._last_deterministic_algorithms_enabled = self._assert_required_determinism_policy()
+
+    def _cpu_matmul_policy_state(self) -> dict[str, bool | str | None]:
+        mkldnn = getattr(self._torch.backends, "mkldnn", None)
+        if mkldnn is None:
+            return {
+                "cpu_mkldnn_enabled": None,
+                "cpu_mkldnn_matmul_fp32_precision": None,
+            }
+        enabled = getattr(mkldnn, "enabled", None)
+        if enabled is not None and not isinstance(enabled, bool):
+            raise CaptureContractError(
+                "torch.backends.mkldnn.enabled must be boolean when exposed"
+            )
+        matmul = getattr(mkldnn, "matmul", None)
+        precision = getattr(matmul, "fp32_precision", None) if matmul is not None else None
+        if precision is not None and (
+            not isinstance(precision, str) or not precision.strip()
+        ):
+            raise CaptureContractError(
+                "torch.backends.mkldnn.matmul.fp32_precision must be a non-empty string when exposed"
+            )
+        return {
+            "cpu_mkldnn_enabled": enabled,
+            "cpu_mkldnn_matmul_fp32_precision": precision,
+        }
+
+    def _assert_cpu_matmul_policy(self) -> dict[str, bool | str | None]:
+        expected = self._canonical_cpu_matmul_policy
+        if expected is None:
+            raise CaptureContractError(
+                "canonical CPU matmul policy was not frozen at backend construction"
+            )
+        state = self._cpu_matmul_policy_state()
+        if state != expected:
+            raise CaptureContractError(
+                f"canonical CPU matmul policy drifted from construction state: expected={expected!r} observed={state!r}"
+            )
+        return state
+
+    def _force_cpu_matmul_policy(self) -> None:
+        expected = self._canonical_cpu_matmul_policy
+        if expected is None:
+            raise CaptureContractError(
+                "canonical CPU matmul policy was not frozen at backend construction"
+            )
+        mkldnn = getattr(self._torch.backends, "mkldnn", None)
+        if expected["cpu_mkldnn_enabled"] is not None:
+            if mkldnn is None or not hasattr(mkldnn, "enabled"):
+                raise CaptureContractError("canonical CPU MKLDNN enabled control is unavailable")
+            mkldnn.enabled = expected["cpu_mkldnn_enabled"]
+        if expected["cpu_mkldnn_matmul_fp32_precision"] is not None:
+            matmul = getattr(mkldnn, "matmul", None) if mkldnn is not None else None
+            if matmul is None or not hasattr(matmul, "fp32_precision"):
+                raise CaptureContractError(
+                    "canonical CPU MKLDNN matmul precision control is unavailable"
+                )
+            matmul.fp32_precision = expected["cpu_mkldnn_matmul_fp32_precision"]
+        self._last_cpu_matmul_policy = self._assert_cpu_matmul_policy()
 
     def _cuda_float32_policy_state(self) -> dict[str, str | bool]:
         torch = self._torch
@@ -354,9 +469,14 @@ class HuggingFacePyTorchBackend:
         if any(i < 0 or i >= self._hidden_state_count for i in requested):
             bad = next(i for i in requested if i < 0 or i >= self._hidden_state_count)
             raise CaptureContractError(f"requested layer {bad} outside backend hidden-state range [0, {self._hidden_state_count - 1}]")
+        self._assert_mps_backend_available()
         self._assert_mps_execution_policy()
         self._assert_autocast_disabled()
         self._assert_attention_implementation()
+        if getattr(self, "_determinism_mode", "best_effort") == "required":
+            self._force_required_determinism_policy()
+        if self._device_type == "cpu" and getattr(self, "_canonical_cpu_matmul_policy", None) is not None:
+            self._force_cpu_matmul_policy()
         if self._device_type == "cuda":
             self._force_cuda_float32_policy()
             self._force_cuda_reduced_precision_policy()
@@ -396,6 +516,10 @@ class HuggingFacePyTorchBackend:
         finally:
             for handle in handles:
                 handle.remove()
+        if getattr(self, "_determinism_mode", "best_effort") == "required":
+            self._last_deterministic_algorithms_enabled = self._assert_required_determinism_policy()
+        if self._device_type == "cpu" and getattr(self, "_canonical_cpu_matmul_policy", None) is not None:
+            self._last_cpu_matmul_policy = self._assert_cpu_matmul_policy()
         if self._device_type == "cuda":
             self._last_cuda_float32_policy = self._assert_cuda_float32_policy()
             self._last_cuda_reduction_policy = self._assert_cuda_reduced_precision_policy()
@@ -446,15 +570,14 @@ class HuggingFacePyTorchBackend:
             cudnn_version = None
         float32_policy = self._last_cuda_float32_policy if cuda_active else None
         reduction = self._last_cuda_reduction_policy if cuda_active else None
-        mps_backend = getattr(torch.backends, "mps", None)
-        try:
-            mps_built = bool(mps_backend.is_built()) if mps_backend is not None else False
-            mps_available = bool(mps_backend.is_available()) if mps_backend is not None else False
-        except Exception:
-            mps_built = mps_available = False
+        cpu_policy = self._last_cpu_matmul_policy if self._device_type == "cpu" else None
+        mps_built, mps_available = self._mps_backend_state()
         model_hashes = dict(sorted(self._model_snapshot_hashes.items()))
         tokenizer_hashes = dict(sorted(self._tokenizer_snapshot_hashes.items()))
         sdpa = self._last_sdpa_policy or {"flash": None, "mem_efficient": None, "math": None, "cudnn": None}
+        deterministic_enabled = self._last_deterministic_algorithms_enabled
+        if deterministic_enabled is None:
+            deterministic_enabled = self._deterministic_algorithms_state()
         return {
             "name": _PRODUCTION_BACKEND,
             "python_version": sys.version.split()[0], "platform": platform.platform(),
@@ -467,6 +590,8 @@ class HuggingFacePyTorchBackend:
             "model_reports_quantized": bool(getattr(self._model, "is_quantized", False)),
             "attention_implementation": self._attention_implementation,
             "device": str(self._device), **_cpu_hardware_metadata(torch),
+            "cpu_mkldnn_enabled": cpu_policy["cpu_mkldnn_enabled"] if cpu_policy is not None else None,
+            "cpu_mkldnn_matmul_fp32_precision": cpu_policy["cpu_mkldnn_matmul_fp32_precision"] if cpu_policy is not None else None,
             "cuda_device_name": cuda_device, "cuda_device_capability": cuda_capability,
             "cuda_resolved_device_index": self._cuda_resolved_device_index,
             "cuda_device_uuid": cuda_uuid, "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
@@ -501,6 +626,6 @@ class HuggingFacePyTorchBackend:
             "tokenizer_snapshot_receipt_sha256": sha256_json(tokenizer_hashes),
             "quantization": "none", "offloading": "none", "local_files_only": True,
             "trust_remote_code": False, "use_cache": False, "capture_phase": _CAPTURE_PHASE,
-            "kv_cache_reuse": False, "deterministic_algorithms_enabled": bool(torch.are_deterministic_algorithms_enabled()),
+            "kv_cache_reuse": False, "deterministic_algorithms_enabled": deterministic_enabled,
             "determinism_mode": self._determinism_mode,
         }
