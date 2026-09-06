@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import Any, Mapping
 from .canonical import sha256_json
-from .capture_backend import HuggingFacePyTorchBackend
+from .capture_backend_isolated import HuggingFacePyTorchBackend
 from .capture_common import (CAPTURE_PROTOCOL_ID, CAPTURE_SCHEMA_VERSION, _ALLOWED_EVIDENCE, _CAPTURE_PHASE, _LAYER_INDEX_SEMANTICS, _SIMULATION_BACKEND, _STEP_SPAN_SEMANTICS, CaptureBackend, CaptureContractError, _common_prefix_length, _compose_text, _pool_span, _require_git_sha, _sha256_text, _validate_backend_layer, _validate_token_ids)
 from .capture_validation import validate_capture_request
 from .capture_provenance import _validate_backend_metadata
@@ -70,6 +70,8 @@ def execute_capture(
     implementation_revision = _require_git_sha(implementation_revision, "implementation_revision")
     if evidence_class not in _ALLOWED_EVIDENCE:
         raise CaptureContractError(f"evidence_class must be one of {sorted(_ALLOWED_EVIDENCE)}")
+
+    observation_started = False
     if evidence_class == "OBSERVATION":
         if type(backend) is not HuggingFacePyTorchBackend:
             raise CaptureContractError("OBSERVATION capture requires the concrete HuggingFacePyTorchBackend")
@@ -83,11 +85,19 @@ def execute_capture(
             ) from exc
         backend.assert_execution_request(validated)
         backend._observed_hidden_state_dtypes.clear()
-    steps, prefix_ids = _capture_steps(validated, backend)
-    observed = dict(backend.metadata())
-    if evidence_class == "SIMULATION":
-        observed["name"] = _SIMULATION_BACKEND
-    _validate_backend_metadata(observed, validated, evidence_class)
+        backend.begin_observation()
+        observation_started = True
+
+    try:
+        steps, prefix_ids = _capture_steps(validated, backend)
+        observed = dict(backend.metadata())
+        if evidence_class == "SIMULATION":
+            observed["name"] = _SIMULATION_BACKEND
+        _validate_backend_metadata(observed, validated, evidence_class)
+    finally:
+        if observation_started:
+            backend.end_observation()
+
     request_sha = sha256_json(validated)
     identity = {
         "schema_version": CAPTURE_SCHEMA_VERSION, "protocol_id": CAPTURE_PROTOCOL_ID,

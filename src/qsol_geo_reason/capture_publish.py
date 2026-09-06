@@ -2,6 +2,7 @@
 from __future__ import annotations
 import ctypes
 import errno
+import json
 import os
 import shutil
 import sys
@@ -97,18 +98,40 @@ def _rename_directory_noreplace(source: Path, destination: Path) -> None:
     )
 
 
+def _snapshot_json_object(value: Mapping[str, Any], where: str) -> dict[str, Any]:
+    """Detach caller-owned mutable objects through canonical JSON round-tripping."""
+    try:
+        snapshot = json.loads(canonical_json_bytes(value))
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise CaptureContractError(f"{where} cannot be represented as canonical JSON") from exc
+    if not isinstance(snapshot, dict):
+        raise CaptureContractError(f"{where} must be a JSON object")
+    return snapshot
+
+
 def write_capture_bundle(output_dir: Path, request: Mapping[str, Any], manifest: Mapping[str, Any], trajectory: Mapping[str, Any]) -> None:
-    validated = verify_capture_bundle(request, manifest, trajectory)
+    # Detach all caller-owned mappings before verification. Only these private
+    # snapshots are verified and serialized, so concurrent mutation of the
+    # original objects cannot change bytes after the verification boundary.
+    request_snapshot = _snapshot_json_object(request, "capture request")
+    manifest_snapshot = _snapshot_json_object(manifest, "run manifest")
+    trajectory_snapshot = _snapshot_json_object(trajectory, "captured trajectory")
+    validated = verify_capture_bundle(request_snapshot, manifest_snapshot, trajectory_snapshot)
+
     output_dir = Path(output_dir)
     parent = output_dir.parent
     parent.mkdir(parents=True, exist_ok=True)
-    payloads = {"capture-request.json": validated, "run-manifest.json": manifest, "captured-trajectory.json": trajectory}
+    payloads = {
+        "capture-request.json": canonical_json_bytes(validated) + b"\n",
+        "run-manifest.json": canonical_json_bytes(manifest_snapshot) + b"\n",
+        "captured-trajectory.json": canonical_json_bytes(trajectory_snapshot) + b"\n",
+    }
     staging = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.staging-", dir=str(parent)))
     published = False
     try:
         for name, payload in payloads.items():
             with (staging / name).open("xb") as handle:
-                handle.write(canonical_json_bytes(payload) + b"\n")
+                handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
         _fsync_directory(staging)
