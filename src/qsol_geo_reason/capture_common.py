@@ -16,6 +16,7 @@ _ALLOWED_CONTEXT_MODES = {"cumulative", "isolated"}
 _ALLOWED_POOLING_MODES = {"last_token", "step_mean", "context_mean", "bounded_context_mean"}
 _ALLOWED_DETERMINISM = {"required", "best_effort"}
 _ALLOWED_EVIDENCE = {"SIMULATION", "OBSERVATION"}
+_ALLOWED_ATTENTION_IMPLEMENTATIONS = {"eager", "sdpa"}
 _LOADING_INFO_KEYS = ("missing_keys", "unexpected_keys", "mismatched_keys", "error_msgs")
 _HF_REPO_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _BLOCK_CONTAINER_PATHS = ("layers", "h", "decoder.layers", "transformer.h", "gpt_neox.layers")
@@ -59,6 +60,8 @@ _PRODUCTION_BACKEND_KEYS = {
     "cuda_device_capability", "cuda_resolved_device_index", "cuda_device_uuid",
     "cuda_visible_devices", "cuda_build_version", "cudnn_version", "nvidia_driver_version",
     "float32_matmul_precision", "cuda_matmul_allow_tf32", "cudnn_allow_tf32",
+    "cuda_matmul_allow_fp16_reduced_precision_reduction",
+    "cuda_matmul_allow_bf16_reduced_precision_reduction",
     "sdpa_flash_enabled", "sdpa_mem_efficient_enabled", "sdpa_math_enabled", "sdpa_cudnn_enabled",
     "nvidia_tf32_override", "torch_allow_tf32_cublas_override", "cublas_workspace_config",
     "mps_device_active", "mps_built", "mps_available", "mps_mac_model", "mps_cpu_brand",
