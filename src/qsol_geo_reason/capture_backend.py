@@ -86,7 +86,7 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
         enabled = self._deterministic_algorithms_state()
         expected = getattr(self, "_canonical_deterministic_algorithms_enabled", None)
         if expected is None:
-            if self._determinism_mode == "required" and enabled is not True:
+            if getattr(self, "_determinism_mode", "best_effort") == "required" and enabled is not True:
                 raise CaptureContractError(
                     "required determinism policy drifted: deterministic algorithms are disabled"
                 )
@@ -101,7 +101,10 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
     def _force_canonical_determinism_policy(self) -> None:
         expected = getattr(self, "_canonical_deterministic_algorithms_enabled", None)
         if expected is None:
-            expected = True if self._determinism_mode == "required" else self._deterministic_algorithms_state()
+            mode = getattr(self, "_determinism_mode", None)
+            if mode is None:
+                return
+            expected = True if mode == "required" else self._deterministic_algorithms_state()
         setter = getattr(self._torch, "use_deterministic_algorithms", None)
         if not callable(setter):
             raise CaptureContractError(
@@ -154,11 +157,18 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
         *,
         pool_span: tuple[int, int],
     ) -> Mapping[int, Mapping[str, Any]]:
-        # Stabilize every process-global policy that can affect either the model
-        # forward or the CPU float64 pooling path before the step begins.
-        self._force_canonical_determinism_policy()
-        self._force_cpu_thread_policy()
-        if self._canonical_cuda_environment is not None:
+        # Synthetic unit-test backends can deliberately bypass __init__. New
+        # policy guards apply only when the corresponding construction snapshot
+        # exists; every real backend created through __init__ has all snapshots.
+        determinism_frozen = getattr(self, "_canonical_deterministic_algorithms_enabled", None) is not None
+        threads_frozen = getattr(self, "_canonical_cpu_thread_policy", None) is not None
+        cuda_environment_frozen = getattr(self, "_canonical_cuda_environment", None) is not None
+
+        if determinism_frozen:
+            self._force_canonical_determinism_policy()
+        if threads_frozen:
+            self._force_cpu_thread_policy()
+        if cuda_environment_frozen:
             self._assert_cuda_environment_policy()
 
         result = super().hidden_states(input_ids, layer_indices, pool_span=pool_span)
@@ -166,9 +176,11 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
         # Verify again after the entire base-model forward, not merely after an
         # intermediate hook, so best_effort and accelerator-backed captures have
         # no late-forward provenance gap.
-        self._last_deterministic_algorithms_enabled = self._assert_canonical_determinism_policy()
-        self._last_cpu_thread_policy = self._assert_cpu_thread_policy()
-        if self._canonical_cuda_environment is not None:
+        if determinism_frozen:
+            self._last_deterministic_algorithms_enabled = self._assert_canonical_determinism_policy()
+        if threads_frozen:
+            self._last_cpu_thread_policy = self._assert_cpu_thread_policy()
+        if cuda_environment_frozen:
             self._assert_cuda_environment_policy()
         return result
 
@@ -184,7 +196,7 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
 
         # Preserve the verified per-pooling thread policy for every device rather
         # than a late ambient sample from _cpu_hardware_metadata.
-        cpu_threads = self._last_cpu_thread_policy
+        cpu_threads = getattr(self, "_last_cpu_thread_policy", None)
         if cpu_threads is not None:
             data["torch_num_threads"] = cpu_threads["torch_num_threads"]
             data["torch_num_interop_threads"] = cpu_threads["torch_num_interop_threads"]

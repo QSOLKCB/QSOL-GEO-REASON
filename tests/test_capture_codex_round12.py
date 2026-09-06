@@ -5,6 +5,9 @@ import unittest
 from types import SimpleNamespace
 
 from qsol_geo_reason.capture import CaptureContractError, HuggingFacePyTorchBackend
+from qsol_geo_reason.capture_backend_core import (
+    HuggingFacePyTorchBackend as CoreHuggingFacePyTorchBackend,
+)
 from qsol_geo_reason.capture_provenance import _validate_production_metadata_shape
 
 
@@ -60,13 +63,13 @@ class CaptureRound12RegressionTests(unittest.TestCase):
             backend._assert_cuda_float32_policy()
 
     def test_each_cuda_forward_reasserts_then_rechecks_float32_policy(self):
-        source = inspect.getsource(HuggingFacePyTorchBackend.hidden_states)
+        source = inspect.getsource(CoreHuggingFacePyTorchBackend.hidden_states)
         forward = source.index("self._base_model(")
         self.assertLess(source.index("self._force_cuda_float32_policy()"), forward)
         self.assertGreater(source.index("self._assert_cuda_float32_policy()"), forward)
 
     def test_metadata_uses_last_enforced_policy_not_ambient_resampling(self):
-        source = inspect.getsource(HuggingFacePyTorchBackend.metadata)
+        source = inspect.getsource(CoreHuggingFacePyTorchBackend.metadata)
         self.assertIn("self._last_cuda_float32_policy", source)
         self.assertNotIn("get_float32_matmul_precision", source)
         self.assertNotIn("torch.backends.cuda.matmul.allow_tf32", source)

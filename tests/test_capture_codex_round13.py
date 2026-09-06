@@ -10,6 +10,9 @@ from unittest.mock import patch
 
 from qsol_geo_reason.canonical import sha256_json
 from qsol_geo_reason.capture import CaptureContractError, HuggingFacePyTorchBackend
+from qsol_geo_reason.capture_backend_core import (
+    HuggingFacePyTorchBackend as CoreHuggingFacePyTorchBackend,
+)
 from qsol_geo_reason.capture_execute import execute_capture
 from qsol_geo_reason.capture_provenance import (
     _is_canonical_snapshot_path,
@@ -108,7 +111,7 @@ class CaptureRound13RegressionTests(unittest.TestCase):
         with self.assertRaisesRegex(CaptureContractError, "determinism policy drifted"):
             backend._assert_required_determinism_policy()
 
-        source = inspect.getsource(HuggingFacePyTorchBackend.hidden_states)
+        source = inspect.getsource(CoreHuggingFacePyTorchBackend.hidden_states)
         forward = source.index("self._base_model(")
         self.assertLess(source.index("self._force_required_determinism_policy()"), forward)
         self.assertGreater(source.index("self._assert_required_determinism_policy()"), forward)
@@ -180,7 +183,7 @@ class CaptureRound13RegressionTests(unittest.TestCase):
                 "cpu_mkldnn_matmul_fp32_precision": "ieee",
             },
         )
-        metadata_source = inspect.getsource(HuggingFacePyTorchBackend.metadata)
+        metadata_source = inspect.getsource(CoreHuggingFacePyTorchBackend.metadata)
         self.assertIn('"cpu_mkldnn_enabled"', metadata_source)
         self.assertIn('"cpu_mkldnn_matmul_fp32_precision"', metadata_source)
 

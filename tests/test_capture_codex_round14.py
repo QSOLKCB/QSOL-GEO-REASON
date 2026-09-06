@@ -8,6 +8,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from qsol_geo_reason.capture import CaptureContractError, HuggingFacePyTorchBackend, _snapshot_file_hashes
+from qsol_geo_reason.capture_backend_core import (
+    HuggingFacePyTorchBackend as CoreHuggingFacePyTorchBackend,
+)
 
 
 class FakeThreadTorch:
@@ -82,7 +85,7 @@ class CaptureRound14RegressionTests(unittest.TestCase):
             backend._assert_cpu_thread_policy()
 
     def test_each_cpu_forward_reasserts_then_rechecks_thread_policy(self):
-        source = inspect.getsource(HuggingFacePyTorchBackend.hidden_states)
+        source = inspect.getsource(CoreHuggingFacePyTorchBackend.hidden_states)
         forward = source.index("self._base_model(")
         self.assertLess(source.index("self._force_cpu_thread_policy()"), forward)
         self.assertGreater(source.index("self._assert_cpu_thread_policy()"), forward)
@@ -90,8 +93,8 @@ class CaptureRound14RegressionTests(unittest.TestCase):
     def test_metadata_uses_last_verified_thread_policy(self):
         source = inspect.getsource(HuggingFacePyTorchBackend.metadata)
         self.assertIn("self._last_cpu_thread_policy", source)
-        self.assertIn('cpu_hardware["torch_num_threads"]', source)
-        self.assertIn('cpu_hardware["torch_num_interop_threads"]', source)
+        self.assertIn('data["torch_num_threads"]', source)
+        self.assertIn('data["torch_num_interop_threads"]', source)
 
 
 if __name__ == "__main__":
