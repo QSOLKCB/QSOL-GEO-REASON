@@ -18,6 +18,7 @@ from .capture_common import (
     _SIMULATION_BACKEND_KEYS,
     CaptureContractError,
     _require_exact_keys,
+    _require_observed_dtype,
 )
 from .capture_runtime import _validate_torch_build_metadata
 
@@ -188,9 +189,11 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
             not isinstance(layer, str)
             or not isinstance(values, list)
             or not values
-            or len(values) != len(set(values))
-            or any(not isinstance(value, str) or not value.strip() for value in values)
         ):
+            raise CaptureContractError("observed_hidden_state_dtypes has an invalid layer dtype set")
+        for value in values:
+            _require_observed_dtype(value, f"observed_hidden_state_dtypes[{layer!r}]")
+        if len(values) != len(set(values)):
             raise CaptureContractError("observed_hidden_state_dtypes has an invalid layer dtype set")
 
     device = request["backend"]["device"]
@@ -203,6 +206,13 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
                 raise CaptureContractError(
                     f"canonical CUDA provenance requires non-whitespace {field}"
                 )
+    for field in ("cudnn_benchmark", "cudnn_deterministic"):
+        value = observed.get(field)
+        if cuda_active:
+            if not isinstance(value, bool):
+                raise CaptureContractError(f"canonical CUDA capture requires boolean {field}")
+        elif value is not None:
+            raise CaptureContractError("cuDNN algorithm-selection policy fields must be null outside CUDA")
     expected_cuda_index = int(device.split(":", 1)[1]) if cuda_active else None
     if observed.get("cuda_resolved_device_index") != expected_cuda_index:
         raise CaptureContractError("cuda_resolved_device_index does not match the explicit request device")

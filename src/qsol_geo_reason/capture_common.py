@@ -12,6 +12,7 @@ _CAPTURE_PHASE = "replayed_prefix"
 _PRODUCTION_BACKEND = "huggingface-pytorch"
 _SIMULATION_BACKEND = "software-simulation"
 _ALLOWED_DTYPES = {"float32", "float16", "bfloat16"}
+_ALLOWED_OBSERVED_DTYPES = frozenset({"float16", "bfloat16", "float32", "float64"})
 _ALLOWED_CONTEXT_MODES = {"cumulative", "isolated"}
 _ALLOWED_POOLING_MODES = {"last_token", "step_mean", "context_mean", "bounded_context_mean"}
 _ALLOWED_DETERMINISM = {"required", "best_effort"}
@@ -62,6 +63,7 @@ _PRODUCTION_BACKEND_KEYS = {
     "cuda_device_capability", "cuda_resolved_device_index", "cuda_device_uuid",
     "cuda_visible_devices", "cuda_build_version", "cudnn_version", "nvidia_driver_version",
     "float32_matmul_precision", "cuda_matmul_allow_tf32", "cudnn_allow_tf32",
+    "cudnn_benchmark", "cudnn_deterministic",
     "cuda_matmul_allow_fp16_reduced_precision_reduction",
     "cuda_matmul_allow_bf16_reduced_precision_reduction",
     "sdpa_flash_enabled", "sdpa_mem_efficient_enabled", "sdpa_math_enabled", "sdpa_cudnn_enabled",
@@ -122,6 +124,13 @@ def _require_nonempty_string(value: Any, where: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise CaptureContractError(f"{where} must be a non-empty string")
     return value
+
+
+def _require_observed_dtype(value: Any, where: str) -> str:
+    text = _require_nonempty_string(value, where)
+    if text not in _ALLOWED_OBSERVED_DTYPES:
+        raise CaptureContractError(f"{where} must be a supported floating dtype: {sorted(_ALLOWED_OBSERVED_DTYPES)}")
+    return text
 
 
 def _require_bool(value: Any, where: str) -> bool:
@@ -229,4 +238,4 @@ def _validate_backend_layer(value: Any, *, layer_index: int, expected_dimension:
         if not math.isfinite(number):
             raise CaptureContractError(f"{where}.vector contains a non-finite value")
         normalized.append(number)
-    return normalized, dimension, _require_nonempty_string(value["observed_dtype"], f"{where}.observed_dtype")
+    return normalized, dimension, _require_observed_dtype(value["observed_dtype"], f"{where}.observed_dtype")

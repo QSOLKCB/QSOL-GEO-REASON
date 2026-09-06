@@ -91,7 +91,11 @@ class CaptureRound14RegressionTests(unittest.TestCase):
         self.assertGreater(source.index("self._assert_cpu_thread_policy()"), forward)
 
     def test_metadata_uses_last_verified_thread_policy(self):
-        source = inspect.getsource(HuggingFacePyTorchBackend.metadata)
+        source = "\n".join(
+            inspect.getsource(cls.__dict__["metadata"])
+            for cls in HuggingFacePyTorchBackend.__mro__
+            if "metadata" in cls.__dict__
+        )
         self.assertIn("self._last_cpu_thread_policy", source)
         self.assertIn('data["torch_num_threads"]', source)
         self.assertIn('data["torch_num_interop_threads"]', source)

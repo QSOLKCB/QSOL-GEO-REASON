@@ -20,7 +20,7 @@ from .capture_common import (
     _pool_span,
     _require_exact_keys,
     _require_git_sha,
-    _require_nonempty_string,
+    _require_observed_dtype,
     _require_nonnegative_int,
     _require_object,
     _sha256_text,
@@ -161,7 +161,7 @@ def verify_capture_bundle(request: Mapping[str, Any], manifest: Mapping[str, Any
             prior_dim = stable_dimensions.setdefault(requested_layer, dim)
             if dim != prior_dim:
                 raise CaptureContractError(f"layer {requested_layer} vector dimension changed from {prior_dim} to {dim}")
-            observed_dtype = _require_nonempty_string(
+            observed_dtype = _require_observed_dtype(
                 record["observed_dtype"],
                 f"trajectory step {index} layer {requested_layer}.observed_dtype",
             )

@@ -15,6 +15,11 @@ from .canonical import sha256_json
 from .capture_backend_isolated import HuggingFacePyTorchBackend as _IsolatedHuggingFacePyTorchBackend
 from .capture_common import CaptureBackendUnavailable, CaptureContractError
 from .capture_validation import validate_capture_request
+from .capture_execution_state import (
+    _assert_exclusive_interpreter_thread,
+    _callable_execution_identity,
+    _cudnn_algorithm_policy_state,
+)
 
 
 class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
@@ -124,46 +129,98 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
 
     def __init__(self, request: Mapping[str, Any]):
         validated = validate_capture_request(request)
-        # Keep the required cuBLAS environment check and the exact environment
-        # receipt ahead of any CUDA runtime use. The receipt is repeated here,
-        # even though the inherited policy layer also binds it, so the public
-        # evidence boundary visibly authenticates initialization-time controls.
-        self._validate_pre_cuda_environment(validated)
-        self._validate_pre_mps_environment(validated)
         device = validated["backend"]["device"]
-        self._canonical_cuda_environment = None
-        if device.startswith("cuda:"):
-            self._canonical_cuda_environment = self._cuda_environment_state()
-
-        # PyTorch does not expose a reliable public MPS runtime-initialized predicate.
-        # Fail closed instead: an MPS observation must own the process's first torch
-        # import, before any process-state snapshot can touch MPS RNG/runtime state.
-        self._assert_pristine_mps_import_state(device)
-        try:
-            import torch as process_torch
-        except ImportError:
-            # Preserve the canonical optional-dependency failure from the audited backend.
-            super().__init__(validated)
-            raise CaptureBackendUnavailable("canonical capture requires PyTorch")
-
-        # This check must precede process-state snapshotting because querying CUDA RNG
-        # state can itself initialize the runtime. ROCm is also rejected before that point.
-        self._assert_pristine_cuda_runtime(process_torch, device)
-        ambient = self._snapshot_torch_process_state(process_torch, device)
-        try:
-            super().__init__(validated)
-        finally:
-            # The parent already restores its own construction snapshot. Restore the
-            # state observed at this final public boundary as well, and fail closed if
-            # exact restoration is impossible.
-            self._restore_torch_process_state(process_torch, ambient)
-
-        # Freeze ordinary non-parameter/module attributes that participate in execution,
-        # such as attention scaling factors. This closes the construction-to-first-run
-        # mutation window without treating mutable post-forward caches as canonical state.
-        self._canonical_model_runtime_attributes = self._model_runtime_attributes_seal()
         self._exclusive_thread_boundary_state: dict[str, Any] | None = None
-        self._assert_no_registered_module_hooks()
+        self._canonical_cudnn_algorithm_policy: dict[str, bool] | None = None
+        self._last_cudnn_algorithm_policy: dict[str, bool] | None = None
+        # Construction mutates the same process-global state as observation.
+        # Own the thread boundary before import, snapshot, initialization or cleanup.
+        self._enter_exclusive_python_thread_boundary()
+        try:
+            self._validate_pre_cuda_environment(validated)
+            self._validate_pre_mps_environment(validated)
+            self._canonical_cuda_environment = None
+            if device.startswith("cuda:"):
+                self._canonical_cuda_environment = self._cuda_environment_state()
+
+            self._assert_pristine_mps_import_state(device)
+            try:
+                import torch as process_torch
+            except ImportError as exc:
+                raise CaptureBackendUnavailable("canonical capture requires PyTorch") from exc
+
+            self._assert_pristine_cuda_runtime(process_torch, device)
+            if device.startswith("cuda:"):
+                self._canonical_cudnn_algorithm_policy = _cudnn_algorithm_policy_state(process_torch)
+            ambient = self._snapshot_torch_process_state(process_torch, device)
+            try:
+                super().__init__(validated)
+            finally:
+                # Keep exclusion active through both inherited and final restoration,
+                # including constructor failures and interrupted initialization.
+                self._restore_torch_process_state(process_torch, ambient)
+
+            self._canonical_model_runtime_attributes = self._model_runtime_attributes_seal()
+            self._assert_no_registered_module_hooks()
+        finally:
+            self._leave_exclusive_python_thread_boundary()
+
+    @classmethod
+    def _snapshot_torch_execution_policy_state(cls, torch: Any) -> dict[str, Any]:
+        state = super()._snapshot_torch_execution_policy_state(torch)
+        cudnn = getattr(getattr(torch, "backends", None), "cudnn", None)
+        for name in ("benchmark", "deterministic"):
+            value = getattr(cudnn, name, None)
+            if value is not None:
+                if not isinstance(value, bool):
+                    raise CaptureContractError(f"ambient torch.backends.cudnn.{name} must be boolean")
+                state[f"cudnn_{name}"] = value
+        return state
+
+    @classmethod
+    def _restore_torch_execution_policy_state(cls, torch: Any, state: Mapping[str, Any]) -> None:
+        cudnn = getattr(getattr(torch, "backends", None), "cudnn", None)
+        for name in ("benchmark", "deterministic"):
+            key = f"cudnn_{name}"
+            if key not in state:
+                continue
+            if cudnn is None or not hasattr(cudnn, name) or not isinstance(state[key], bool):
+                raise CaptureContractError(f"unable to restore ambient cuDNN {name} policy")
+            setattr(cudnn, name, state[key])
+        # The inherited exact-equality check dynamically calls our full snapshot.
+        super()._restore_torch_execution_policy_state(torch, state)
+
+    def _assert_cudnn_algorithm_policy(self) -> None:
+        expected = getattr(self, "_canonical_cudnn_algorithm_policy", None)
+        if expected is None:
+            return
+        observed = _cudnn_algorithm_policy_state(self._torch)
+        if observed != expected:
+            raise CaptureContractError("canonical cuDNN algorithm-selection policy drifted")
+        self._last_cudnn_algorithm_policy = dict(observed)
+
+    def _force_cuda_float32_policy(self) -> None:
+        # The core invokes this before every CUDA forward, for both determinism modes.
+        expected = getattr(self, "_canonical_cudnn_algorithm_policy", None)
+        if expected is not None:
+            _cudnn_algorithm_policy_state(self._torch)
+            for name in ("benchmark", "deterministic"):
+                setattr(self._torch.backends.cudnn, name, expected[f"cudnn_{name}"])
+            self._assert_cudnn_algorithm_policy()
+        super()._force_cuda_float32_policy()
+
+    def _assert_cuda_float32_policy(self) -> dict[str, str | bool]:
+        # The same core dispatch verifies algorithm selection after the full forward.
+        self._assert_cudnn_algorithm_policy()
+        return super()._assert_cuda_float32_policy()
+
+    def metadata(self) -> Mapping[str, Any]:
+        self._assert_cudnn_algorithm_policy()
+        data = dict(super().metadata())
+        policy = getattr(self, "_last_cudnn_algorithm_policy", None)
+        for field in ("cudnn_benchmark", "cudnn_deterministic"):
+            data[field] = policy[field] if policy is not None else None
+        return data
 
     def _assert_no_global_module_hooks(self) -> None:
         """Reject PyTorch process-global module hooks that can rewrite any model execution."""
@@ -263,6 +320,8 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
                     "device": str(getattr(value, "device", "")),
                     "sha256": self._tensor_content_sha256(value, where),
                 }
+        if callable(value):
+            return _callable_execution_identity(value)
         return self._runtime_json_value(value)
 
     def _model_runtime_attributes_seal(self) -> str:
@@ -283,7 +342,7 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
                 )
             attributes: dict[str, Any] = {}
             for attribute_name, value in sorted(state.items(), key=lambda pair: pair[0]):
-                if attribute_name in self._MODULE_RUNTIME_ATTRIBUTE_EXCLUDES or callable(value):
+                if attribute_name in self._MODULE_RUNTIME_ATTRIBUTE_EXCLUDES:
                     continue
                 attributes[attribute_name] = self._runtime_attribute_value(
                     value, f"{module_name or '<root>'}.{attribute_name}"
@@ -328,6 +387,7 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
                 (threading, "_start_new_thread"),
                 (threading, "_start_joinable_thread"),
                 (_thread, "start_new_thread"),
+                (_thread, "start_new"),
                 (_thread, "start_joinable_thread"),
             ]
             try:
@@ -337,6 +397,10 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
                         continue
                     patches.append((owner, name, original))
                     setattr(owner, name, self._blocked_thread_start)
+                # Raw _thread workers need not register in threading._active.
+                # Inspect interpreter frames and worker count as well, while starts
+                # remain blocked, rather than treating that registry as exhaustive.
+                _assert_exclusive_interpreter_thread()
                 current_ident = threading.get_ident()
                 other_active = [ident for ident in active if ident != current_ident]
                 if other_active or limbo:
@@ -344,7 +408,7 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
                         "canonical OBSERVATION requires exclusive Python-thread execution; "
                         f"other_active_threads={len(other_active)} starting_threads={len(limbo)}"
                     )
-            except Exception:
+            except BaseException:
                 for owner, name, original in reversed(patches):
                     setattr(owner, name, original)
                 raise
@@ -384,7 +448,7 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
             # activity has been excluded, closing the final pre-first-forward window.
             self._assert_model_runtime_attributes()
             super().begin_observation()
-        except Exception:
+        except BaseException:
             self._leave_exclusive_python_thread_boundary()
             raise
 

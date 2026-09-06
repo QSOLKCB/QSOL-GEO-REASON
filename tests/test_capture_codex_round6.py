@@ -64,6 +64,8 @@ def valid_production_shape(request: dict) -> dict:
         "cudnn_version": None,
         "cuda_matmul_allow_tf32": None,
         "cudnn_allow_tf32": None,
+        "cudnn_benchmark": False if device.startswith("cuda:") else None,
+        "cudnn_deterministic": False if device.startswith("cuda:") else None,
         "cuda_matmul_allow_fp16_reduced_precision_reduction": None,
         "cuda_matmul_allow_bf16_reduced_precision_reduction": None,
         "sdpa_flash_enabled": None,

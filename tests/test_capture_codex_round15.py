@@ -147,7 +147,11 @@ class CaptureRound15RegressionTests(unittest.TestCase):
         self.assertIn("self._last_cuda_float32_policy", core_metadata)
         self.assertNotIn("get_float32_matmul_precision", core_metadata)
         self.assertIn('"cpu_mkldnn_enabled"', core_metadata)
-        facade_metadata = inspect.getsource(HuggingFacePyTorchBackend.metadata)
+        facade_metadata = "\n".join(
+            inspect.getsource(cls.__dict__["metadata"])
+            for cls in HuggingFacePyTorchBackend.__mro__
+            if "metadata" in cls.__dict__
+        )
         self.assertIn('data["torch_num_threads"]', facade_metadata)
         self.assertIn("self._canonical_cuda_environment", facade_metadata)
 
