@@ -21,8 +21,9 @@ from .capture_common import (
 from .capture_validation import _quantization_reasons, _validate_loading_info, validate_capture_request
 from .capture_provenance import (
     _cpu_hardware_metadata, _extract_hidden_tensor, _resolve_hidden_state_layout,
-    _snapshot_file_hashes, _sysctl_value,
+    _sysctl_value,
 )
+from .capture_snapshot import _snapshot_file_hashes
 
 
 class HuggingFacePyTorchBackend:
@@ -46,6 +47,8 @@ class HuggingFacePyTorchBackend:
         self._last_cuda_float32_policy: dict[str, str | bool] | None = None
         self._canonical_cpu_matmul_policy: dict[str, bool | str | None] | None = None
         self._last_cpu_matmul_policy: dict[str, bool | str | None] | None = None
+        self._canonical_cpu_thread_policy: dict[str, int] | None = None
+        self._last_cpu_thread_policy: dict[str, int] | None = None
         self._last_deterministic_algorithms_enabled: bool | None = None
         backend, model_cfg, determinism = validated["backend"], validated["model"], validated["determinism"]
         dtype_map = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
@@ -70,6 +73,7 @@ class HuggingFacePyTorchBackend:
             self._canonical_cuda_float32_policy = self._cuda_float32_policy_state()
         if self._device_type == "cpu":
             self._canonical_cpu_matmul_policy = self._cpu_matmul_policy_state()
+            self._canonical_cpu_thread_policy = self._cpu_thread_policy_state()
         self._assert_mps_backend_available()
         self._assert_mps_execution_policy()
         self._assert_autocast_disabled()
@@ -114,6 +118,7 @@ class HuggingFacePyTorchBackend:
         self._assert_attention_implementation()
         if self._device_type == "cpu":
             self._force_cpu_matmul_policy()
+            self._force_cpu_thread_policy()
         if self._device_type == "cuda":
             self._force_cuda_float32_policy()
             self._force_cuda_reduced_precision_policy()
@@ -294,6 +299,66 @@ class HuggingFacePyTorchBackend:
                 )
             matmul.fp32_precision = expected["cpu_mkldnn_matmul_fp32_precision"]
         self._last_cpu_matmul_policy = self._assert_cpu_matmul_policy()
+
+    def _cpu_thread_policy_state(self) -> dict[str, int]:
+        state: dict[str, int] = {}
+        for key, getter_name in (
+            ("torch_num_threads", "get_num_threads"),
+            ("torch_num_interop_threads", "get_num_interop_threads"),
+        ):
+            getter = getattr(self._torch, getter_name, None)
+            if not callable(getter):
+                raise CaptureContractError(
+                    f"canonical CPU capture requires torch.{getter_name}"
+                )
+            value = getter()
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise CaptureContractError(
+                    f"canonical CPU thread policy field {key} must be a positive integer"
+                )
+            state[key] = value
+        return state
+
+    def _assert_cpu_thread_policy(self) -> dict[str, int]:
+        expected = self._canonical_cpu_thread_policy
+        if expected is None:
+            raise CaptureContractError(
+                "canonical CPU thread policy was not frozen at backend construction"
+            )
+        state = self._cpu_thread_policy_state()
+        if state != expected:
+            raise CaptureContractError(
+                f"canonical CPU thread policy drifted from construction state: expected={expected!r} observed={state!r}"
+            )
+        self._last_cpu_thread_policy = state
+        return state
+
+    def _force_cpu_thread_policy(self) -> None:
+        expected = self._canonical_cpu_thread_policy
+        if expected is None:
+            raise CaptureContractError(
+                "canonical CPU thread policy was not frozen at backend construction"
+            )
+        current = self._cpu_thread_policy_state()
+        changes = (
+            ("torch_num_threads", "set_num_threads"),
+            ("torch_num_interop_threads", "set_num_interop_threads"),
+        )
+        for key, setter_name in changes:
+            if current[key] == expected[key]:
+                continue
+            setter = getattr(self._torch, setter_name, None)
+            if not callable(setter):
+                raise CaptureContractError(
+                    f"canonical CPU capture requires torch.{setter_name} to restore thread policy"
+                )
+            try:
+                setter(expected[key])
+            except Exception as exc:
+                raise CaptureContractError(
+                    f"unable to restore canonical CPU thread policy field {key}"
+                ) from exc
+        self._last_cpu_thread_policy = self._assert_cpu_thread_policy()
 
     def _cuda_float32_policy_state(self) -> dict[str, str | bool]:
         torch = self._torch
@@ -477,6 +542,8 @@ class HuggingFacePyTorchBackend:
             self._force_required_determinism_policy()
         if self._device_type == "cpu" and getattr(self, "_canonical_cpu_matmul_policy", None) is not None:
             self._force_cpu_matmul_policy()
+        if self._device_type == "cpu" and getattr(self, "_canonical_cpu_thread_policy", None) is not None:
+            self._force_cpu_thread_policy()
         if self._device_type == "cuda":
             self._force_cuda_float32_policy()
             self._force_cuda_reduced_precision_policy()
@@ -520,6 +587,8 @@ class HuggingFacePyTorchBackend:
             self._last_deterministic_algorithms_enabled = self._assert_required_determinism_policy()
         if self._device_type == "cpu" and getattr(self, "_canonical_cpu_matmul_policy", None) is not None:
             self._last_cpu_matmul_policy = self._assert_cpu_matmul_policy()
+        if self._device_type == "cpu" and getattr(self, "_canonical_cpu_thread_policy", None) is not None:
+            self._last_cpu_thread_policy = self._assert_cpu_thread_policy()
         if self._device_type == "cuda":
             self._last_cuda_float32_policy = self._assert_cuda_float32_policy()
             self._last_cuda_reduction_policy = self._assert_cuda_reduced_precision_policy()
@@ -571,6 +640,11 @@ class HuggingFacePyTorchBackend:
         float32_policy = self._last_cuda_float32_policy if cuda_active else None
         reduction = self._last_cuda_reduction_policy if cuda_active else None
         cpu_policy = self._last_cpu_matmul_policy if self._device_type == "cpu" else None
+        cpu_threads = self._last_cpu_thread_policy if self._device_type == "cpu" else None
+        cpu_hardware = _cpu_hardware_metadata(torch)
+        if cpu_threads is not None:
+            cpu_hardware["torch_num_threads"] = cpu_threads["torch_num_threads"]
+            cpu_hardware["torch_num_interop_threads"] = cpu_threads["torch_num_interop_threads"]
         mps_built, mps_available = self._mps_backend_state()
         model_hashes = dict(sorted(self._model_snapshot_hashes.items()))
         tokenizer_hashes = dict(sorted(self._tokenizer_snapshot_hashes.items()))
@@ -589,7 +663,7 @@ class HuggingFacePyTorchBackend:
             "quantization_config_present": getattr(config, "quantization_config", None) is not None,
             "model_reports_quantized": bool(getattr(self._model, "is_quantized", False)),
             "attention_implementation": self._attention_implementation,
-            "device": str(self._device), **_cpu_hardware_metadata(torch),
+            "device": str(self._device), **cpu_hardware,
             "cpu_mkldnn_enabled": cpu_policy["cpu_mkldnn_enabled"] if cpu_policy is not None else None,
             "cpu_mkldnn_matmul_fp32_precision": cpu_policy["cpu_mkldnn_matmul_fp32_precision"] if cpu_policy is not None else None,
             "cuda_device_name": cuda_device, "cuda_device_capability": cuda_capability,
