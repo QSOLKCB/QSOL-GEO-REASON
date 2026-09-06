@@ -161,12 +161,13 @@ class CaptureRound3RegressionTests(unittest.TestCase):
     def test_production_metadata_records_precision_mps_and_snapshot_receipts(self):
         source = inspect.getsource(HuggingFacePyTorchBackend.metadata)
         for marker in (
-            "get_float32_matmul_precision", "cuda_matmul_allow_tf32", "cudnn_allow_tf32",
+            "self._last_cuda_float32_policy", "cuda_matmul_allow_tf32", "cudnn_allow_tf32",
             "NVIDIA_TF32_OVERRIDE", "TORCH_ALLOW_TF32_CUBLAS_OVERRIDE", "CUBLAS_WORKSPACE_CONFIG",
             "mps_mac_model", "mps_cpu_brand", "mps_macos_version",
             "model_snapshot_file_sha256", "tokenizer_snapshot_file_sha256",
         ):
             self.assertIn(marker, source)
+        self.assertNotIn("get_float32_matmul_precision", source)
 
     def test_trajectory_schema_binds_prefix_token_identity(self):
         schema = json.loads((ROOT / "schemas" / "captured-trajectory.schema.json").read_text(encoding="utf-8"))
