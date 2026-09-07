@@ -36,15 +36,10 @@ def _is_importable_package_bytecode(path: str) -> bool:
 
 
 def _is_generated_untracked(path: str) -> bool:
-    """Return True for disposable untracked artifacts, never importable source code."""
+    """Return True for ordinary untracked interpreter/build artifacts, never source."""
     normalized = path.strip().replace("\\", "/")
     parts = PurePosixPath(normalized).parts
     if not parts:
-        return False
-    # Bytecode underneath the importable package can replace tracked Python source
-    # at execution time when its cache header is valid. Never classify it as a
-    # disposable cleanliness exception.
-    if _is_importable_package_bytecode(normalized):
         return False
     if "__pycache__" in parts:
         return True
@@ -93,14 +88,13 @@ def _ignored_importable_bytecode(root: Path) -> tuple[str, ...]:
         raise SourceIdentityError(
             "unable to inspect ignored importable bytecode for checkout-bound execution"
         ) from exc
-    paths = tuple(
+    return tuple(
         sorted(
             path.replace("\\", "/")
             for path in result.stdout.split("\0")
             if path and _is_importable_package_bytecode(path)
         )
     )
-    return paths
 
 
 def git_source_revision(
@@ -108,11 +102,10 @@ def git_source_revision(
 ) -> str | None:
     """Return HEAD for the source checkout, or None when not running from Git.
 
-    When require_clean is true, tracked changes and source-relevant untracked
-    files reject revision binding because HEAD would not identify the executing
-    source bytes. Ordinary build artifacts are ignored. Canonical OBSERVATION
-    callers additionally reject ignored bytecode inside ``src/qsol_geo_reason``
-    because those files are executable import inputs even when Git ignores them.
+    Ordinary provenance tolerates disposable interpreter caches. Canonical
+    OBSERVATION callers additionally inspect Git-ignored package bytecode and
+    reject it because a timestamp/hash-valid cache is an executable import input
+    even though it is intentionally absent from normal ``git status`` output.
     """
     root = source_repo_root()
     try:
