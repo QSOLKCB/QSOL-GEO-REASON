@@ -197,6 +197,7 @@ The run manifest binds the request to the executing repository revision and obse
 - PyTorch version;
 - Transformers version;
 - Tokenizers version;
+- a content receipt for the imported native Tokenizers package whenever a fast tokenizer backend is active;
 - Hugging Face Hub version;
 - loaded model and tokenizer classes;
 - observed model and tokenizer commits;
@@ -213,6 +214,7 @@ The run manifest binds the request to the executing repository revision and obse
 - CPU instruction flags/features when exposed by the operating system;
 - PyTorch intra-op and inter-op thread counts;
 - `OMP_NUM_THREADS` and `MKL_NUM_THREADS` when set;
+- initialization-time `ONEDNN_MAX_CPU_ISA`, `DNNL_MAX_CPU_ISA`, and `MKL_CBWR` CPU math-library dispatch overrides, or an explicit unknown-history flag when PyTorch was already imported;
 - CUDA device name/capability;
 - PyTorch CUDA build version;
 - cuDNN version;

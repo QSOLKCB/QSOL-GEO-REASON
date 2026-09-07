@@ -187,7 +187,8 @@ class CaptureRound23RegressionTests(unittest.TestCase):
         for field in ("cuda_device_name", "cuda_device_capability"):
             constraint = rule["then"]["properties"][field]
             self.assertEqual(constraint["type"], "string")
-            self.assertEqual(constraint["pattern"], r"\S")
+            expected_pattern = r"\S" if field == "cuda_device_name" else r"^[0-9]+\.[0-9]+$"
+            self.assertEqual(constraint["pattern"], expected_pattern)
 
     def test_compiled_call_substitution_is_rejected_at_each_module(self):
         backend = object.__new__(HuggingFacePyTorchBackend)

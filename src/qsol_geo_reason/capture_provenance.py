@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import platform
+import re
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
@@ -140,6 +141,20 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
         receipt_field="transformers_package_receipt_sha256",
         where="Transformers",
     )
+    native_tokenizers = observed.get("tokenizers_native_backend_active")
+    if not isinstance(native_tokenizers, bool):
+        raise CaptureContractError("tokenizers_native_backend_active must be boolean")
+    if native_tokenizers:
+        if not isinstance(observed.get("tokenizers_version"), str) or not observed["tokenizers_version"].strip():
+            raise CaptureContractError("active native tokenizer requires tokenizers_version")
+        _validate_python_package_provenance(
+            observed,
+            count_field="tokenizers_package_file_count",
+            receipt_field="tokenizers_package_receipt_sha256",
+            where="Tokenizers",
+        )
+    elif observed.get("tokenizers_package_file_count") is not None or observed.get("tokenizers_package_receipt_sha256") is not None:
+        raise CaptureContractError("inactive native tokenizer must not carry package provenance")
 
     attention = observed.get("attention_implementation")
     if attention not in _ALLOWED_ATTENTION_IMPLEMENTATIONS:
@@ -150,6 +165,7 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
 
     nullable_strings = (
         "tokenizers_version", "huggingface_hub_version",
+        "onednn_max_cpu_isa", "dnnl_max_cpu_isa", "mkl_cbwr",
         "cpu_machine", "cpu_processor", "cpu_instruction_flags", "omp_num_threads",
         "mkl_num_threads", "cpu_mkldnn_matmul_fp32_precision",
         "cuda_device_name", "cuda_device_capability", "cuda_device_uuid",
@@ -176,6 +192,14 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
     for field in ("mps_device_active", "mps_built", "mps_available", "autocast_disabled"):
         if not isinstance(observed.get(field), bool):
             raise CaptureContractError(f"production backend field {field} must be boolean")
+    _validate_nullable_integer(
+        observed.get("tokenizers_package_file_count"),
+        "production backend field tokenizers_package_file_count",
+    )
+    _validate_nullable_string(
+        observed.get("tokenizers_package_receipt_sha256"),
+        "production backend field tokenizers_package_receipt_sha256",
+    )
 
     block_path = observed.get("hidden_state_block_path")
     if block_path not in _BLOCK_CONTAINER_PATHS:
@@ -220,6 +244,10 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
                 raise CaptureContractError(
                     f"canonical CUDA provenance requires non-whitespace {field}"
                 )
+        if re.fullmatch(r"[0-9]+\.[0-9]+", observed["cuda_device_capability"]) is None:
+            raise CaptureContractError(
+                "canonical CUDA device capability must use numeric major.minor syntax"
+            )
     for field in ("cudnn_benchmark", "cudnn_deterministic"):
         value = observed.get(field)
         if cuda_active:
@@ -243,6 +271,16 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
     cpu_policy_fields = ("cpu_mkldnn_enabled", "cpu_mkldnn_matmul_fp32_precision")
     if not cpu_active and any(observed.get(field) is not None for field in cpu_policy_fields):
         raise CaptureContractError("CPU MKLDNN policy fields must be null outside CPU")
+
+    cpu_dispatch_fields = ("onednn_max_cpu_isa", "dnnl_max_cpu_isa", "mkl_cbwr")
+    dispatch_known = observed.get("cpu_math_dispatch_env_known")
+    if cpu_active:
+        if not isinstance(dispatch_known, bool):
+            raise CaptureContractError("CPU math dispatch environment provenance must be boolean")
+        if not dispatch_known and any(observed.get(field) is not None for field in cpu_dispatch_fields):
+            raise CaptureContractError("unknown CPU math dispatch environment must be recorded as null")
+    elif dispatch_known is not None or any(observed.get(field) is not None for field in cpu_dispatch_fields):
+        raise CaptureContractError("CPU math dispatch environment fields must be null outside CPU")
 
     float32_policy_fields = (
         "float32_matmul_precision", "cuda_matmul_allow_tf32", "cudnn_allow_tf32",

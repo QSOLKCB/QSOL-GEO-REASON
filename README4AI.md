@@ -124,6 +124,10 @@ A production bundle contains:
 
 The bundle records repository revision, protocol/run identities, model/tokenizer identities, backend request, observed backend/runtime/device metadata, extraction definition, exact token IDs/spans, vectors, and content hashes.
 
+For production observations this includes content receipts for PyTorch,
+Transformers, and the native Tokenizers package when a fast tokenizer is active,
+plus explicit CPU math-library dispatch-override provenance.
+
 The captured trajectory record uses `evidence_class: OBSERVATION` because it is a raw empirical measurement. It does not say that any geometry hypothesis is supported.
 
 ### Software fixture boundary

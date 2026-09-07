@@ -31,6 +31,14 @@ and the historical field is null. The effective runtime probe is still mandatory
 A later environment string is never presented as a known initialization-time
 setting. These three fields are null outside CPU observations.
 
+The independent oneDNN/MKL initialization controls `ONEDNN_MAX_CPU_ISA`,
+`DNNL_MAX_CPU_ISA`, and `MKL_CBWR` are frozen on the same boundary. When the
+capture owns the first PyTorch import their exact values (including absence) are
+recorded and checked for drift. If PyTorch was already imported, their effective
+historical values are not recoverable: `cpu_math_dispatch_env_known` is false and
+the three value fields remain null. All four fields are null outside CPU
+observations.
+
 ## SDPA on CPU, CUDA, and MPS
 
 Every canonical SDPA capture uses the same math-only selector policy. Flash,

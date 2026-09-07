@@ -54,6 +54,27 @@ def _assert_torch_execution_surface(torch: Any) -> None:
                 f"torch.{name}"
             )
 
+    # These aliases are executable inputs to the canonical producer: float64
+    # controls pooling/accumulation and long controls token materialization.
+    # Bind both canonical spellings so replacing either public module attribute
+    # cannot silently change the produced vectors or token domain.
+    dtype_names = ("float64", "double", "long", "int64")
+    # Minimal dependency-free fixtures intentionally omit the dtype surface.
+    # A real torch module exposes all four names; partial presence is drift.
+    dtype_bindings = (
+        (("float64", "double"), ("long", "int64"))
+        if any(hasattr(torch, name) for name in dtype_names)
+        else ()
+    )
+    for name, alias in dtype_bindings:
+        public = getattr(torch, name, None)
+        canonical_alias = getattr(torch, alias, None)
+        if public is None or public is not canonical_alias:
+            raise CaptureContractError(
+                "canonical OBSERVATION PyTorch dtype binding changed after import: "
+                f"torch.{name}"
+            )
+
     autograd = getattr(torch, "autograd", None)
     grad_mode = getattr(autograd, "grad_mode", None) if autograd is not None else None
     public_inference_mode = getattr(torch, "inference_mode", None)

@@ -6,6 +6,7 @@ import hashlib
 import inspect
 import os
 import types
+import weakref
 from typing import Any, Mapping, Sequence
 
 from .canonical import sha256_json
@@ -14,6 +15,29 @@ from .capture_validation import validate_capture_request
 from .capture_provenance import _DETERMINISTIC_CUBLAS_WORKSPACE_CONFIGS
 from .capture_backend_core import HuggingFacePyTorchBackend as _CoreHuggingFacePyTorchBackend
 from .capture_dispatch import _execution_dependencies_sha256
+
+
+# Construction baselines are kept outside caller-writable backend instance
+# attributes. The weak map is closure-owned rather than exported as mutable
+# module state; the authenticated accessors are the only ordinary interface.
+def _make_live_state_baseline_vault():
+    baselines: weakref.WeakKeyDictionary[Any, tuple[Any, Any, Any, Any, Any]] = (
+        weakref.WeakKeyDictionary()
+    )
+
+    def remember(instance: Any, baseline: tuple[Any, Any, Any, Any, Any]) -> None:
+        if instance in baselines:
+            raise CaptureContractError("canonical live-state baseline was already initialized")
+        baselines[instance] = baseline
+
+    def recall(instance: Any) -> tuple[Any, Any, Any, Any, Any] | None:
+        return baselines.get(instance)
+
+    return remember, recall
+
+
+_remember_live_state_baseline, _recall_live_state_baseline = _make_live_state_baseline_vault()
+del _make_live_state_baseline_vault
 
 
 class _ExplicitNoAttentionBaseModel:
@@ -108,6 +132,13 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
         self._canonical_model_live_state = self._model_live_state_seal()
         self._canonical_model_content_state = self._model_content_state_seal()
         self._canonical_tokenizer_live_state = self._tokenizer_live_state_seal()
+        _remember_live_state_baseline(self, (
+            self._canonical_model_live_state,
+            self._canonical_model_content_state,
+            self._canonical_tokenizer_live_state,
+            self._torch.float64,
+            self._torch.long,
+        ))
         self._live_state_seal_initialized = True
 
         # The core forward remains unchanged; this proxy injects an explicit
@@ -448,11 +479,22 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
     def _assert_live_state_authentication(self) -> None:
         if not getattr(self, "_live_state_seal_initialized", False):
             return
-        expected_model = getattr(self, "_canonical_model_live_state", None)
-        expected_content = getattr(self, "_canonical_model_content_state", None)
-        expected_tokenizer = getattr(self, "_canonical_tokenizer_live_state", None)
+        baseline = _recall_live_state_baseline(self)
+        if baseline is None:
+            # Dependency-free unit fixtures may deliberately bypass __init__.
+            # Production construction always externalizes this baseline.
+            expected_model = getattr(self, "_canonical_model_live_state", None)
+            expected_content = getattr(self, "_canonical_model_content_state", None)
+            expected_tokenizer = getattr(self, "_canonical_tokenizer_live_state", None)
+            float64_dtype = long_dtype = None
+        else:
+            expected_model, expected_content, expected_tokenizer, float64_dtype, long_dtype = baseline
         if expected_model is None or expected_tokenizer is None:
             raise CaptureContractError("canonical live-state authentication seal is missing")
+        if baseline is not None and (
+            self._torch.float64 is not float64_dtype or self._torch.long is not long_dtype
+        ):
+            raise CaptureContractError("canonical PyTorch dtype bindings changed after construction")
         if self._model_live_state_seal() != expected_model:
             raise CaptureContractError(
                 "live model state changed after authenticated checkpoint loading"

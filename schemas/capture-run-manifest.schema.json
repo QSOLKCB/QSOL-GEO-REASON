@@ -150,12 +150,14 @@
         "name", "python_version", "platform", "torch_version", "transformers_version",
         "torch_package_file_count", "torch_package_receipt_sha256",
         "transformers_package_file_count", "transformers_package_receipt_sha256",
+        "tokenizers_native_backend_active", "tokenizers_package_file_count", "tokenizers_package_receipt_sha256",
         "torch_build_config", "torch_build_config_sha256",
         "tokenizers_version", "huggingface_hub_version", "model_class", "tokenizer_class",
         "observed_model_commit", "observed_tokenizer_commit", "checkpoint_loading_clean",
         "quantization_config_present", "model_reports_quantized", "attention_implementation",
         "device", "cpu_machine", "cpu_processor", "cpu_instruction_flags", "torch_num_threads",
         "cpu_aten_capability", "aten_cpu_capability_env", "aten_cpu_capability_env_known",
+        "cpu_math_dispatch_env_known", "onednn_max_cpu_isa", "dnnl_max_cpu_isa", "mkl_cbwr",
         "torch_num_interop_threads", "omp_num_threads", "mkl_num_threads",
         "cpu_mkldnn_enabled", "cpu_mkldnn_matmul_fp32_precision", "cuda_device_name",
         "cuda_device_capability", "cuda_resolved_device_index", "cuda_device_uuid",
@@ -200,6 +202,15 @@
           "$ref": "#/$defs/sha256",
           "description": "SHA-256 canonical receipt over package-relative file paths and content digests for the actually imported Transformers implementation."
         },
+        "tokenizers_native_backend_active": {"type": "boolean"},
+        "tokenizers_package_file_count": {
+          "type": ["integer", "null"], "minimum": 1,
+          "description": "Count of receipt-bound files in the imported native Tokenizers package when a fast tokenizer backend is active."
+        },
+        "tokenizers_package_receipt_sha256": {
+          "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}],
+          "description": "Content receipt for the active native Tokenizers implementation, or null for a slow tokenizer."
+        },
         "torch_build_config": {
           "type": "string", "minLength": 1, "pattern": "\\S",
           "description": "Verbatim torch.__config__.show() result captured at backend construction, including compiler, BLAS/MKL/oneDNN and CPU build settings."
@@ -225,6 +236,10 @@
         "cpu_aten_capability": {"$ref": "#/$defs/nullableString", "description": "Effective ATen ISA returned by torch.backends.cpu.get_cpu_capability(), not advertised hardware flags."},
         "aten_cpu_capability_env": {"$ref": "#/$defs/nullableString", "description": "Initialization-time override only when captured before the first PyTorch import. Otherwise unknown/null."},
         "aten_cpu_capability_env_known": {"$ref": "#/$defs/nullableBoolean", "description": "On CPU, false means the historical override is unknown; the effective runtime capability is still mandatory."},
+        "cpu_math_dispatch_env_known": {"$ref": "#/$defs/nullableBoolean"},
+        "onednn_max_cpu_isa": {"$ref": "#/$defs/nullableString"},
+        "dnnl_max_cpu_isa": {"$ref": "#/$defs/nullableString"},
+        "mkl_cbwr": {"$ref": "#/$defs/nullableString"},
         "torch_num_threads": {"type": "integer", "minimum": 1},
         "torch_num_interop_threads": {"type": "integer", "minimum": 1},
         "omp_num_threads": {"$ref": "#/$defs/nullableString"},
@@ -232,7 +247,9 @@
         "cpu_mkldnn_enabled": {"$ref": "#/$defs/nullableBoolean"},
         "cpu_mkldnn_matmul_fp32_precision": {"$ref": "#/$defs/nullableString"},
         "cuda_device_name": {"$ref": "#/$defs/nullableString"},
-        "cuda_device_capability": {"$ref": "#/$defs/nullableString"},
+        "cuda_device_capability": {
+          "anyOf": [{"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"}, {"type": "null"}]
+        },
         "cuda_resolved_device_index": {"$ref": "#/$defs/nullableInteger"},
         "cuda_device_uuid": {"$ref": "#/$defs/nullableString"},
         "cuda_visible_devices": {"$ref": "#/$defs/nullableString"},
@@ -349,7 +366,7 @@
           "then": {
             "properties": {
               "cuda_device_name": {"type": "string", "minLength": 1, "pattern": "\\S"},
-              "cuda_device_capability": {"type": "string", "minLength": 1, "pattern": "\\S"}
+              "cuda_device_capability": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"}
             }
           }
         },
@@ -395,7 +412,29 @@
               "aten_cpu_capability_env_known": {"type": "boolean"}
             }
           },
-          "else": {"properties": {"cpu_aten_capability": {"type": "null"}, "aten_cpu_capability_env": {"type": "null"}, "aten_cpu_capability_env_known": {"type": "null"}}}
+          "else": {"properties": {
+            "cpu_aten_capability": {"type": "null"},
+            "aten_cpu_capability_env": {"type": "null"},
+            "aten_cpu_capability_env_known": {"type": "null"},
+            "cpu_mkldnn_enabled": {"type": "null"},
+            "cpu_mkldnn_matmul_fp32_precision": {"type": "null"},
+            "cpu_math_dispatch_env_known": {"type": "null"},
+            "onednn_max_cpu_isa": {"type": "null"},
+            "dnnl_max_cpu_isa": {"type": "null"},
+            "mkl_cbwr": {"type": "null"}
+          }}
+        },
+        {
+          "if": {"properties": {"tokenizers_native_backend_active": {"const": true}}, "required": ["tokenizers_native_backend_active"]},
+          "then": {"properties": {
+            "tokenizers_version": {"type": "string", "minLength": 1, "pattern": "\\S"},
+            "tokenizers_package_file_count": {"type": "integer", "minimum": 1},
+            "tokenizers_package_receipt_sha256": {"$ref": "#/$defs/sha256"}
+          }},
+          "else": {"properties": {
+            "tokenizers_package_file_count": {"type": "null"},
+            "tokenizers_package_receipt_sha256": {"type": "null"}
+          }}
         },
         {
           "if": {"properties": {"aten_cpu_capability_env_known": {"const": false}}, "required": ["aten_cpu_capability_env_known"]},
