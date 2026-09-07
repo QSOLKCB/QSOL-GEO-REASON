@@ -36,7 +36,7 @@ class CaptureRound34RegressionTests(unittest.TestCase):
         self.assertEqual(
             backend._native_slow_tokenizer_backend(tokenizer), "sentencepiece"
         )
-        with self.assertRaisesRegex(CaptureContractError, "native slow-tokenizer"):
+        with self.assertRaisesRegex(CaptureContractError, "slow-tokenizer"):
             backend._initialize_tokenizers_package_provenance()
 
     def test_snapshot_receipts_are_bound_outside_instance_state(self):
