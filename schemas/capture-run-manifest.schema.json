@@ -286,7 +286,19 @@
             "properties": {
               "mps_device_active": {"const": true},
               "mps_built": {"const": true},
-              "mps_available": {"const": true}
+              "mps_available": {"const": true},
+              "mps_fallback_env": {
+                "anyOf": [
+                  {"type": "null"},
+                  {"type": "string", "pattern": "^\\s*(?:0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff])?\\s*$"}
+                ]
+              },
+              "mps_fast_math_env": {
+                "anyOf": [
+                  {"type": "null"},
+                  {"type": "string", "pattern": "^\\s*(?:0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff])?\\s*$"}
+                ]
+              }
             }
           }
         },
