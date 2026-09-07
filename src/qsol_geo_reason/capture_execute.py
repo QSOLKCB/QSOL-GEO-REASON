@@ -1,12 +1,15 @@
 """Execution and capture-step construction for GEO-CAP-001."""
 from __future__ import annotations
+import functools
+import inspect
 import types
+from collections import deque
 from typing import Any, Mapping
 from .canonical import sha256_json
 from .capture_backend import _ExplicitNoAttentionBaseModel
 from .capture_backend_production import HuggingFacePyTorchBackend
 from .capture_common import (CAPTURE_PROTOCOL_ID, CAPTURE_SCHEMA_VERSION, _ALLOWED_EVIDENCE, _CAPTURE_PHASE, _LAYER_INDEX_SEMANTICS, _SIMULATION_BACKEND, _STEP_SPAN_SEMANTICS, CaptureBackend, CaptureContractError, _common_prefix_length, _compose_text, _pool_span, _require_git_sha, _sha256_text, _validate_backend_layer, _validate_token_ids)
-from .capture_dispatch import _MathSDPABaseModel
+from .capture_dispatch import _MathSDPABaseModel, _global_paths
 from .capture_validation import validate_capture_request
 from .capture_provenance import _resolve_hidden_state_layout, _validate_backend_metadata
 from .provenance import SourceIdentityError, resolve_implementation_revision
@@ -83,14 +86,113 @@ def _trusted_callable_receipt(value: Any) -> dict[str, Any]:
     }
 
 
+def _trusted_execution_dependencies_sha256(roots: list[Any]) -> str:
+    """Bind transitive Python globals/closures with stable executable receipts."""
+    pending: deque[types.FunctionType] = deque()
+    queued: set[int] = set()
+    nodes: dict[str, Any] = {}
+    references = 0
+    max_nodes, max_references = 4096, 32768
+
+    def reference(value: Any, *, containers: frozenset[int] = frozenset()) -> Any:
+        nonlocal references
+        references += 1
+        if references > max_references:
+            raise CaptureContractError("trusted backend execution dependency reference limit exceeded")
+        target = getattr(value, "__func__", value)
+        if isinstance(target, types.FunctionType):
+            if id(target) not in queued:
+                if len(queued) >= max_nodes:
+                    raise CaptureContractError("trusted backend execution dependency callable limit exceeded")
+                queued.add(id(target))
+                pending.append(target)
+            return {"callable": _trusted_callable_receipt(target)}
+        if isinstance(value, functools.partial):
+            return {
+                "partial": _trusted_callable_receipt(value),
+                "function": reference(value.func),
+            }
+        if callable(value):
+            return {"callable": _trusted_callable_receipt(value)}
+        if isinstance(value, (Mapping, list, tuple)):
+            if id(value) in containers:
+                return {"cycle": True}
+            if len(value) > max_references:
+                raise CaptureContractError("trusted backend execution dependency registry limit exceeded")
+            seen = containers | {id(value)}
+            items = value.items() if isinstance(value, Mapping) else enumerate(value)
+            return {
+                "container_type": type(value).__qualname__,
+                "entries": {
+                    str(key): reference(item, containers=seen)
+                    for key, item in items
+                    if callable(item) or isinstance(item, (Mapping, list, tuple))
+                },
+            }
+        if value is None or type(value) in (bool, int, float, str):
+            return {"value": value}
+        if isinstance(value, types.ModuleType):
+            return {"module": value.__name__}
+        return {
+            "class_module": type(value).__module__,
+            "class_qualname": type(value).__qualname__,
+        }
+
+    root_receipts = [reference(root) for root in roots]
+    while pending:
+        function = pending.popleft()
+        globals_map = function.__globals__
+        builtins_map = function.__builtins__
+        if not isinstance(builtins_map, Mapping):
+            builtins_map = vars(builtins_map)
+        edges: dict[str, Any] = {}
+        for path in sorted(_global_paths(function.__code__)):
+            name = path[0]
+            if name in globals_map:
+                value = globals_map[name]
+            elif name in builtins_map:
+                value = builtins_map[name]
+            else:
+                edges[".".join(path)] = {"missing": True}
+                continue
+            try:
+                for component in path[1:]:
+                    value = inspect.getattr_static(value, component)
+            except AttributeError:
+                edges[".".join(path)] = {"unresolved_static_attribute": True}
+            else:
+                edges[".".join(path)] = reference(value)
+        closure: dict[str, Any] = {}
+        for name, cell in zip(function.__code__.co_freevars, function.__closure__ or ()):
+            try:
+                value = cell.cell_contents
+            except ValueError:
+                closure[name] = {"empty_cell": True}
+            else:
+                closure[name] = reference(value)
+        receipt = _trusted_callable_receipt(function)
+        node_key = (
+            f"{receipt['module']}:{receipt['qualname']}:"
+            f"{receipt['code_sha256']}"
+        )
+        nodes[node_key] = {
+            "function": receipt,
+            "globals": edges,
+            "closure": closure,
+        }
+    return sha256_json({"roots": root_receipts, "dependencies": nodes})
+
+
 def _freeze_observation_backend_callables() -> tuple[
     frozenset[str],
     tuple[tuple[type, str, Mapping[str, Any]], ...],
     tuple[tuple[str, Mapping[str, Any]], ...],
+    str,
 ]:
     """Capture the trusted QSOL adapter callable surface at module import time."""
     names: set[str] = set()
     class_bindings: list[tuple[type, str, Mapping[str, Any]]] = []
+    dependency_roots: list[Any] = []
     for cls in HuggingFacePyTorchBackend.__mro__:
         if not getattr(cls, "__module__", "").startswith("qsol_geo_reason"):
             continue
@@ -100,6 +202,7 @@ def _freeze_observation_backend_callables() -> tuple[
                 continue
             names.add(name)
             class_bindings.append((cls, name, _trusted_callable_receipt(target)))
+            dependency_roots.append(target)
 
     execution_bindings: list[tuple[str, Mapping[str, Any]]] = []
     for name in _OBSERVATION_BACKEND_EXECUTION_METHODS:
@@ -109,19 +212,26 @@ def _freeze_observation_backend_callables() -> tuple[
                 f"trusted canonical OBSERVATION backend is missing execution method {name!r}"
             )
         execution_bindings.append((name, _trusted_callable_receipt(target)))
-    return frozenset(names), tuple(class_bindings), tuple(execution_bindings)
+    return (
+        frozenset(names),
+        tuple(class_bindings),
+        tuple(execution_bindings),
+        _trusted_execution_dependencies_sha256(dependency_roots),
+    )
 
 
 (
     _OBSERVATION_BACKEND_CALLABLE_NAMES,
     _OBSERVATION_BACKEND_CLASS_CALLABLES,
     _OBSERVATION_BACKEND_EXECUTION_BASELINE,
+    _OBSERVATION_BACKEND_DEPENDENCY_BASELINE,
 ) = _freeze_observation_backend_callables()
 _TRUSTED_RESOLVE_HIDDEN_STATE_LAYOUT = _resolve_hidden_state_layout
 
 
 def _assert_observation_backend_execution_methods(backend: HuggingFacePyTorchBackend) -> None:
-    """Reject instance or class substitutions on the canonical adapter dispatch surface."""
+    """Reject instance, class, or global substitutions on the canonical adapter surface."""
+    current_roots: list[Any] = []
     for cls, name, expected_receipt in _OBSERVATION_BACKEND_CLASS_CALLABLES:
         current = _unwrap_backend_descriptor(vars(cls).get(name))
         if not callable(current) or _trusted_callable_receipt(current) != dict(expected_receipt):
@@ -129,6 +239,12 @@ def _assert_observation_backend_execution_methods(backend: HuggingFacePyTorchBac
                 "canonical OBSERVATION backend class execution method changed after trusted import: "
                 f"{cls.__module__}.{cls.__qualname__}.{name}"
             )
+        current_roots.append(current)
+
+    if _trusted_execution_dependencies_sha256(current_roots) != _OBSERVATION_BACKEND_DEPENDENCY_BASELINE:
+        raise CaptureContractError(
+            "canonical OBSERVATION backend execution dependencies changed after trusted import"
+        )
 
     instance_state = vars(backend)
     shadowed = sorted(
@@ -280,6 +396,12 @@ def execute_capture(
         observation_started = True
 
     try:
+        if evidence_class == "OBSERVATION":
+            # begin_observation() owns the exclusive Python-thread boundary. Repeat
+            # adapter and routing authentication only after that exclusion is held,
+            # so a short-lived pre-boundary mutator cannot race the first tokenization.
+            _assert_observation_backend_execution_methods(backend)
+            _assert_observation_backend_routing_state(backend)
         steps, prefix_ids = _capture_steps(validated, backend)
         observed = dict(backend.metadata())
         if evidence_class == "SIMULATION":
