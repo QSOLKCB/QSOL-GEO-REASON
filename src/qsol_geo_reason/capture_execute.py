@@ -19,15 +19,39 @@ _OBSERVATION_BACKEND_EXECUTION_METHODS = (
 )
 
 
+def _observation_backend_callable_names() -> frozenset[str]:
+    """Return all methods implemented by the trusted QSOL backend hierarchy."""
+    names: set[str] = set()
+    for cls in HuggingFacePyTorchBackend.__mro__:
+        if not getattr(cls, "__module__", "").startswith("qsol_geo_reason"):
+            continue
+        for name, value in vars(cls).items():
+            if isinstance(value, (staticmethod, classmethod)):
+                value = value.__func__
+            if callable(value):
+                names.add(name)
+    return frozenset(names)
+
+
+_OBSERVATION_BACKEND_CALLABLE_NAMES = _observation_backend_callable_names()
+
+
 def _assert_observation_backend_execution_methods(backend: HuggingFacePyTorchBackend) -> None:
-    """Reject instance-level substitutions of canonical OBSERVATION execution methods."""
+    """Reject instance substitutions anywhere on the canonical backend dispatch surface."""
     instance_state = vars(backend)
+    shadowed = sorted(
+        name for name in instance_state if name in _OBSERVATION_BACKEND_CALLABLE_NAMES
+    )
+    if shadowed:
+        raise CaptureContractError(
+            "canonical OBSERVATION backend execution methods cannot be overridden on the "
+            "instance: " + ", ".join(shadowed)
+        )
+
+    # Keep explicit evidence-boundary checks for the public adapter methods. The
+    # generic shadow check above additionally covers private helpers dynamically
+    # dispatched by these methods, such as _assert_live_state_authentication.
     for name in _OBSERVATION_BACKEND_EXECUTION_METHODS:
-        if name in instance_state:
-            raise CaptureContractError(
-                "canonical OBSERVATION backend execution methods cannot be overridden on the "
-                f"instance: {name}"
-            )
         resolved = getattr(backend, name, None)
         expected = getattr(HuggingFacePyTorchBackend, name, None)
         resolved_target = getattr(resolved, "__func__", resolved)
