@@ -13,6 +13,7 @@ from .capture_common import (
     _MANIFEST_KEYS,
     _REPRESENTATION_KEYS,
     _STEP_SPAN_SEMANTICS,
+    _TORCH_LONG_MAX,
     _TRAJECTORY_KEYS,
     CaptureContractError,
     _common_prefix_length,
@@ -85,6 +86,7 @@ def verify_capture_bundle(request: Mapping[str, Any], manifest: Mapping[str, Any
 
     if trajectory["evidence_class"] not in _ALLOWED_EVIDENCE or trajectory["replication_status"] != "not_attempted":
         raise CaptureContractError("trajectory evidence/replication status is invalid")
+    max_token_id = _TORCH_LONG_MAX if trajectory["evidence_class"] == "OBSERVATION" else None
 
     artifacts = _require_object(manifest["artifacts"], "manifest artifacts")
     _require_exact_keys(artifacts, required=_ARTIFACT_KEYS, where="manifest artifacts")
@@ -96,7 +98,7 @@ def verify_capture_bundle(request: Mapping[str, Any], manifest: Mapping[str, Any
 
     prefix_ids = _validate_token_ids(
         representation["prefix_input_ids"], "trajectory prefix_input_ids",
-        allow_empty=not bool(validated["capture"]["prefix_text"]),
+        allow_empty=not bool(validated["capture"]["prefix_text"]), max_value=max_token_id,
     )
     if representation["prefix_input_ids_sha256"] != sha256_json(prefix_ids):
         raise CaptureContractError("trajectory prefix_input_ids_sha256 is invalid")
@@ -137,7 +139,9 @@ def verify_capture_bundle(request: Mapping[str, Any], manifest: Mapping[str, Any
             baseline_ids = prefix_ids
         if step["rendered_text_sha256"] != _sha256_text(rendered):
             raise CaptureContractError(f"rendered text hash mismatch at step {index}")
-        input_ids = _validate_token_ids(step["input_ids"], f"trajectory step {index}")
+        input_ids = _validate_token_ids(
+            step["input_ids"], f"trajectory step {index}", max_value=max_token_id
+        )
         token_count = _require_nonnegative_int(step["token_count"], f"trajectory step {index}.token_count")
         if token_count != len(input_ids):
             raise CaptureContractError(f"token_count mismatch at step {index}")
