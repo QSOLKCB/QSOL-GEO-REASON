@@ -329,9 +329,12 @@
         "cpu_machine": {"$ref": "#/$defs/nullableString"},
         "cpu_processor": {"$ref": "#/$defs/nullableString"},
         "cpu_instruction_flags": {"$ref": "#/$defs/nullableString"},
-        "cpu_aten_capability": {"$ref": "#/$defs/nullableString", "description": "Effective ATen ISA returned by torch.backends.cpu.get_cpu_capability(), not advertised hardware flags."},
-        "aten_cpu_capability_env": {"$ref": "#/$defs/nullableString", "description": "Initialization-time override only when captured before the first PyTorch import. Otherwise unknown/null."},
-        "aten_cpu_capability_env_known": {"$ref": "#/$defs/nullableBoolean", "description": "On CPU, false means the historical override is unknown; the effective runtime capability is still mandatory."},
+        "cpu_aten_capability": {
+          "enum": ["DEFAULT", "VSX", "Z VECTOR", "NO AVX", "AVX2", "AVX512", "SVE256"],
+          "description": "Effective ATen ISA used by the CPU float64 pooling instrument on every production device."
+        },
+        "aten_cpu_capability_env": {"$ref": "#/$defs/nullableString", "description": "Initialization-time ATEN_CPU_CAPABILITY override only when captured before the first PyTorch import. Otherwise unknown/null."},
+        "aten_cpu_capability_env_known": {"type": "boolean", "description": "Whether the initialization-time ATEN_CPU_CAPABILITY override is known for the CPU pooling instrument; false requires a null override while effective runtime capability remains mandatory."},
         "cpu_math_dispatch_env_known": {"$ref": "#/$defs/nullableBoolean"},
         "onednn_max_cpu_isa": {"$ref": "#/$defs/nullableString"},
         "dnnl_max_cpu_isa": {"$ref": "#/$defs/nullableString"},
@@ -507,15 +510,10 @@
                   "pattern": "^\\s*(?:[Uu][Nn][Kk][Nn][Oo][Ww][Nn]|[Gg][Ee][Nn][Ee][Rr][Ii][Cc]|[Cc][Pp][Uu]|[Pp][Rr][Oo][Cc][Ee][Ss][Ss][Oo][Rr]|[Xx]86_64|[Aa][Mm][Dd]64|[Xx]64|[Ii]386|[Ii]686|[Aa][Rr][Mm]|[Aa][Rr][Mm]64|[Aa][Aa][Rr][Cc][Hh]64|[Pp][Pp][Cc]64|[Pp][Pp][Cc]64[Ll][Ee]|[Ss]390[Xx])\\s*$"
                 }
               },
-              "cpu_aten_capability": {"enum": ["DEFAULT", "VSX", "Z VECTOR", "NO AVX", "AVX2", "AVX512", "SVE256"]},
-              "aten_cpu_capability_env_known": {"type": "boolean"},
               "cpu_math_dispatch_env_known": {"type": "boolean"}
             }
           },
           "else": {"properties": {
-            "cpu_aten_capability": {"type": "null"},
-            "aten_cpu_capability_env": {"type": "null"},
-            "aten_cpu_capability_env_known": {"type": "null"},
             "cpu_mkldnn_enabled": {"type": "null"},
             "cpu_mkldnn_matmul_fp32_precision": {"type": "null"},
             "cpu_math_dispatch_env_known": {"type": "null"},
