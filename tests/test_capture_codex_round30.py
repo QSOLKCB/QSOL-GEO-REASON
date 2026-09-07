@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import py_compile
 import tempfile
 import unittest
 from pathlib import Path
@@ -39,13 +40,15 @@ class CaptureRound30RegressionTests(unittest.TestCase):
             self.assertEqual(module.__version__, "4.56.0")
             self.assertNotEqual(first["receipt_sha256"], second["receipt_sha256"])
 
-            cache = package / "__pycache__"
-            cache.mkdir()
-            (cache / "modeling_fixture.pyc").write_bytes(b"disposable bytecode")
+            # Only source-equivalent caches may be omitted from package identity.
+            cache = Path(py_compile.compile(str(model), doraise=True, optimize=0))
             self.assertEqual(
                 _python_package_provenance(module, "Transformers"),
                 second,
             )
+            cache.write_bytes(b"unverifiable bytecode")
+            with self.assertRaisesRegex(CaptureContractError, "package bytecode"):
+                _python_package_provenance(module, "Transformers")
 
         schema = json.loads((ROOT / "schemas/capture-run-manifest.schema.json").read_text())
         production = schema["$defs"]["backendObservedProduction"]

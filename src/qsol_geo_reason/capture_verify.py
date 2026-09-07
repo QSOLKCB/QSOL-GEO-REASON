@@ -94,7 +94,10 @@ def verify_capture_bundle(request: Mapping[str, Any], manifest: Mapping[str, Any
     if manifest["request_sha256"] != request_sha or artifacts["capture_request_sha256"] != request_sha:
         raise CaptureContractError("manifest request SHA-256 does not match capture request")
 
-    prefix_ids = _validate_token_ids(representation["prefix_input_ids"], "trajectory prefix_input_ids", allow_empty=True)
+    prefix_ids = _validate_token_ids(
+        representation["prefix_input_ids"], "trajectory prefix_input_ids",
+        allow_empty=not bool(validated["capture"]["prefix_text"]),
+    )
     if representation["prefix_input_ids_sha256"] != sha256_json(prefix_ids):
         raise CaptureContractError("trajectory prefix_input_ids_sha256 is invalid")
     expected_representation = {

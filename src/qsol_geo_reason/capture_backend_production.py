@@ -164,6 +164,9 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
                 import torch as process_torch
             except ImportError as exc:
                 raise CaptureBackendUnavailable("canonical capture requires PyTorch") from exc
+            # Retain the actual construction-time runtime, not a later import or a
+            # duck-typed policy proxy. This identity never enters persisted JSON.
+            self._canonical_torch_module = process_torch
             try:
                 import transformers as process_transformers
             except ImportError:
@@ -194,6 +197,7 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
             ambient = self._snapshot_torch_process_state(process_torch, device)
             try:
                 super().__init__(validated)
+                self._assert_torch_runtime_identity()
             finally:
                 # Keep exclusion active through both inherited and final restoration,
                 # including constructor failures and interrupted initialization.
@@ -227,6 +231,15 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
             self._assert_no_registered_module_hooks()
         finally:
             self._leave_exclusive_python_thread_boundary()
+
+    def _assert_torch_runtime_identity(self) -> None:
+        """Reject replacement of the construction-bound PyTorch execution object."""
+        state = vars(self)
+        expected = state.get("_canonical_torch_module")
+        if expected is None or state.get("_torch") is not expected:
+            raise CaptureContractError(
+                "canonical OBSERVATION PyTorch runtime object changed or lacks its construction binding"
+            )
 
     @classmethod
     def _snapshot_torch_execution_policy_state(cls, torch: Any) -> dict[str, Any]:
@@ -620,6 +633,7 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
         super()._assert_live_state_authentication()
 
     def assert_execution_request(self, request: Mapping[str, Any]) -> None:
+        self._assert_torch_runtime_identity()
         # The policy layer dispatches the full live-state chain exactly once.
         super().assert_execution_request(request)
         self._assert_model_runtime_attributes()
@@ -627,6 +641,9 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
     def begin_observation(self) -> None:
         self._enter_exclusive_python_thread_boundary()
         try:
+            # Recheck runtime ownership inside exclusion, before even the mode/policy
+            # probes can be delegated to a substituted runtime object.
+            self._assert_torch_runtime_identity()
             # Mode stacks are thread-local, so inspect them only after this thread
             # owns the exclusive observation boundary and before capture state mutates.
             self._assert_no_active_torch_override_modes()
