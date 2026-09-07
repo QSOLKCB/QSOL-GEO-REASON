@@ -87,7 +87,13 @@ def _trusted_callable_receipt(value: Any) -> dict[str, Any]:
 
 
 def _trusted_execution_dependencies_sha256(roots: list[Any]) -> str:
-    """Bind transitive Python globals/closures with stable executable receipts."""
+    """Bind QSOL transitive Python globals/closures with stable executable receipts.
+
+    QSOL-owned Python functions are followed transitively. External/stdlib callables
+    remain content-bound leaf receipts rather than having their mutable module caches
+    traversed. This authenticates the adapter code we ship without mistaking ordinary
+    lazy state such as platform/pathlib caches for executable substitution.
+    """
     pending: deque[types.FunctionType] = deque()
     queued: set[int] = set()
     nodes: dict[str, Any] = {}
@@ -101,7 +107,8 @@ def _trusted_execution_dependencies_sha256(roots: list[Any]) -> str:
             raise CaptureContractError("trusted backend execution dependency reference limit exceeded")
         target = getattr(value, "__func__", value)
         if isinstance(target, types.FunctionType):
-            if id(target) not in queued:
+            module_name = getattr(target, "__module__", "")
+            if module_name.startswith("qsol_geo_reason") and id(target) not in queued:
                 if len(queued) >= max_nodes:
                     raise CaptureContractError("trusted backend execution dependency callable limit exceeded")
                 queued.add(id(target))
