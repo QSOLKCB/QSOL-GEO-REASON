@@ -8,10 +8,11 @@ from typing import Any, Mapping
 from .canonical import sha256_json
 from .capture_backend import _ExplicitNoAttentionBaseModel
 from .capture_backend_production import HuggingFacePyTorchBackend
-from .capture_common import (CAPTURE_PROTOCOL_ID, CAPTURE_SCHEMA_VERSION, _ALLOWED_EVIDENCE, _CAPTURE_PHASE, _LAYER_INDEX_SEMANTICS, _SIMULATION_BACKEND, _STEP_SPAN_SEMANTICS, CaptureBackend, CaptureContractError, _common_prefix_length, _compose_text, _pool_span, _require_git_sha, _sha256_text, _validate_backend_layer, _validate_token_ids)
+from .capture_common import (CAPTURE_PROTOCOL_ID, CAPTURE_SCHEMA_VERSION, _ALLOWED_EVIDENCE, _CAPTURE_PHASE, _LAYER_INDEX_SEMANTICS, _SIMULATION_BACKEND, _STEP_SPAN_SEMANTICS, _TORCH_LONG_MAX, CaptureBackend, CaptureContractError, _common_prefix_length, _compose_text, _pool_span, _require_git_sha, _sha256_text, _validate_backend_layer, _validate_token_ids)
 from .capture_dispatch import _MathSDPABaseModel, _global_paths
 from .capture_validation import validate_capture_request
 from .capture_provenance import _resolve_hidden_state_layout, _validate_backend_metadata
+from .capture_runtime import _assert_torch_execution_surface
 from .provenance import SourceIdentityError, resolve_implementation_revision
 
 
@@ -274,6 +275,7 @@ def _assert_observation_backend_execution_methods(backend: HuggingFacePyTorchBac
 
 def _assert_observation_backend_routing_state(backend: HuggingFacePyTorchBackend) -> None:
     """Bind non-callable adapter routing to the live authenticated model graph."""
+    _assert_torch_execution_surface(getattr(backend, "_torch", None))
     try:
         expected_base_model, expected_path, expected_blocks = (
             _TRUSTED_RESOLVE_HIDDEN_STATE_LAYOUT(backend._model)
@@ -320,10 +322,15 @@ def _assert_observation_backend_routing_state(backend: HuggingFacePyTorchBackend
         )
 
 
-def _capture_steps(request: Mapping[str, Any], backend: CaptureBackend) -> tuple[list[dict[str, Any]], list[int]]:
+def _capture_steps(
+    request: Mapping[str, Any], backend: CaptureBackend, *, max_token_id: int | None = None,
+) -> tuple[list[dict[str, Any]], list[int]]:
     cfg = request["capture"]
     pooling = cfg["pooling"]
-    prefix_ids = _validate_token_ids(backend.tokenize(cfg["prefix_text"]), "prefix_text", allow_empty=not bool(cfg["prefix_text"]))
+    prefix_ids = _validate_token_ids(
+        backend.tokenize(cfg["prefix_text"]), "prefix_text",
+        allow_empty=not bool(cfg["prefix_text"]), max_value=max_token_id,
+    )
     previous_ids = prefix_ids
     cumulative_segments: list[str] = []
     output: list[dict[str, Any]] = []
@@ -337,7 +344,9 @@ def _capture_steps(request: Mapping[str, Any], backend: CaptureBackend) -> tuple
         else:
             rendered = _compose_text(cfg["prefix_text"], [step["text"]], cfg["step_joiner"])
             baseline_ids = prefix_ids
-        input_ids = _validate_token_ids(backend.tokenize(rendered), f"step {step['step_id']!r}")
+        input_ids = _validate_token_ids(
+            backend.tokenize(rendered), f"step {step['step_id']!r}", max_value=max_token_id
+        )
         changed_start = _common_prefix_length(baseline_ids, input_ids)
         if changed_start == len(input_ids):
             raise CaptureContractError(f"step {step['step_id']!r} adds no changed token span under the frozen tokenizer")
@@ -409,7 +418,10 @@ def execute_capture(
             # so a short-lived pre-boundary mutator cannot race the first tokenization.
             _assert_observation_backend_execution_methods(backend)
             _assert_observation_backend_routing_state(backend)
-        steps, prefix_ids = _capture_steps(validated, backend)
+        steps, prefix_ids = _capture_steps(
+            validated, backend,
+            max_token_id=_TORCH_LONG_MAX if evidence_class == "OBSERVATION" else None,
+        )
         observed = dict(backend.metadata())
         if evidence_class == "SIMULATION":
             observed["name"] = _SIMULATION_BACKEND
