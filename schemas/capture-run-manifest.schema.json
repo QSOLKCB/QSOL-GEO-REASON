@@ -272,16 +272,14 @@
         "deterministic_algorithms_enabled": {"type": "boolean"},
         "determinism_mode": {"enum": ["required", "best_effort"]}
       },
+      "if": {
+        "properties": {"determinism_mode": {"const": "required"}},
+        "required": ["determinism_mode"]
+      },
+      "then": {
+        "properties": {"deterministic_algorithms_enabled": {"const": true}}
+      },
       "allOf": [
-        {
-          "if": {
-            "properties": {"determinism_mode": {"const": "required"}},
-            "required": ["determinism_mode"]
-          },
-          "then": {
-            "properties": {"deterministic_algorithms_enabled": {"const": true}}
-          }
-        },
         {
           "if": {"properties": {"device": {"const": "mps"}}, "required": ["device"]},
           "then": {
