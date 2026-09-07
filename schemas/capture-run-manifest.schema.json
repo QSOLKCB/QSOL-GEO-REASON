@@ -29,6 +29,89 @@
     },
     "manifest_sha256": {"$ref": "#/$defs/sha256"}
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"backend_request": {"properties": {"device": {"const": "cpu"}}, "required": ["device"]}},
+        "required": ["backend_request"]
+      },
+      "then": {
+        "properties": {"backend_observed": {"properties": {"device": {"const": "cpu"}}, "required": ["device"]}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"backend_request": {"properties": {"device": {"const": "mps"}}, "required": ["device"]}},
+        "required": ["backend_request"]
+      },
+      "then": {
+        "properties": {"backend_observed": {"properties": {"device": {"const": "mps"}}, "required": ["device"]}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"backend_request": {"properties": {"device": {"type": "string", "pattern": "^cuda:[0-9]+$"}}, "required": ["device"]}},
+        "required": ["backend_request"]
+      },
+      "then": {
+        "properties": {"backend_observed": {"properties": {"device": {"type": "string", "pattern": "^cuda:[0-9]+$"}}, "required": ["device"]}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"backend_request": {"properties": {"dtype": {"const": "float32"}}, "required": ["dtype"]}},
+        "required": ["backend_request"]
+      },
+      "then": {
+        "properties": {"backend_observed": {"properties": {"dtype": {"const": "float32"}}, "required": ["dtype"]}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"backend_request": {"properties": {"dtype": {"const": "float16"}}, "required": ["dtype"]}},
+        "required": ["backend_request"]
+      },
+      "then": {
+        "properties": {"backend_observed": {"properties": {"dtype": {"const": "float16"}}, "required": ["dtype"]}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"backend_request": {"properties": {"dtype": {"const": "bfloat16"}}, "required": ["dtype"]}},
+        "required": ["backend_request"]
+      },
+      "then": {
+        "properties": {"backend_observed": {"properties": {"dtype": {"const": "bfloat16"}}, "required": ["dtype"]}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"determinism": {"properties": {"mode": {"const": "required"}}, "required": ["mode"]}},
+        "required": ["determinism"]
+      },
+      "then": {
+        "properties": {"backend_observed": {"properties": {"determinism_mode": {"const": "required"}}, "required": ["determinism_mode"]}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"determinism": {"properties": {"mode": {"const": "best_effort"}}, "required": ["mode"]}},
+        "required": ["determinism"]
+      },
+      "then": {
+        "properties": {"backend_observed": {"properties": {"determinism_mode": {"const": "best_effort"}}, "required": ["determinism_mode"]}}
+      }
+    }
+  ],
+  "x-qsol-semantic-validation": {
+    "required": true,
+    "constraints": [
+      "backend_observed.device must equal backend_request.device exactly; JSON Schema enforces cpu/mps equality and CUDA-family agreement, while the canonical semantic verifier enforces the exact cuda:N index.",
+      "backend_observed.dtype must equal backend_request.dtype exactly.",
+      "backend_observed.determinism_mode must equal determinism.mode exactly.",
+      "backend_observed observed model/tokenizer commits must equal the corresponding frozen model revisions."
+    ]
+  },
   "$defs": {
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "gitSha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
@@ -210,7 +293,7 @@
         },
         "tokenizers_package_receipt_sha256": {
           "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}],
-          "description": "Content receipt for the active native Tokenizers implementation, or null for a slow tokenizer."
+          "description": "Content receipt for the active native Tokenizers implementation, or null when the native fast-tokenizer backend is inactive. Canonical production currently rejects loaded slow tokenizers."
         },
         "safetensors_deserializer_active": {
           "type": "boolean",
