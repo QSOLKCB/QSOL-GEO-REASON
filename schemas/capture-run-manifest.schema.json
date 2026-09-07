@@ -148,6 +148,7 @@
       "additionalProperties": false,
       "required": [
         "name", "python_version", "platform", "torch_version", "transformers_version",
+        "torch_package_file_count", "torch_package_receipt_sha256",
         "transformers_package_file_count", "transformers_package_receipt_sha256",
         "torch_build_config", "torch_build_config_sha256",
         "tokenizers_version", "huggingface_hub_version", "model_class", "tokenizer_class",
@@ -183,6 +184,14 @@
         "platform": {"type": "string", "minLength": 1, "pattern": "\\S"},
         "torch_version": {"type": "string", "minLength": 1, "pattern": "\\S"},
         "transformers_version": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "torch_package_file_count": {
+          "type": "integer", "minimum": 1,
+          "description": "Count of regular files in the imported PyTorch package tree, including native binaries and excluding only authenticated source-equivalent bytecode caches."
+        },
+        "torch_package_receipt_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 canonical receipt over package-relative file paths and content digests for the actually imported PyTorch implementation."
+        },
         "transformers_package_file_count": {
           "type": "integer", "minimum": 1,
           "description": "Count of regular files in the imported Transformers package tree, excluding disposable Python bytecode caches."
@@ -313,6 +322,9 @@
               {"properties": {"mps_mac_model": {"type": "string", "minLength": 1, "pattern": "\\S"}}, "required": ["mps_mac_model"]},
               {"properties": {"mps_cpu_brand": {"type": "string", "minLength": 1, "pattern": "\\S"}}, "required": ["mps_cpu_brand"]}
             ]
+          },
+          "else": {
+            "properties": {"mps_device_active": {"const": false}}
           }
         },
         {
@@ -345,6 +357,9 @@
           "if": {"properties": {"device": {"type": "string", "pattern": "^cuda:[0-9]+$"}}, "required": ["device"]},
           "then": {
             "properties": {
+              "float32_matmul_precision": {"enum": ["highest", "high", "medium"]},
+              "cuda_matmul_allow_tf32": {"type": "boolean"},
+              "cudnn_allow_tf32": {"type": "boolean"},
               "cudnn_benchmark": {"type": "boolean"},
               "cudnn_deterministic": {"type": "boolean"},
               "cuda_matmul_allow_fp16_reduced_precision_reduction": {"const": false},
@@ -353,6 +368,9 @@
           },
           "else": {
             "properties": {
+              "float32_matmul_precision": {"type": "null"},
+              "cuda_matmul_allow_tf32": {"type": "null"},
+              "cudnn_allow_tf32": {"type": "null"},
               "cudnn_benchmark": {"type": "null"},
               "cudnn_deterministic": {"type": "null"},
               "cuda_matmul_allow_fp16_reduced_precision_reduction": {"type": "null"},
@@ -365,7 +383,14 @@
           "if": {"properties": {"device": {"const": "cpu"}}, "required": ["device"]},
           "then": {
             "properties": {
-              "cpu_processor": {"type": "string", "minLength": 1, "pattern": "\\S"},
+              "cpu_processor": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S",
+                "not": {
+                  "pattern": "^\\s*(?:[Uu][Nn][Kk][Nn][Oo][Ww][Nn]|[Gg][Ee][Nn][Ee][Rr][Ii][Cc]|[Cc][Pp][Uu]|[Pp][Rr][Oo][Cc][Ee][Ss][Ss][Oo][Rr]|[Xx]86_64|[Aa][Mm][Dd]64|[Xx]64|[Ii]386|[Ii]686|[Aa][Rr][Mm]|[Aa][Rr][Mm]64|[Aa][Aa][Rr][Cc][Hh]64|[Pp][Pp][Cc]64|[Pp][Pp][Cc]64[Ll][Ee]|[Ss]390[Xx])\\s*$"
+                }
+              },
               "cpu_aten_capability": {"enum": ["DEFAULT", "VSX", "Z VECTOR", "NO AVX", "AVX2", "AVX512", "SVE256"]},
               "aten_cpu_capability_env_known": {"type": "boolean"}
             }
