@@ -59,10 +59,6 @@ class HuggingFacePyTorchBackend(_BaseProductionBackend):
         "dnnl_max_cpu_isa": "DNNL_MAX_CPU_ISA",
         "mkl_cbwr": "MKL_CBWR",
     }
-    _NATIVE_SLOW_TOKENIZER_MODULE_PREFIXES = (
-        "sentencepiece",
-        "_sentencepiece",
-    )
 
     def __new__(cls, request: Mapping[str, Any]):
         """Freeze initialization-time audit inputs before the inherited constructor."""
@@ -116,35 +112,37 @@ class HuggingFacePyTorchBackend(_BaseProductionBackend):
         elif known is not False:
             raise CaptureContractError("CPU math-library dispatch provenance is missing")
 
-    @classmethod
-    def _native_slow_tokenizer_backend(cls, tokenizer: Any) -> str | None:
-        """Identify native execution objects used by a slow tokenizer.
+    @staticmethod
+    def _native_slow_tokenizer_backend(tokenizer: Any) -> str | None:
+        """Fail closed for every slow-tokenizer execution lane.
 
-        GEO-CAP-001 currently content-binds the Rust Tokenizers fast path. A slow
-        tokenizer that delegates segmentation to SentencePiece is a distinct native
-        execution lane; reject it until that lane receives its own persisted receipt.
+        The canonical producer can content-bind the native Rust ``tokenizers``
+        implementation used by fast tokenizers. A slow tokenizer may delegate to
+        SentencePiece, Fugashi/MeCab, regex extensions, or another native library
+        through Python state that cannot be exhaustively enumerated ahead of time.
+        Treating an unrecognized slow tokenizer as pure Python would therefore create
+        an unbound executable dependency. Until a dedicated slow-tokenizer receipt
+        protocol exists, every loaded slow tokenizer is outside canonical OBSERVATION.
         """
+        if getattr(tokenizer, "backend_tokenizer", None) is not None:
+            return None
+
+        # Preserve a useful diagnostic for the previously identified SentencePiece
+        # lane, but this is not an allowlist: every other slow tokenizer falls through
+        # to the same fail-closed result.
         state = getattr(tokenizer, "__dict__", {})
         candidates = [tokenizer]
         if isinstance(state, Mapping):
             candidates.extend(state.values())
         for value in candidates:
             module = getattr(type(value), "__module__", "")
-            if not isinstance(module, str):
-                continue
-            for prefix in cls._NATIVE_SLOW_TOKENIZER_MODULE_PREFIXES:
-                if module == prefix or module.startswith(prefix + "."):
-                    return "sentencepiece"
-        if (
-            isinstance(state, Mapping)
-            and any(name in state for name in ("sp_model", "spm", "sentencepiece_processor"))
-            and (
-                "sentencepiece" in sys.modules
-                or "_sentencepiece" in sys.modules
-            )
+            if isinstance(module, str) and "sentencepiece" in module.lower():
+                return "sentencepiece"
+        if isinstance(state, Mapping) and any(
+            name in state for name in ("sp_model", "spm", "sentencepiece_processor")
         ):
             return "sentencepiece"
-        return None
+        return "unbound-slow-tokenizer"
 
     def _initialize_snapshot_provenance_baseline(self) -> None:
         state = vars(self)
@@ -198,25 +196,23 @@ class HuggingFacePyTorchBackend(_BaseProductionBackend):
         backend_tokenizer = getattr(tokenizer, "backend_tokenizer", None)
         if backend_tokenizer is None:
             native_slow_backend = self._native_slow_tokenizer_backend(tokenizer)
-            if native_slow_backend is not None:
-                raise CaptureContractError(
-                    "canonical OBSERVATION does not support native slow-tokenizer "
-                    f"execution ({native_slow_backend}); use a receipt-bound fast tokenizer "
-                    "or define a future native slow-tokenizer provenance lane"
-                )
+            raise CaptureContractError(
+                "canonical OBSERVATION does not support slow-tokenizer execution "
+                f"({native_slow_backend}); use a receipt-bound fast tokenizer or define "
+                "a future slow-tokenizer provenance lane"
+            )
 
-        active = backend_tokenizer is not None
+        active = True
         state["_tokenizers_native_backend_active"] = active
         state["_tokenizers_package_provenance"] = None
-        if active:
-            process_tokenizers = sys.modules.get("tokenizers")
-            if process_tokenizers is None:
-                raise CaptureContractError(
-                    "active fast tokenizer does not expose its imported native tokenizers package"
-                )
-            state["_tokenizers_package_provenance"] = _python_package_provenance(
-                process_tokenizers, "Tokenizers"
+        process_tokenizers = sys.modules.get("tokenizers")
+        if process_tokenizers is None:
+            raise CaptureContractError(
+                "active fast tokenizer does not expose its imported native tokenizers package"
             )
+        state["_tokenizers_package_provenance"] = _python_package_provenance(
+            process_tokenizers, "Tokenizers"
+        )
         state["_tokenizers_package_provenance_initialized"] = True
 
     def _initialize_checkpoint_deserializer_provenance(self) -> None:
