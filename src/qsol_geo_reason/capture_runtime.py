@@ -3,9 +3,14 @@ from __future__ import annotations
 
 import hashlib
 import re
+import types
 from typing import Any, Mapping
 
 from .capture_common import CaptureContractError
+from .capture_package import (
+    _python_package_provenance,
+    _validate_python_package_provenance,
+)
 
 
 def _capture_device_type(device: str) -> str:
@@ -18,12 +23,60 @@ def _capture_device_type(device: str) -> str:
     raise CaptureContractError("capture RNG state requires cpu, mps, or an explicit cuda:N")
 
 
+def _is_real_torch_module(torch: Any) -> bool:
+    """Distinguish the imported PyTorch module from intentionally tiny test doubles."""
+    return isinstance(torch, types.ModuleType) and getattr(torch, "__name__", None) == "torch"
+
+
+def _assert_torch_execution_surface(torch: Any) -> None:
+    """Authenticate public PyTorch factories against their immutable C-level anchors.
+
+    The production wrapper already binds ``self._torch`` to the exact module imported
+    at construction. This closes the remaining gap where code could mutate members of
+    that same module, such as replacing ``torch.tensor`` after construction while the
+    module identity itself remained unchanged.
+    """
+    if not _is_real_torch_module(torch):
+        return
+
+    c_api = getattr(torch, "_C", None)
+    variable_functions = getattr(c_api, "_VariableFunctions", None)
+    if variable_functions is None:
+        raise CaptureContractError(
+            "canonical OBSERVATION cannot authenticate PyTorch C factory bindings"
+        )
+    for name in ("tensor", "ones_like", "zeros", "isfinite"):
+        public = getattr(torch, name, None)
+        anchored = getattr(variable_functions, name, None)
+        if not callable(public) or public is not anchored:
+            raise CaptureContractError(
+                "canonical OBSERVATION PyTorch execution callable changed after import: "
+                f"torch.{name}"
+            )
+
+    autograd = getattr(torch, "autograd", None)
+    grad_mode = getattr(autograd, "grad_mode", None) if autograd is not None else None
+    public_inference_mode = getattr(torch, "inference_mode", None)
+    anchored_inference_mode = (
+        getattr(grad_mode, "inference_mode", None) if grad_mode is not None else None
+    )
+    if (
+        not callable(public_inference_mode)
+        or public_inference_mode is not anchored_inference_mode
+    ):
+        raise CaptureContractError(
+            "canonical OBSERVATION PyTorch execution callable changed after import: "
+            "torch.inference_mode"
+        )
+
+
 def _seed_capture_generators(torch: Any, device: str, seed: int) -> None:
     """Seed the CPU generator and only the accelerator selected by the request.
 
     torch.manual_seed also seeds other accelerators, including their lazy queues.
     Calling the CPU generator directly avoids changing a future CUDA/MPS session.
     """
+    _assert_torch_execution_surface(torch)
     device_type = _capture_device_type(device)
     if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed < 2**64:
         raise CaptureContractError("capture seed must be an unsigned 64-bit integer")
@@ -42,6 +95,7 @@ def _seed_capture_generators(torch: Any, device: str, seed: int) -> None:
             torch.mps.manual_seed(seed)
     except Exception as exc:
         raise CaptureContractError("unable to seed the requested capture generators") from exc
+    _assert_torch_execution_surface(torch)
 
 
 def _snapshot_accelerator_rng(torch: Any, device: str) -> dict[str, Any] | None:
@@ -87,7 +141,7 @@ def _require_torch_build_config(value: Any) -> str:
     return value
 
 
-def _torch_build_metadata(torch: Any) -> dict[str, str]:
+def _torch_build_metadata(torch: Any) -> dict[str, Any]:
     show = getattr(getattr(torch, "__config__", None), "show", None)
     if not callable(show):
         raise CaptureContractError("canonical capture requires torch.__config__.show()")
@@ -97,10 +151,15 @@ def _torch_build_metadata(torch: Any) -> dict[str, str]:
         raise
     except Exception as exc:
         raise CaptureContractError("unable to record the PyTorch build configuration") from exc
-    return {
+    metadata: dict[str, Any] = {
         "torch_build_config": config,
         "torch_build_config_sha256": hashlib.sha256(config.encode("utf-8")).hexdigest(),
     }
+    if _is_real_torch_module(torch):
+        package = _python_package_provenance(torch, "PyTorch")
+        metadata["torch_package_file_count"] = package["file_count"]
+        metadata["torch_package_receipt_sha256"] = package["receipt_sha256"]
+    return metadata
 
 
 def _validate_torch_build_metadata(observed: Mapping[str, Any]) -> None:
@@ -108,6 +167,12 @@ def _validate_torch_build_metadata(observed: Mapping[str, Any]) -> None:
     expected = hashlib.sha256(config.encode("utf-8")).hexdigest()
     if observed.get("torch_build_config_sha256") != expected:
         raise CaptureContractError("torch_build_config_sha256 does not authenticate the recorded build")
+    _validate_python_package_provenance(
+        observed,
+        count_field="torch_package_file_count",
+        receipt_field="torch_package_receipt_sha256",
+        where="PyTorch",
+    )
 
 
 def _cuda_device_identity(torch: Any, index: int) -> dict[str, str | None]:
