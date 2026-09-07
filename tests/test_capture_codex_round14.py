@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,20 @@ from qsol_geo_reason.capture import CaptureContractError, HuggingFacePyTorchBack
 from qsol_geo_reason.capture_backend_core import (
     HuggingFacePyTorchBackend as CoreHuggingFacePyTorchBackend,
 )
+
+
+def git_blob_sha1(payload: bytes) -> str:
+    return hashlib.sha1(
+        b"blob " + str(len(payload)).encode("ascii") + b"\0" + payload
+    ).hexdigest()
+
+
+def write_tree(storage: Path, revision: str, files: dict) -> None:
+    trees = storage / "trees"
+    trees.mkdir(exist_ok=True)
+    (trees / f"{revision}.json").write_text(
+        json.dumps({"format_version": 1, "files": files}), encoding="utf-8"
+    )
 
 
 class FakeThreadTorch:
@@ -39,13 +54,17 @@ class CaptureRound14RegressionTests(unittest.TestCase):
             root = Path(tmp)
             blob_dir = root / "blobs"
             blob_dir.mkdir()
-            blob = blob_dir / "deadbeef"
             payload = b"canonical model bytes"
+            blob_id = git_blob_sha1(payload)
+            blob = blob_dir / blob_id
             blob.write_bytes(payload)
 
-            snapshot = root / revision
-            snapshot.mkdir()
+            snapshot = root / "snapshots" / revision
+            snapshot.mkdir(parents=True)
             (snapshot / "config.json").symlink_to(blob)
+            write_tree(root, revision, {
+                "config.json": {"size": len(payload), "blob_id": blob_id}
+            })
 
             hashes = _snapshot_file_hashes(snapshot, revision, "model")
             self.assertEqual(
@@ -56,9 +75,14 @@ class CaptureRound14RegressionTests(unittest.TestCase):
     def test_broken_snapshot_symlink_is_rejected(self):
         revision = "b" * 40
         with tempfile.TemporaryDirectory() as tmp:
-            snapshot = Path(tmp) / revision
-            snapshot.mkdir()
-            (snapshot / "config.json").symlink_to(Path(tmp) / "missing-blob")
+            root = Path(tmp)
+            (root / "blobs").mkdir()
+            snapshot = root / "snapshots" / revision
+            snapshot.mkdir(parents=True)
+            (snapshot / "config.json").symlink_to(root / "blobs" / ("c" * 40))
+            write_tree(root, revision, {
+                "config.json": {"size": 1, "blob_id": "c" * 40}
+            })
             with self.assertRaisesRegex(CaptureContractError, "unreadable or broken artifact"):
                 _snapshot_file_hashes(snapshot, revision, "model")
 
