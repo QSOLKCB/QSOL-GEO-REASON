@@ -156,6 +156,34 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
     elif observed.get("tokenizers_package_file_count") is not None or observed.get("tokenizers_package_receipt_sha256") is not None:
         raise CaptureContractError("inactive native tokenizer must not carry package provenance")
 
+    safetensors_active = observed.get("safetensors_deserializer_active")
+    if not isinstance(safetensors_active, bool):
+        raise CaptureContractError("safetensors_deserializer_active must be boolean")
+    if safetensors_active:
+        _validate_python_package_provenance(
+            observed,
+            count_field="safetensors_package_file_count",
+            receipt_field="safetensors_package_receipt_sha256",
+            where="Safetensors",
+        )
+    elif (
+        observed.get("safetensors_package_file_count") is not None
+        or observed.get("safetensors_package_receipt_sha256") is not None
+    ):
+        raise CaptureContractError(
+            "inactive Safetensors deserializer must not carry package provenance"
+        )
+    model_snapshot_hashes = observed.get("model_snapshot_file_sha256")
+    if isinstance(model_snapshot_hashes, Mapping):
+        snapshot_uses_safetensors = any(
+            isinstance(path, str) and path.lower().endswith(".safetensors")
+            for path in model_snapshot_hashes
+        )
+        if safetensors_active is not snapshot_uses_safetensors:
+            raise CaptureContractError(
+                "Safetensors deserializer activation does not match the authenticated model snapshot"
+            )
+
     attention = observed.get("attention_implementation")
     if attention not in _ALLOWED_ATTENTION_IMPLEMENTATIONS:
         raise CaptureContractError(
@@ -192,14 +220,16 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
     for field in ("mps_device_active", "mps_built", "mps_available", "autocast_disabled"):
         if not isinstance(observed.get(field), bool):
             raise CaptureContractError(f"production backend field {field} must be boolean")
-    _validate_nullable_integer(
-        observed.get("tokenizers_package_file_count"),
-        "production backend field tokenizers_package_file_count",
-    )
-    _validate_nullable_string(
-        observed.get("tokenizers_package_receipt_sha256"),
-        "production backend field tokenizers_package_receipt_sha256",
-    )
+    for field in ("tokenizers_package_file_count", "safetensors_package_file_count"):
+        _validate_nullable_integer(
+            observed.get(field),
+            f"production backend field {field}",
+        )
+    for field in ("tokenizers_package_receipt_sha256", "safetensors_package_receipt_sha256"):
+        _validate_nullable_string(
+            observed.get(field),
+            f"production backend field {field}",
+        )
 
     block_path = observed.get("hidden_state_block_path")
     if block_path not in _BLOCK_CONTAINER_PATHS:
