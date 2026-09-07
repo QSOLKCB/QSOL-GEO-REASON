@@ -1,8 +1,11 @@
 """Canonical execution-policy facade over the audited Hugging Face/PyTorch backend core."""
 from __future__ import annotations
 
+import functools
 import hashlib
+import inspect
 import os
+import types
 from typing import Any, Mapping, Sequence
 
 from .canonical import sha256_json
@@ -10,6 +13,7 @@ from .capture_common import CaptureContractError
 from .capture_validation import validate_capture_request
 from .capture_provenance import _DETERMINISTIC_CUBLAS_WORKSPACE_CONFIGS
 from .capture_backend_core import HuggingFacePyTorchBackend as _CoreHuggingFacePyTorchBackend
+from .capture_dispatch import _execution_dependencies_sha256
 
 
 class _ExplicitNoAttentionBaseModel:
@@ -35,6 +39,23 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
         "torch_allow_tf32_cublas_override": "TORCH_ALLOW_TF32_CUBLAS_OVERRIDE",
         "cublas_workspace_config": "CUBLAS_WORKSPACE_CONFIG",
     }
+    _TOKENIZER_EXECUTION_ENTRYPOINTS = (
+        "__call__",
+        "tokenize",
+        "_tokenize",
+        "encode",
+        "encode_plus",
+        "_encode_plus",
+        "batch_encode_plus",
+        "_batch_encode_plus",
+        "convert_tokens_to_ids",
+        "_convert_token_to_id",
+        "_convert_token_to_id_with_added_voc",
+        "prepare_for_model",
+        "build_inputs_with_special_tokens",
+        "get_special_tokens_mask",
+        "create_token_type_ids_from_sequences",
+    )
 
     def __init__(self, request: Mapping[str, Any]):
         validated = validate_capture_request(request)
@@ -323,6 +344,61 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
             )
         return tuple(entries)
 
+    def _tokenizer_execution_dependency_roots(self) -> list[Any]:
+        """Bind tokenizer entrypoints plus Python helpers resolved through ``self``."""
+        tokenizer = self._tokenizer
+        pending: list[Any] = []
+        roots: list[Any] = []
+        seen: set[int] = set()
+
+        for name in self._TOKENIZER_EXECUTION_ENTRYPOINTS:
+            try:
+                value = inspect.getattr_static(tokenizer, name)
+            except AttributeError:
+                continue
+            if isinstance(value, (staticmethod, classmethod)):
+                value = value.__func__
+            if callable(value):
+                pending.append(value)
+
+        # Instance-level callable overrides are execution state too, even when
+        # they are not one of the standard Transformers tokenizer entrypoints.
+        state = getattr(tokenizer, "__dict__", {})
+        if isinstance(state, Mapping):
+            pending.extend(
+                value
+                for value in state.values()
+                if isinstance(value, (types.FunctionType, types.MethodType, functools.partial))
+            )
+
+        while pending:
+            value = pending.pop()
+            target = getattr(value, "__func__", value)
+            if not callable(target) or id(target) in seen:
+                continue
+            seen.add(id(target))
+            roots.append(value)
+            if len(roots) > 4096:
+                raise CaptureContractError("tokenizer execution dependency root limit exceeded")
+            code = getattr(target, "__code__", None)
+            if not isinstance(code, types.CodeType):
+                continue
+            for name in code.co_names:
+                try:
+                    helper = inspect.getattr_static(tokenizer, name)
+                except AttributeError:
+                    continue
+                if isinstance(helper, (staticmethod, classmethod)):
+                    helper = helper.__func__
+                if isinstance(helper, (types.FunctionType, types.MethodType, functools.partial)):
+                    pending.append(helper)
+
+        if not roots:
+            raise CaptureContractError(
+                "canonical tokenizer exposes no executable Python entrypoints to authenticate"
+            )
+        return roots
+
     def _tokenizer_live_state_seal(self) -> str:
         tokenizer = self._tokenizer
         vocab_getter = getattr(tokenizer, "get_vocab", None)
@@ -362,6 +438,9 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
                 getattr(tokenizer, "all_special_ids", [])
             ),
             "init_kwargs": self._runtime_json_value(getattr(tokenizer, "init_kwargs", {})),
+            "execution_dependencies": _execution_dependencies_sha256(
+                self._tokenizer_execution_dependency_roots()
+            ),
         }
         return sha256_json(payload)
 
