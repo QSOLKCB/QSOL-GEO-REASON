@@ -28,6 +28,8 @@ def valid_production_shape(request: dict) -> dict:
         "platform": "Linux",
         "torch_version": "2.9.0",
         "transformers_version": "4.56.0",
+        "torch_package_file_count": 2,
+        "torch_package_receipt_sha256": "b" * 64,
         "transformers_package_file_count": 2,
         "transformers_package_receipt_sha256": "a" * 64,
         "torch_build_config": TEST_BUILD_CONFIG,
