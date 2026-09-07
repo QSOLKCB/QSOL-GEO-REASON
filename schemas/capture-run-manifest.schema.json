@@ -299,7 +299,11 @@
                   {"type": "string", "pattern": "^\\s*(?:0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff])?\\s*$"}
                 ]
               }
-            }
+            },
+            "anyOf": [
+              {"properties": {"mps_mac_model": {"type": "string", "minLength": 1, "pattern": "\\S"}}, "required": ["mps_mac_model"]},
+              {"properties": {"mps_cpu_brand": {"type": "string", "minLength": 1, "pattern": "\\S"}}, "required": ["mps_cpu_brand"]}
+            ]
           }
         },
         {
