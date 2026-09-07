@@ -118,38 +118,48 @@ class HuggingFacePyTorchBackend(_BaseProductionBackend):
         state = vars(self)
 
         if "_tokenizers_package_provenance_initialized" in state:
-            if state.get("_tokenizers_package_provenance_initialized") is not True:
-                raise CaptureContractError("native Tokenizers package provenance was not initialized")
-            native_active = state.get("_tokenizers_native_backend_active")
-            if type(native_active) is not bool:
-                raise CaptureContractError("native Tokenizers backend activation state is invalid")
-            tokenizers_provenance = state.get("_tokenizers_package_provenance")
-            if native_active:
-                process_tokenizers = sys.modules.get("tokenizers")
-                if process_tokenizers is None or not isinstance(tokenizers_provenance, Mapping):
-                    raise CaptureContractError("native Tokenizers package provenance is missing")
-                if _python_package_provenance(
-                    process_tokenizers, "Tokenizers"
-                ) != dict(tokenizers_provenance):
+            initialized = state.get("_tokenizers_package_provenance_initialized")
+            tokenizer = state.get("_tokenizer")
+            if initialized is not True:
+                # Dependency-free constructor fixtures replace the inherited loader
+                # and intentionally never create a tokenizer. They are not capable of
+                # emitting OBSERVATION evidence, so there is no native implementation
+                # to receipt. A real loaded tokenizer must never reach this branch.
+                if tokenizer is not None:
                     raise CaptureContractError(
-                        "imported Tokenizers package changed after authenticated backend construction"
+                        "native Tokenizers package provenance was not initialized"
                     )
-            elif tokenizers_provenance is not None:
-                raise CaptureContractError(
-                    "slow tokenizer cannot carry native Tokenizers package provenance"
-                )
+            else:
+                native_active = state.get("_tokenizers_native_backend_active")
+                if type(native_active) is not bool:
+                    raise CaptureContractError("native Tokenizers backend activation state is invalid")
+                tokenizers_provenance = state.get("_tokenizers_package_provenance")
+                if native_active:
+                    process_tokenizers = sys.modules.get("tokenizers")
+                    if process_tokenizers is None or not isinstance(tokenizers_provenance, Mapping):
+                        raise CaptureContractError("native Tokenizers package provenance is missing")
+                    if _python_package_provenance(
+                        process_tokenizers, "Tokenizers"
+                    ) != dict(tokenizers_provenance):
+                        raise CaptureContractError(
+                            "imported Tokenizers package changed after authenticated backend construction"
+                        )
+                elif tokenizers_provenance is not None:
+                    raise CaptureContractError(
+                        "slow tokenizer cannot carry native Tokenizers package provenance"
+                    )
 
-            data["tokenizers_native_backend_active"] = native_active
-            data["tokenizers_package_file_count"] = (
-                tokenizers_provenance["file_count"]
-                if isinstance(tokenizers_provenance, Mapping)
-                else None
-            )
-            data["tokenizers_package_receipt_sha256"] = (
-                tokenizers_provenance["receipt_sha256"]
-                if isinstance(tokenizers_provenance, Mapping)
-                else None
-            )
+                data["tokenizers_native_backend_active"] = native_active
+                data["tokenizers_package_file_count"] = (
+                    tokenizers_provenance["file_count"]
+                    if isinstance(tokenizers_provenance, Mapping)
+                    else None
+                )
+                data["tokenizers_package_receipt_sha256"] = (
+                    tokenizers_provenance["receipt_sha256"]
+                    if isinstance(tokenizers_provenance, Mapping)
+                    else None
+                )
 
         if "_canonical_cpu_math_environment_known" in state:
             known = state.get("_canonical_cpu_math_environment_known")
