@@ -53,6 +53,7 @@ _SIMULATION_BACKEND_KEYS = {
 }
 _PRODUCTION_BACKEND_KEYS = {
     "name", "python_version", "platform", "torch_version", "transformers_version",
+    "transformers_package_file_count", "transformers_package_receipt_sha256",
     "torch_build_config", "torch_build_config_sha256",
     "tokenizers_version", "huggingface_hub_version", "model_class", "tokenizer_class",
     "observed_model_commit", "observed_tokenizer_commit", "checkpoint_loading_clean",
