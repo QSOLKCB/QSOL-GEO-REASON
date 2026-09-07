@@ -49,9 +49,10 @@ def valid_production_shape(request: dict) -> dict:
         "cpu_machine": None,
         "cpu_processor": "SYNTHETIC CPU MODEL" if device == "cpu" else None,
         "cpu_instruction_flags": None,
-        "cpu_aten_capability": "DEFAULT" if device == "cpu" else None,
+        # CPU float64 pooling is part of every production device lane.
+        "cpu_aten_capability": "DEFAULT",
         "aten_cpu_capability_env": None,
-        "aten_cpu_capability_env_known": False if device == "cpu" else None,
+        "aten_cpu_capability_env_known": False,
         "cpu_math_dispatch_env_known": False if device == "cpu" else None,
         "onednn_max_cpu_isa": None,
         "dnnl_max_cpu_isa": None,
