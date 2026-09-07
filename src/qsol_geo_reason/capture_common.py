@@ -18,6 +18,7 @@ _ALLOWED_POOLING_MODES = {"last_token", "step_mean", "context_mean", "bounded_co
 _ALLOWED_DETERMINISM = {"required", "best_effort"}
 _ALLOWED_EVIDENCE = {"SIMULATION", "OBSERVATION"}
 _ALLOWED_ATTENTION_IMPLEMENTATIONS = {"eager", "sdpa"}
+_TORCH_LONG_MAX = 2**63 - 1
 _LOADING_INFO_KEYS = ("missing_keys", "unexpected_keys", "mismatched_keys", "error_msgs")
 _HF_REPO_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _BLOCK_CONTAINER_PATHS = ("layers", "h", "decoder.layers", "transformer.h", "gpt_neox.layers")
@@ -53,6 +54,7 @@ _SIMULATION_BACKEND_KEYS = {
 }
 _PRODUCTION_BACKEND_KEYS = {
     "name", "python_version", "platform", "torch_version", "transformers_version",
+    "torch_package_file_count", "torch_package_receipt_sha256",
     "transformers_package_file_count", "transformers_package_receipt_sha256",
     "torch_build_config", "torch_build_config_sha256",
     "tokenizers_version", "huggingface_hub_version", "model_class", "tokenizer_class",
@@ -194,12 +196,26 @@ def _compose_text(prefix: str, segments: Sequence[str], joiner: str) -> str:
     return joiner.join(parts)
 
 
-def _validate_token_ids(input_ids: Sequence[int], where: str, *, allow_empty: bool = False) -> list[int]:
+def _validate_token_ids(
+    input_ids: Sequence[int], where: str, *, allow_empty: bool = False,
+    max_value: int | None = None,
+) -> list[int]:
     if not input_ids and not allow_empty:
         raise CaptureContractError(f"{where} tokenized to zero tokens")
-    if any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in input_ids):
-        raise CaptureContractError(f"{where} tokenizer returned an invalid token ID")
-    return [int(v) for v in input_ids]
+    if max_value is not None and (
+        isinstance(max_value, bool) or not isinstance(max_value, int) or max_value < 0
+    ):
+        raise CaptureContractError("token-ID upper bound must be a non-negative integer")
+    normalized: list[int] = []
+    for value in input_ids:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise CaptureContractError(f"{where} tokenizer returned an invalid token ID")
+        if max_value is not None and value > max_value:
+            raise CaptureContractError(
+                f"{where} tokenizer returned a token ID outside the supported integer domain"
+            )
+        normalized.append(int(value))
+    return normalized
 
 
 def _pool_span(*, token_count: int, mode: str, changed_span: tuple[int, int], window_tokens: int | None) -> tuple[int, int]:
