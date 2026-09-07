@@ -330,8 +330,23 @@
         },
         {
           "if": {"properties": {"device": {"type": "string", "pattern": "^cuda:[0-9]+$"}}, "required": ["device"]},
-          "then": {"properties": {"cudnn_benchmark": {"type": "boolean"}, "cudnn_deterministic": {"type": "boolean"}}},
-          "else": {"properties": {"cudnn_benchmark": {"type": "null"}, "cudnn_deterministic": {"type": "null"}, "cuda_matmul_allow_fp16_accumulation": {"type": "null"}}}
+          "then": {
+            "properties": {
+              "cudnn_benchmark": {"type": "boolean"},
+              "cudnn_deterministic": {"type": "boolean"},
+              "cuda_matmul_allow_fp16_reduced_precision_reduction": {"const": false},
+              "cuda_matmul_allow_bf16_reduced_precision_reduction": {"const": false}
+            }
+          },
+          "else": {
+            "properties": {
+              "cudnn_benchmark": {"type": "null"},
+              "cudnn_deterministic": {"type": "null"},
+              "cuda_matmul_allow_fp16_reduced_precision_reduction": {"type": "null"},
+              "cuda_matmul_allow_bf16_reduced_precision_reduction": {"type": "null"},
+              "cuda_matmul_allow_fp16_accumulation": {"type": "null"}
+            }
+          }
         },
         {
           "if": {"properties": {"device": {"const": "cpu"}}, "required": ["device"]},
