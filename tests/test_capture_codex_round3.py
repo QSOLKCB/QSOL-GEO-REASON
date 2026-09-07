@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import inspect
 import json
 import math
@@ -23,6 +24,12 @@ from qsol_geo_reason.capture_backend_core import (
 ROOT = Path(__file__).resolve().parents[1]
 REQUEST = ROOT / "fixtures" / "capture-contract-request.json"
 REV = "d" * 40
+
+
+def git_blob_sha1(payload: bytes) -> str:
+    return hashlib.sha1(
+        b"blob " + str(len(payload)).encode("ascii") + b"\0" + payload
+    ).hexdigest()
 
 
 class FakeBackend:
@@ -110,10 +117,30 @@ class CaptureRound3RegressionTests(unittest.TestCase):
     def test_snapshot_receipt_hashes_every_regular_file(self):
         commit = "a" * 40
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / commit
-            root.mkdir()
-            (root / "config.json").write_text("{}", encoding="utf-8")
-            (root / "weights.bin").write_bytes(b"weights")
+            storage = Path(directory)
+            root = storage / "snapshots" / commit
+            root.mkdir(parents=True)
+            payloads = {
+                "config.json": b"{}",
+                "weights.bin": b"weights",
+            }
+            for relative, payload in payloads.items():
+                (root / relative).write_bytes(payload)
+            trees = storage / "trees"
+            trees.mkdir()
+            (trees / f"{commit}.json").write_text(
+                json.dumps({
+                    "format_version": 1,
+                    "files": {
+                        relative: {
+                            "size": len(payload),
+                            "blob_id": git_blob_sha1(payload),
+                        }
+                        for relative, payload in payloads.items()
+                    },
+                }),
+                encoding="utf-8",
+            )
             hashes = _snapshot_file_hashes(root, commit, "model")
             self.assertEqual(set(hashes), {"config.json", "weights.bin"})
             self.assertTrue(all(len(value) == 64 for value in hashes.values()))
