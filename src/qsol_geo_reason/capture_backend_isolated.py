@@ -392,7 +392,7 @@ class HuggingFacePyTorchBackend(_PolicyHuggingFacePyTorchBackend):
             _seed_capture_generators(self._torch, self._device, self._applied_seed)
             self._force_canonical_determinism_policy()
             self._assert_live_state_authentication()
-        except Exception:
+        except BaseException:
             try:
                 self._restore_torch_process_state(self._torch, ambient)
             finally:
