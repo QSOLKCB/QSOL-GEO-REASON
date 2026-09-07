@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import importlib.util
+import marshal
 import subprocess
+import types
 from pathlib import Path, PurePosixPath
 
 
@@ -97,15 +100,119 @@ def _ignored_importable_bytecode(root: Path) -> tuple[str, ...]:
     )
 
 
+def _bytecode_optimization_level(cache_path: Path) -> int:
+    name = cache_path.name
+    if ".opt-2." in name:
+        return 2
+    if ".opt-1." in name:
+        return 1
+    return 0
+
+
+def _source_path_for_bytecode(cache_path: Path) -> Path:
+    """Resolve a cache path to the source file whose code it may execute."""
+    try:
+        return Path(importlib.util.source_from_cache(str(cache_path)))
+    except (ValueError, NotImplementedError):
+        # Legacy sourceless-style caches can sit beside a module rather than in
+        # __pycache__. They are canonical only when the corresponding tracked
+        # source exists and recompiles to the exact same code object.
+        if cache_path.parent.name == "__pycache__":
+            raise SourceIdentityError(
+                f"importable bytecode cache has no canonical source mapping: {cache_path}"
+            )
+        return cache_path.with_suffix(".py")
+
+
+def _authenticate_importable_bytecode(root: Path, paths: tuple[str, ...]) -> None:
+    """Accept only caches whose executable code exactly matches tracked source.
+
+    The normal editable-install CLI imports this package before the final source
+    provenance check, so CPython may create ignored ``__pycache__`` entries during
+    that same trusted invocation. Blanket rejection would make the canonical CLI
+    reject itself. Instead, every ignored importable cache is mapped to a tracked
+    package source file and its marshalled code object is compared with a fresh
+    compilation of the clean checkout source under the cache's optimization lane.
+    Tampered, stale, foreign-interpreter, malformed, or sourceless caches fail closed.
+    """
+    root_resolved = root.resolve()
+    for relative in paths:
+        cache_path = root / PurePosixPath(relative)
+        try:
+            source_path = _source_path_for_bytecode(cache_path).resolve()
+            source_relative = source_path.relative_to(root_resolved).as_posix()
+        except (OSError, ValueError) as exc:
+            raise SourceIdentityError(
+                f"importable bytecode cache escapes the executing checkout: {relative}"
+            ) from exc
+
+        source_parts = PurePosixPath(source_relative).parts
+        if (
+            len(source_parts) < len(_IMPORTABLE_PACKAGE_ROOT) + 1
+            or tuple(source_parts[: len(_IMPORTABLE_PACKAGE_ROOT)])
+            != _IMPORTABLE_PACKAGE_ROOT
+            or source_path.suffix != ".py"
+            or not source_path.is_file()
+        ):
+            raise SourceIdentityError(
+                f"importable bytecode cache is not backed by canonical package source: {relative}"
+            )
+
+        try:
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "ls-files",
+                    "--error-unmatch",
+                    "--",
+                    source_relative,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise SourceIdentityError(
+                f"importable bytecode cache is not backed by tracked source: {relative}"
+            ) from exc
+
+        try:
+            raw = cache_path.read_bytes()
+            if len(raw) < 16 or raw[:4] != importlib.util.MAGIC_NUMBER:
+                raise ValueError("invalid or foreign bytecode header")
+            observed = marshal.loads(raw[16:])
+            if not isinstance(observed, types.CodeType):
+                raise TypeError("bytecode payload is not a module code object")
+            expected = compile(
+                source_path.read_bytes(),
+                str(source_path),
+                "exec",
+                dont_inherit=True,
+                optimize=_bytecode_optimization_level(cache_path),
+            )
+        except (OSError, EOFError, ValueError, TypeError) as exc:
+            raise SourceIdentityError(
+                f"unable to authenticate importable bytecode cache against tracked source: {relative}"
+            ) from exc
+
+        if marshal.dumps(observed) != marshal.dumps(expected):
+            raise SourceIdentityError(
+                "importable bytecode cache does not match the clean tracked source: "
+                f"{relative}"
+            )
+
+
 def git_source_revision(
     *, require_clean: bool = True, reject_importable_bytecode: bool = False
 ) -> str | None:
     """Return HEAD for the source checkout, or None when not running from Git.
 
     Ordinary provenance tolerates disposable interpreter caches. Canonical
-    OBSERVATION callers additionally inspect Git-ignored package bytecode and
-    reject it because a timestamp/hash-valid cache is an executable import input
-    even though it is intentionally absent from normal ``git status`` output.
+    OBSERVATION callers additionally authenticate Git-ignored package bytecode
+    against the clean tracked source because a timestamp/hash-valid cache can be
+    an executable import input even though it is absent from normal ``git status``.
     """
     root = source_repo_root()
     try:
@@ -134,14 +241,7 @@ def git_source_revision(
                 "source checkout is dirty; commit or stash source-relevant changes before binding an implementation revision"
             )
         if reject_importable_bytecode:
-            bytecode = _ignored_importable_bytecode(root)
-            if bytecode:
-                shown = ", ".join(bytecode[:5])
-                suffix = "" if len(bytecode) <= 5 else f" (+{len(bytecode) - 5} more)"
-                raise SourceIdentityError(
-                    "canonical observation forbids importable bytecode caches under "
-                    f"src/qsol_geo_reason; remove them and run with bytecode writing disabled: {shown}{suffix}"
-                )
+            _authenticate_importable_bytecode(root, _ignored_importable_bytecode(root))
 
     head = subprocess.run(
         ["git", "-C", str(root), "rev-parse", "HEAD"],
