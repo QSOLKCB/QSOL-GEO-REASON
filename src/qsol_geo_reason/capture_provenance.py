@@ -22,6 +22,8 @@ from .capture_common import (
 )
 from .capture_runtime import _validate_torch_build_metadata
 from .capture_dispatch import _validate_dispatch_metadata
+from .capture_hardware import _is_concrete_cpu_identity
+from .capture_package import _validate_python_package_provenance
 
 _DETERMINISTIC_CUBLAS_WORKSPACE_CONFIGS = frozenset({":4096:8", ":16:8"})
 
@@ -132,6 +134,12 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
                 f"production backend field {field} must be a non-whitespace string"
             )
     _validate_torch_build_metadata(observed)
+    _validate_python_package_provenance(
+        observed,
+        count_field="transformers_package_file_count",
+        receipt_field="transformers_package_receipt_sha256",
+        where="Transformers",
+    )
 
     attention = observed.get("attention_implementation")
     if attention not in _ALLOWED_ATTENTION_IMPLEMENTATIONS:
@@ -201,6 +209,10 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
     _validate_dispatch_metadata(observed, device)
     cpu_active = device == "cpu"
     cuda_active = device.startswith("cuda:")
+    if cpu_active and not _is_concrete_cpu_identity(observed.get("cpu_processor")):
+        raise CaptureContractError(
+            "canonical CPU provenance requires a concrete processor model identity"
+        )
     if cuda_active:
         for field in ("cuda_device_name", "cuda_device_capability"):
             value = observed.get(field)
