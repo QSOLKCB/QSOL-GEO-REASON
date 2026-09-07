@@ -69,6 +69,83 @@ def _status_has_source_changes(status_text: str) -> bool:
     return False
 
 
+def _assert_tracked_importable_source_matches_head(root: Path, head: str) -> None:
+    """Compare tracked package files with HEAD without trusting index stat flags.
+
+    ``git status`` intentionally honors ``assume-unchanged`` and ``skip-worktree``.
+    Those index hints are useful for normal development but cannot participate in a
+    canonical OBSERVATION trust decision. Enumerate the committed package tree from
+    HEAD itself, then hash each corresponding working-tree path directly. ``hash-object``
+    reads the file rather than the index, so a modified tracked source file cannot be
+    hidden by either index flag. Tracked symlinks or other non-regular package entries
+    fail closed because their execution target is not represented by the ordinary file
+    receipt used here.
+    """
+    package_root = "/".join(_IMPORTABLE_PACKAGE_ROOT)
+    try:
+        listing = subprocess.run(
+            ["git", "-C", str(root), "ls-tree", "-r", "-z", head, "--", package_root],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise SourceIdentityError(
+            "unable to enumerate tracked importable source from Git HEAD"
+        ) from exc
+
+    records = tuple(record for record in listing.stdout.split("\0") if record)
+    if not records:
+        raise SourceIdentityError("Git HEAD contains no tracked qsol_geo_reason package source")
+
+    for record in records:
+        try:
+            metadata, relative = record.split("\t", 1)
+            mode, object_type, committed_oid = metadata.split(" ", 2)
+        except ValueError as exc:
+            raise SourceIdentityError("malformed Git HEAD package-tree entry") from exc
+
+        normalized = relative.replace("\\", "/")
+        parts = PurePosixPath(normalized).parts
+        if (
+            len(parts) < len(_IMPORTABLE_PACKAGE_ROOT) + 1
+            or tuple(parts[: len(_IMPORTABLE_PACKAGE_ROOT)]) != _IMPORTABLE_PACKAGE_ROOT
+        ):
+            raise SourceIdentityError(
+                f"tracked importable source escaped the canonical package root: {relative}"
+            )
+        if object_type != "blob" or mode not in {"100644", "100755"}:
+            raise SourceIdentityError(
+                f"canonical package source must be a regular tracked file: {relative}"
+            )
+
+        try:
+            observed_oid = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "hash-object",
+                    f"--path={normalized}",
+                    "--",
+                    normalized,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise SourceIdentityError(
+                f"unable to hash tracked importable source from the working tree: {relative}"
+            ) from exc
+
+        if not observed_oid or observed_oid != committed_oid:
+            raise SourceIdentityError(
+                "tracked importable source does not match Git HEAD independently of index flags: "
+                f"{relative}"
+            )
+
+
 def _ignored_importable_bytecode(root: Path) -> tuple[str, ...]:
     """Return ignored bytecode that can participate in package imports."""
     try:
@@ -246,9 +323,10 @@ def git_source_revision(
     """Return HEAD for the source checkout, or None when not running from Git.
 
     Ordinary provenance tolerates disposable interpreter caches. Canonical
-    OBSERVATION callers additionally authenticate Git-ignored package bytecode
-    against the clean tracked source because a timestamp/hash-valid cache can be
-    an executable import input even though it is absent from normal ``git status``.
+    OBSERVATION callers additionally authenticate tracked package files directly
+    against the HEAD tree and authenticate Git-ignored package bytecode against
+    that source. The direct file hashes do not trust index ``assume-unchanged`` or
+    ``skip-worktree`` hints.
     """
     root = source_repo_root()
     try:
@@ -265,6 +343,15 @@ def git_source_revision(
     if git_root != root.resolve():
         return None
 
+    head = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if not head:
+        raise SourceIdentityError("git HEAD is empty")
+
     if require_clean:
         status = subprocess.run(
             ["git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=all"],
@@ -277,16 +364,9 @@ def git_source_revision(
                 "source checkout is dirty; commit or stash source-relevant changes before binding an implementation revision"
             )
         if reject_importable_bytecode:
+            _assert_tracked_importable_source_matches_head(root, head)
             _authenticate_importable_bytecode(root, _ignored_importable_bytecode(root))
 
-    head = subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    if not head:
-        raise SourceIdentityError("git HEAD is empty")
     return head
 
 
