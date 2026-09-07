@@ -27,6 +27,8 @@ from .capture_dispatch import (
     _fp16_accumulation_state,
     _model_execution_dependency_roots,
 )
+from .capture_hardware import _concrete_cpu_identity
+from .capture_package import _python_package_provenance
 
 
 class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
@@ -141,8 +143,10 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
         self._canonical_cudnn_algorithm_policy: dict[str, bool] | None = None
         self._last_cudnn_algorithm_policy: dict[str, bool] | None = None
         self._canonical_cpu_dispatch: dict[str, Any] | None = None
+        self._canonical_cpu_processor: str | None = None
         self._canonical_fp16_accumulation_supported: bool | None = None
         self._last_fp16_accumulation: bool | None = None
+        self._transformers_package_provenance: dict[str, Any] | None = None
         # Construction mutates the same process-global state as observation.
         # Own the thread boundary before import, snapshot, initialization or cleanup.
         self._enter_exclusive_python_thread_boundary()
@@ -158,11 +162,18 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
             cpu_override = os.environ.get("ATEN_CPU_CAPABILITY")
             try:
                 import torch as process_torch
+                import transformers as process_transformers
             except ImportError as exc:
-                raise CaptureBackendUnavailable("canonical capture requires PyTorch") from exc
+                raise CaptureBackendUnavailable(
+                    "canonical capture requires PyTorch and Transformers"
+                ) from exc
 
+            transformers_before = _python_package_provenance(
+                process_transformers, "Transformers"
+            )
             self._assert_pristine_cuda_runtime(process_torch, device)
             if device == "cpu":
+                self._canonical_cpu_processor = _concrete_cpu_identity()
                 self._canonical_cpu_dispatch = {
                     "cpu_aten_capability": _effective_cpu_capability(process_torch),
                     "aten_cpu_capability_env": cpu_override if cpu_override_known else None,
@@ -181,6 +192,15 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
                 # Keep exclusion active through both inherited and final restoration,
                 # including constructor failures and interrupted initialization.
                 self._restore_torch_process_state(process_torch, ambient)
+
+            transformers_after = _python_package_provenance(
+                self._transformers, "Transformers"
+            )
+            if transformers_after != transformers_before:
+                raise CaptureContractError(
+                    "imported Transformers package changed while canonical backend was loading"
+                )
+            self._transformers_package_provenance = transformers_after
 
             # The core already brackets CUDA SDPA. Its CPU/MPS execution needs the
             # identical math-only boundary at the delegated base-model call.
@@ -286,6 +306,15 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
             self._assert_fp16_accumulation_policy()
         if getattr(self, "_attention_implementation", None) == "sdpa":
             self._last_sdpa_policy = self._assert_sdpa_math_policy()
+        package_provenance = getattr(self, "_transformers_package_provenance", None)
+        if not isinstance(package_provenance, Mapping):
+            raise CaptureContractError(
+                "canonical Transformers package provenance was not recorded at construction"
+            )
+        if _python_package_provenance(self._transformers, "Transformers") != dict(package_provenance):
+            raise CaptureContractError(
+                "imported Transformers package changed after authenticated backend construction"
+            )
         data = dict(super().metadata())
         policy = getattr(self, "_last_cudnn_algorithm_policy", None)
         for field in ("cudnn_benchmark", "cudnn_deterministic"):
@@ -297,6 +326,15 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
         dispatch = getattr(self, "_canonical_cpu_dispatch", None)
         for field in ("cpu_aten_capability", "aten_cpu_capability_env", "aten_cpu_capability_env_known"):
             data[field] = dispatch[field] if dispatch is not None else None
+        if getattr(self, "_device_type", None) == "cpu":
+            processor = getattr(self, "_canonical_cpu_processor", None)
+            if not isinstance(processor, str) or not processor.strip():
+                raise CaptureContractError(
+                    "canonical CPU processor identity was not recorded at construction"
+                )
+            data["cpu_processor"] = processor
+        data["transformers_package_file_count"] = package_provenance["file_count"]
+        data["transformers_package_receipt_sha256"] = package_provenance["receipt_sha256"]
         return data
 
     def _model_executable_state_seal(self) -> str:
@@ -446,6 +484,42 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
                 "live model runtime execution attributes changed after authenticated loading"
             )
 
+    def _assert_no_active_torch_override_modes(self) -> None:
+        """Reject thread-local TorchDispatchMode and TorchFunctionMode overrides."""
+        torch = getattr(self, "_torch", None)
+        if torch is None:
+            return
+        # Minimal software doubles used by source-audit tests do not model torch.nn
+        # or the dispatcher C API. A real canonical PyTorch runtime always does.
+        if getattr(torch, "nn", None) is None:
+            return
+        c_api = getattr(torch, "_C", None)
+        dispatch_len = getattr(c_api, "_len_torch_dispatch_stack", None)
+        function_len = getattr(c_api, "_len_torch_function_stack", None)
+        if not callable(dispatch_len) or not callable(function_len):
+            raise CaptureContractError(
+                "canonical OBSERVATION cannot authenticate PyTorch dispatch mode stacks"
+            )
+        try:
+            dispatch_count = dispatch_len()
+            function_count = function_len()
+        except Exception as exc:
+            raise CaptureContractError(
+                "unable to inspect PyTorch dispatch mode stacks"
+            ) from exc
+        for label, count in (
+            ("__torch_dispatch__", dispatch_count),
+            ("__torch_function__", function_count),
+        ):
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                raise CaptureContractError(
+                    f"invalid PyTorch {label} mode-stack length"
+                )
+            if count:
+                raise CaptureContractError(
+                    f"canonical OBSERVATION forbids active PyTorch {label} modes"
+                )
+
     @staticmethod
     def _blocked_thread_start(*_args: Any, **_kwargs: Any) -> None:
         raise CaptureContractError(
@@ -518,6 +592,7 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
     def _assert_live_state_authentication(self) -> None:
         # Cheap dispatch checks precede the inherited content-bound authentication.
         # Each layer adds its own checks; none rehashes tensors checked by its parent.
+        self._assert_no_active_torch_override_modes()
         self._assert_no_registered_module_hooks()
         self._assert_cpu_dispatch_policy()
         super()._assert_live_state_authentication()
@@ -530,6 +605,9 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
     def begin_observation(self) -> None:
         self._enter_exclusive_python_thread_boundary()
         try:
+            # Mode stacks are thread-local, so inspect them only after this thread
+            # owns the exclusive observation boundary and before capture state mutates.
+            self._assert_no_active_torch_override_modes()
             # Reauthenticate non-tensor execution attributes after concurrent Python
             # activity has been excluded, closing the final pre-first-forward window.
             self._assert_model_runtime_attributes()
