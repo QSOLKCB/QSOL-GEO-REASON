@@ -140,7 +140,7 @@ class CaptureRound27RegressionTests(unittest.TestCase):
             malformed = dict(clean)
             del malformed[key]
             with self.subTest(key=key):
-                with self.assertRaisesRegex(CaptureContractError, "missing required diagnostic"):
+                with self.assertRaisesRegex(CaptureContractError, "missing diagnostics"):
                     _validate_loading_info(malformed)
 
     def test_mps_schema_rejects_enabled_fallback_and_fast_math(self):
