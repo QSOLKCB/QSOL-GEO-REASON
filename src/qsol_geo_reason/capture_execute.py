@@ -8,6 +8,35 @@ from .capture_validation import validate_capture_request
 from .capture_provenance import _validate_backend_metadata
 from .provenance import SourceIdentityError, resolve_implementation_revision
 
+
+_OBSERVATION_BACKEND_EXECUTION_METHODS = (
+    "assert_execution_request",
+    "begin_observation",
+    "end_observation",
+    "tokenize",
+    "hidden_states",
+    "metadata",
+)
+
+
+def _assert_observation_backend_execution_methods(backend: HuggingFacePyTorchBackend) -> None:
+    """Reject instance-level substitutions of canonical OBSERVATION execution methods."""
+    instance_state = vars(backend)
+    for name in _OBSERVATION_BACKEND_EXECUTION_METHODS:
+        if name in instance_state:
+            raise CaptureContractError(
+                "canonical OBSERVATION backend execution methods cannot be overridden on the "
+                f"instance: {name}"
+            )
+        resolved = getattr(backend, name, None)
+        expected = getattr(HuggingFacePyTorchBackend, name, None)
+        resolved_target = getattr(resolved, "__func__", resolved)
+        if not callable(resolved) or not callable(expected) or resolved_target is not expected:
+            raise CaptureContractError(
+                f"canonical OBSERVATION backend execution method {name!r} is not the trusted concrete implementation"
+            )
+
+
 def _capture_steps(request: Mapping[str, Any], backend: CaptureBackend) -> tuple[list[dict[str, Any]], list[int]]:
     cfg = request["capture"]
     pooling = cfg["pooling"]
@@ -75,6 +104,7 @@ def execute_capture(
     if evidence_class == "OBSERVATION":
         if type(backend) is not HuggingFacePyTorchBackend:
             raise CaptureContractError("OBSERVATION capture requires the concrete HuggingFacePyTorchBackend")
+        _assert_observation_backend_execution_methods(backend)
         try:
             implementation_revision = resolve_implementation_revision(
                 implementation_revision, require_checkout=True
@@ -87,6 +117,9 @@ def execute_capture(
         backend._observed_hidden_state_dtypes.clear()
         backend.begin_observation()
         observation_started = True
+        # Recheck after the exclusive observation boundary is active before any
+        # adapter method is allowed to produce token IDs or hidden-state vectors.
+        _assert_observation_backend_execution_methods(backend)
 
     try:
         steps, prefix_ids = _capture_steps(validated, backend)
