@@ -58,7 +58,7 @@ def valid_production_shape(request: dict) -> dict:
         "nvidia_tf32_override": None,
         "torch_allow_tf32_cublas_override": None,
         "cublas_workspace_config": None,
-        "mps_mac_model": None,
+        "mps_mac_model": "SYNTHETIC-MPS-MODEL" if device == "mps" else None,
         "mps_cpu_brand": None,
         "mps_macos_version": None,
         "mps_fallback_env": None,
