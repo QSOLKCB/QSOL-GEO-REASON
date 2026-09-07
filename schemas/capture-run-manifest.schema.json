@@ -151,6 +151,7 @@
         "torch_package_file_count", "torch_package_receipt_sha256",
         "transformers_package_file_count", "transformers_package_receipt_sha256",
         "tokenizers_native_backend_active", "tokenizers_package_file_count", "tokenizers_package_receipt_sha256",
+        "safetensors_deserializer_active", "safetensors_package_file_count", "safetensors_package_receipt_sha256",
         "torch_build_config", "torch_build_config_sha256",
         "tokenizers_version", "huggingface_hub_version", "model_class", "tokenizer_class",
         "observed_model_commit", "observed_tokenizer_commit", "checkpoint_loading_clean",
@@ -210,6 +211,18 @@
         "tokenizers_package_receipt_sha256": {
           "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}],
           "description": "Content receipt for the active native Tokenizers implementation, or null for a slow tokenizer."
+        },
+        "safetensors_deserializer_active": {
+          "type": "boolean",
+          "description": "True exactly when the authenticated model snapshot contains Safetensors weights; the semantic verifier cross-checks this against model_snapshot_file_sha256."
+        },
+        "safetensors_package_file_count": {
+          "type": ["integer", "null"], "minimum": 1,
+          "description": "Count of receipt-bound files in the imported Safetensors package when that checkpoint deserializer is active."
+        },
+        "safetensors_package_receipt_sha256": {
+          "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}],
+          "description": "Content receipt for the active Safetensors checkpoint deserializer, or null when the snapshot is not Safetensors-backed."
         },
         "torch_build_config": {
           "type": "string", "minLength": 1, "pattern": "\\S",
@@ -283,7 +296,10 @@
         "dtype": {"enum": ["float32", "float16", "bfloat16"]},
         "observed_hidden_state_dtypes": {
           "type": "object",
-          "additionalProperties": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "pattern": "\\S", "enum": ["bfloat16", "float16", "float32", "float64"]}}
+          "minProperties": 1,
+          "propertyNames": {"pattern": "^(?:0|[1-9][0-9]*)$"},
+          "additionalProperties": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "pattern": "\\S", "enum": ["bfloat16", "float16", "float32", "float64"]}},
+          "description": "Nonempty map keyed by canonical non-negative decimal layer index; the semantic verifier requires the key set to equal capture.layers exactly."
         },
         "pool_accumulation_dtype": {"const": "float64"},
         "pool_accumulation_device": {"const": "cpu"},
@@ -409,7 +425,8 @@
                 }
               },
               "cpu_aten_capability": {"enum": ["DEFAULT", "VSX", "Z VECTOR", "NO AVX", "AVX2", "AVX512", "SVE256"]},
-              "aten_cpu_capability_env_known": {"type": "boolean"}
+              "aten_cpu_capability_env_known": {"type": "boolean"},
+              "cpu_math_dispatch_env_known": {"type": "boolean"}
             }
           },
           "else": {"properties": {
@@ -437,8 +454,27 @@
           }}
         },
         {
+          "if": {"properties": {"safetensors_deserializer_active": {"const": true}}, "required": ["safetensors_deserializer_active"]},
+          "then": {"properties": {
+            "safetensors_package_file_count": {"type": "integer", "minimum": 1},
+            "safetensors_package_receipt_sha256": {"$ref": "#/$defs/sha256"}
+          }},
+          "else": {"properties": {
+            "safetensors_package_file_count": {"type": "null"},
+            "safetensors_package_receipt_sha256": {"type": "null"}
+          }}
+        },
+        {
           "if": {"properties": {"aten_cpu_capability_env_known": {"const": false}}, "required": ["aten_cpu_capability_env_known"]},
           "then": {"properties": {"aten_cpu_capability_env": {"type": "null"}}}
+        },
+        {
+          "if": {"properties": {"cpu_math_dispatch_env_known": {"const": false}}, "required": ["cpu_math_dispatch_env_known"]},
+          "then": {"properties": {
+            "onednn_max_cpu_isa": {"type": "null"},
+            "dnnl_max_cpu_isa": {"type": "null"},
+            "mkl_cbwr": {"type": "null"}
+          }}
         },
         {
           "if": {"properties": {"attention_implementation": {"const": "sdpa"}}, "required": ["attention_implementation"]},
