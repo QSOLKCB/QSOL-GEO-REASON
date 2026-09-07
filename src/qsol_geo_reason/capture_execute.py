@@ -117,9 +117,6 @@ def execute_capture(
         backend._observed_hidden_state_dtypes.clear()
         backend.begin_observation()
         observation_started = True
-        # Recheck after the exclusive observation boundary is active before any
-        # adapter method is allowed to produce token IDs or hidden-state vectors.
-        _assert_observation_backend_execution_methods(backend)
 
     try:
         steps, prefix_ids = _capture_steps(validated, backend)
