@@ -2,10 +2,13 @@
 from __future__ import annotations
 from typing import Any, Mapping
 from .canonical import sha256_json
+from .capture_backend import _ExplicitNoAttentionBaseModel
 from .capture_backend_production import HuggingFacePyTorchBackend
 from .capture_common import (CAPTURE_PROTOCOL_ID, CAPTURE_SCHEMA_VERSION, _ALLOWED_EVIDENCE, _CAPTURE_PHASE, _LAYER_INDEX_SEMANTICS, _SIMULATION_BACKEND, _STEP_SPAN_SEMANTICS, CaptureBackend, CaptureContractError, _common_prefix_length, _compose_text, _pool_span, _require_git_sha, _sha256_text, _validate_backend_layer, _validate_token_ids)
+from .capture_dispatch import _MathSDPABaseModel
+from .capture_execution_state import _callable_execution_identity
 from .capture_validation import validate_capture_request
-from .capture_provenance import _validate_backend_metadata
+from .capture_provenance import _resolve_hidden_state_layout, _validate_backend_metadata
 from .provenance import SourceIdentityError, resolve_implementation_revision
 
 
@@ -19,25 +22,70 @@ _OBSERVATION_BACKEND_EXECUTION_METHODS = (
 )
 
 
-def _observation_backend_callable_names() -> frozenset[str]:
-    """Return all methods implemented by the trusted QSOL backend hierarchy."""
+def _unwrap_backend_descriptor(value: Any) -> Any:
+    if isinstance(value, (staticmethod, classmethod)):
+        return value.__func__
+    return value
+
+
+def _freeze_observation_backend_callables() -> tuple[
+    frozenset[str],
+    tuple[tuple[type, str, Any, Mapping[str, Any]], ...],
+    tuple[tuple[str, Any, Mapping[str, Any]], ...],
+]:
+    """Capture the trusted QSOL adapter callable surface at module import time."""
     names: set[str] = set()
+    class_bindings: list[tuple[type, str, Any, Mapping[str, Any]]] = []
     for cls in HuggingFacePyTorchBackend.__mro__:
         if not getattr(cls, "__module__", "").startswith("qsol_geo_reason"):
             continue
-        for name, value in vars(cls).items():
-            if isinstance(value, (staticmethod, classmethod)):
-                value = value.__func__
-            if callable(value):
-                names.add(name)
-    return frozenset(names)
+        for name, descriptor in vars(cls).items():
+            target = _unwrap_backend_descriptor(descriptor)
+            if not callable(target):
+                continue
+            names.add(name)
+            class_bindings.append(
+                (cls, name, target, dict(_callable_execution_identity(target)))
+            )
+
+    execution_bindings: list[tuple[str, Any, Mapping[str, Any]]] = []
+    for name in _OBSERVATION_BACKEND_EXECUTION_METHODS:
+        target = _unwrap_backend_descriptor(getattr(HuggingFacePyTorchBackend, name, None))
+        if not callable(target):
+            raise RuntimeError(
+                f"trusted canonical OBSERVATION backend is missing execution method {name!r}"
+            )
+        execution_bindings.append(
+            (name, target, dict(_callable_execution_identity(target)))
+        )
+    return frozenset(names), tuple(class_bindings), tuple(execution_bindings)
 
 
-_OBSERVATION_BACKEND_CALLABLE_NAMES = _observation_backend_callable_names()
+(
+    _OBSERVATION_BACKEND_CALLABLE_NAMES,
+    _OBSERVATION_BACKEND_CLASS_CALLABLES,
+    _OBSERVATION_BACKEND_EXECUTION_BASELINE,
+) = _freeze_observation_backend_callables()
+_TRUSTED_RESOLVE_HIDDEN_STATE_LAYOUT = _resolve_hidden_state_layout
 
 
 def _assert_observation_backend_execution_methods(backend: HuggingFacePyTorchBackend) -> None:
-    """Reject instance substitutions anywhere on the canonical backend dispatch surface."""
+    """Reject instance or class substitutions on the canonical adapter dispatch surface."""
+    # The expected class implementation is an import-time receipt, not a fresh
+    # lookup from the mutable class. This detects class monkey-patching as well as
+    # in-place Python function code changes.
+    for cls, name, expected, expected_receipt in _OBSERVATION_BACKEND_CLASS_CALLABLES:
+        current = _unwrap_backend_descriptor(vars(cls).get(name))
+        if (
+            current is not expected
+            or not callable(current)
+            or dict(_callable_execution_identity(current)) != dict(expected_receipt)
+        ):
+            raise CaptureContractError(
+                "canonical OBSERVATION backend class execution method changed after trusted import: "
+                f"{cls.__module__}.{cls.__qualname__}.{name}"
+            )
+
     instance_state = vars(backend)
     shadowed = sorted(
         name for name in instance_state if name in _OBSERVATION_BACKEND_CALLABLE_NAMES
@@ -48,17 +96,70 @@ def _assert_observation_backend_execution_methods(backend: HuggingFacePyTorchBac
             "instance: " + ", ".join(shadowed)
         )
 
-    # Keep explicit evidence-boundary checks for the public adapter methods. The
-    # generic shadow check above additionally covers private helpers dynamically
-    # dispatched by these methods, such as _assert_live_state_authentication.
-    for name in _OBSERVATION_BACKEND_EXECUTION_METHODS:
+    # Keep explicit evidence-boundary checks for the public adapter methods, but
+    # compare against the frozen import-time target rather than the mutable class.
+    for name, expected, expected_receipt in _OBSERVATION_BACKEND_EXECUTION_BASELINE:
         resolved = getattr(backend, name, None)
-        expected = getattr(HuggingFacePyTorchBackend, name, None)
         resolved_target = getattr(resolved, "__func__", resolved)
-        if not callable(resolved) or not callable(expected) or resolved_target is not expected:
+        if (
+            not callable(resolved)
+            or resolved_target is not expected
+            or dict(_callable_execution_identity(resolved_target)) != dict(expected_receipt)
+        ):
             raise CaptureContractError(
-                f"canonical OBSERVATION backend execution method {name!r} is not the trusted concrete implementation"
+                f"canonical OBSERVATION backend execution method {name!r} is not the trusted import-time implementation"
             )
+
+
+def _assert_observation_backend_routing_state(backend: HuggingFacePyTorchBackend) -> None:
+    """Bind non-callable adapter routing to the live authenticated model graph."""
+    try:
+        expected_base_model, expected_path, expected_blocks = (
+            _TRUSTED_RESOLVE_HIDDEN_STATE_LAYOUT(backend._model)
+        )
+    except CaptureContractError:
+        raise
+    except Exception as exc:
+        raise CaptureContractError(
+            "unable to authenticate canonical OBSERVATION adapter routing state"
+        ) from exc
+
+    if getattr(backend, "_block_path", None) != expected_path:
+        raise CaptureContractError("canonical OBSERVATION decoder block path changed after construction")
+    if getattr(backend, "_blocks", None) is not expected_blocks:
+        raise CaptureContractError(
+            "canonical OBSERVATION decoder block routing object changed after construction"
+        )
+    if getattr(backend, "_hidden_state_count", None) != len(expected_blocks) + 1:
+        raise CaptureContractError("canonical OBSERVATION hidden-state routing count is invalid")
+
+    # The policy facade always installs the no-attention wrapper. CPU/MPS SDPA
+    # adds the math-only wrapper outside it; all other lanes use the former
+    # directly. Bind exact wrapper classes, delegate identities, and backend owner.
+    routed = getattr(backend, "_base_model", None)
+    if (
+        getattr(backend, "_device_type", None) in {"cpu", "mps"}
+        and getattr(backend, "_attention_implementation", None) == "sdpa"
+    ):
+        if type(routed) is not _MathSDPABaseModel:
+            raise CaptureContractError(
+                "canonical OBSERVATION base-model SDPA routing wrapper changed after construction"
+            )
+        if getattr(routed, "_backend", None) is not backend:
+            raise CaptureContractError(
+                "canonical OBSERVATION SDPA routing wrapper is bound to the wrong backend"
+            )
+        routed = getattr(routed, "_module", None)
+
+    if type(routed) is not _ExplicitNoAttentionBaseModel:
+        raise CaptureContractError(
+            "canonical OBSERVATION no-attention routing wrapper changed after construction"
+        )
+    routed = getattr(routed, "_module", None)
+    if routed is not expected_base_model:
+        raise CaptureContractError(
+            "canonical OBSERVATION base-model routing identity changed after construction"
+        )
 
 
 def _capture_steps(request: Mapping[str, Any], backend: CaptureBackend) -> tuple[list[dict[str, Any]], list[int]]:
@@ -129,6 +230,7 @@ def execute_capture(
         if type(backend) is not HuggingFacePyTorchBackend:
             raise CaptureContractError("OBSERVATION capture requires the concrete HuggingFacePyTorchBackend")
         _assert_observation_backend_execution_methods(backend)
+        _assert_observation_backend_routing_state(backend)
         try:
             implementation_revision = resolve_implementation_revision(
                 implementation_revision, require_checkout=True
