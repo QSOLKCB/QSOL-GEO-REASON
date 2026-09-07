@@ -114,14 +114,48 @@ def _source_path_for_bytecode(cache_path: Path) -> Path:
     try:
         return Path(importlib.util.source_from_cache(str(cache_path)))
     except (ValueError, NotImplementedError):
-        # Legacy sourceless-style caches can sit beside a module rather than in
-        # __pycache__. They are canonical only when the corresponding tracked
-        # source exists and recompiles to the exact same code object.
         if cache_path.parent.name == "__pycache__":
             raise SourceIdentityError(
                 f"importable bytecode cache has no canonical source mapping: {cache_path}"
             )
         return cache_path.with_suffix(".py")
+
+
+def _stable_code_constant(value: object) -> object:
+    """Normalize constants embedded in executable Python code."""
+    if isinstance(value, types.CodeType):
+        return ("code", _stable_code_identity(value))
+    if isinstance(value, tuple):
+        return ("tuple", tuple(_stable_code_constant(item) for item in value))
+    if isinstance(value, frozenset):
+        normalized = [_stable_code_constant(item) for item in value]
+        return ("frozenset", tuple(sorted(normalized, key=repr)))
+    if isinstance(value, bytes):
+        return ("bytes", value)
+    return (type(value).__qualname__, repr(value))
+
+
+def _stable_code_identity(code: types.CodeType) -> tuple[object, ...]:
+    """Return executable code identity without filename or adaptive runtime state."""
+    return (
+        code.co_argcount,
+        code.co_posonlyargcount,
+        code.co_kwonlyargcount,
+        code.co_nlocals,
+        code.co_stacksize,
+        code.co_flags,
+        code.co_code,
+        tuple(_stable_code_constant(item) for item in code.co_consts),
+        code.co_names,
+        code.co_varnames,
+        code.co_freevars,
+        code.co_cellvars,
+        code.co_name,
+        code.co_qualname,
+        code.co_firstlineno,
+        code.co_linetable,
+        code.co_exceptiontable,
+    )
 
 
 def _authenticate_importable_bytecode(root: Path, paths: tuple[str, ...]) -> None:
@@ -131,8 +165,10 @@ def _authenticate_importable_bytecode(root: Path, paths: tuple[str, ...]) -> Non
     provenance check, so CPython may create ignored ``__pycache__`` entries during
     that same trusted invocation. Blanket rejection would make the canonical CLI
     reject itself. Instead, every ignored importable cache is mapped to a tracked
-    package source file and its marshalled code object is compared with a fresh
+    package source file and its executable code structure is compared with a fresh
     compilation of the clean checkout source under the cache's optimization lane.
+    Source filenames are authenticated separately through the canonical path and
+    Git tracking checks, so they are intentionally excluded from the code receipt.
     Tampered, stale, foreign-interpreter, malformed, or sourceless caches fail closed.
     """
     root_resolved = root.resolve()
@@ -197,7 +233,7 @@ def _authenticate_importable_bytecode(root: Path, paths: tuple[str, ...]) -> Non
                 f"unable to authenticate importable bytecode cache against tracked source: {relative}"
             ) from exc
 
-        if marshal.dumps(observed) != marshal.dumps(expected):
+        if _stable_code_identity(observed) != _stable_code_identity(expected):
             raise SourceIdentityError(
                 "importable bytecode cache does not match the clean tracked source: "
                 f"{relative}"
