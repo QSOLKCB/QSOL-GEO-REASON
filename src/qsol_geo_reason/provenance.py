@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import importlib.util
 import marshal
+import os
 import subprocess
 import types
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 
 class SourceIdentityError(RuntimeError):
@@ -26,6 +28,24 @@ _BYTECODE_SUFFIXES = (".pyc", ".pyo")
 
 def source_repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def _git_run(root: Path, *args: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    """Run an identity-sensitive Git command with replacement objects disabled.
+
+    Local ``refs/replace`` entries intentionally rewrite object lookup without changing
+    the named commit ID. They are useful for repository surgery but cannot participate
+    in canonical source identity: a clean replacement tree must never be attributed to
+    the unreplaced commit SHA. Every Git query in this module therefore shares the same
+    fail-closed environment rather than relying on individual callers to remember it.
+    """
+    environment = os.environ.copy()
+    environment["GIT_NO_REPLACE_OBJECTS"] = "1"
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        env=environment,
+        **kwargs,
+    )
 
 
 def _is_importable_package_bytecode(path: str) -> bool:
@@ -79,12 +99,19 @@ def _assert_tracked_importable_source_matches_head(root: Path, head: str) -> Non
     reads the file rather than the index, so a modified tracked source file cannot be
     hidden by either index flag. Tracked symlinks or other non-regular package entries
     fail closed because their execution target is not represented by the ordinary file
-    receipt used here.
+    receipt used here. Replacement objects are disabled by ``_git_run`` for both the
+    committed-tree lookup and working-tree hashing path.
     """
     package_root = "/".join(_IMPORTABLE_PACKAGE_ROOT)
     try:
-        listing = subprocess.run(
-            ["git", "-C", str(root), "ls-tree", "-r", "-z", head, "--", package_root],
+        listing = _git_run(
+            root,
+            "ls-tree",
+            "-r",
+            "-z",
+            head,
+            "--",
+            package_root,
             check=True,
             capture_output=True,
             text=True,
@@ -120,16 +147,12 @@ def _assert_tracked_importable_source_matches_head(root: Path, head: str) -> Non
             )
 
         try:
-            observed_oid = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(root),
-                    "hash-object",
-                    f"--path={normalized}",
-                    "--",
-                    normalized,
-                ],
+            observed_oid = _git_run(
+                root,
+                "hash-object",
+                f"--path={normalized}",
+                "--",
+                normalized,
                 check=True,
                 capture_output=True,
                 text=True,
@@ -149,17 +172,13 @@ def _assert_tracked_importable_source_matches_head(root: Path, head: str) -> Non
 def _ignored_importable_bytecode(root: Path) -> tuple[str, ...]:
     """Return ignored bytecode that can participate in package imports."""
     try:
-        result = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(root),
-                "ls-files",
-                "--others",
-                "--ignored",
-                "--exclude-standard",
-                "-z",
-            ],
+        result = _git_run(
+            root,
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "-z",
             check=True,
             capture_output=True,
             text=True,
@@ -272,16 +291,12 @@ def _authenticate_importable_bytecode(root: Path, paths: tuple[str, ...]) -> Non
             )
 
         try:
-            subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(root),
-                    "ls-files",
-                    "--error-unmatch",
-                    "--",
-                    source_relative,
-                ],
+            _git_run(
+                root,
+                "ls-files",
+                "--error-unmatch",
+                "--",
+                source_relative,
                 check=True,
                 capture_output=True,
                 text=True,
@@ -326,12 +341,14 @@ def git_source_revision(
     OBSERVATION callers additionally authenticate tracked package files directly
     against the HEAD tree and authenticate Git-ignored package bytecode against
     that source. The direct file hashes do not trust index ``assume-unchanged`` or
-    ``skip-worktree`` hints.
+    ``skip-worktree`` hints, and all Git object lookups ignore local replacement refs.
     """
     root = source_repo_root()
     try:
-        probe = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+        probe = _git_run(
+            root,
+            "rev-parse",
+            "--show-toplevel",
             check=True,
             capture_output=True,
             text=True,
@@ -344,8 +361,11 @@ def git_source_revision(
         return None
 
     if require_clean:
-        status = subprocess.run(
-            ["git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=all"],
+        status = _git_run(
+            root,
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
             check=True,
             capture_output=True,
             text=True,
@@ -355,8 +375,10 @@ def git_source_revision(
                 "source checkout is dirty; commit or stash source-relevant changes before binding an implementation revision"
             )
 
-    head = subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "HEAD"],
+    head = _git_run(
+        root,
+        "rev-parse",
+        "HEAD",
         check=True,
         capture_output=True,
         text=True,
