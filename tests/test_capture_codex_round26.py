@@ -62,18 +62,13 @@ class CaptureRound26RegressionTests(unittest.TestCase):
     def test_required_determinism_schema_requires_enabled_algorithms(self):
         schema = json.loads((ROOT / "schemas/capture-run-manifest.schema.json").read_text())
         production = schema["$defs"]["backendObservedProduction"]
-        rules = [
-            rule
-            for rule in production["allOf"]
-            if rule.get("if", {}).get("properties", {}).get("determinism_mode", {}).get("const")
-            == "required"
-            and "device" not in rule.get("if", {}).get("properties", {})
-        ]
-        self.assertEqual(len(rules), 1)
-        rule = rules[0]
-        self.assertIn("determinism_mode", rule["if"]["required"])
+        self.assertEqual(
+            production["if"]["properties"]["determinism_mode"]["const"],
+            "required",
+        )
+        self.assertIn("determinism_mode", production["if"]["required"])
         self.assertIs(
-            rule["then"]["properties"]["deterministic_algorithms_enabled"]["const"],
+            production["then"]["properties"]["deterministic_algorithms_enabled"]["const"],
             True,
         )
 
