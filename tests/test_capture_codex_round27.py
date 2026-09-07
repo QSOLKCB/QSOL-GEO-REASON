@@ -177,7 +177,10 @@ class CaptureRound27RegressionTests(unittest.TestCase):
             with patch("qsol_geo_reason.provenance.source_repo_root", return_value=root):
                 # Ordinary source-revision lookup still tolerates disposable caches.
                 self.assertRegex(git_source_revision(require_clean=True), r"^[0-9a-f]{40}$")
-                with self.assertRaisesRegex(SourceIdentityError, "importable bytecode caches"):
+                # Canonical OBSERVATION now authenticates caches against tracked
+                # source rather than blanket-rejecting them. This malformed/foreign
+                # synthetic cache must still fail closed.
+                with self.assertRaisesRegex(SourceIdentityError, "importable bytecode cache"):
                     git_source_revision(
                         require_clean=True,
                         reject_importable_bytecode=True,
