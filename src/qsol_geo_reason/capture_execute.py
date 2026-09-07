@@ -20,6 +20,9 @@ _OBSERVATION_BACKEND_EXECUTION_METHODS = (
     "hidden_states",
     "metadata",
 )
+_VOLATILE_CALLABLE_RECEIPT_FIELDS = frozenset(
+    {"identity", "bound_self", "class_identity", "call_identity"}
+)
 
 
 def _unwrap_backend_descriptor(value: Any) -> Any:
@@ -28,14 +31,36 @@ def _unwrap_backend_descriptor(value: Any) -> Any:
     return value
 
 
+def _trusted_callable_receipt(value: Any) -> dict[str, Any]:
+    """Return the stable executable part of a callable identity receipt.
+
+    Python object addresses are process-local bookkeeping, not executable semantics.
+    The canonical import-time baseline therefore binds the callable's module and
+    qualified name, marshalled implementation code, callable implementation code,
+    defaults and keyword defaults. Replacing a backend method with different code
+    still fails closed, while an equivalent function object restored by a test or
+    instrumentation transaction does not permanently poison the process.
+    """
+    receipt = dict(_callable_execution_identity(value))
+    for field in _VOLATILE_CALLABLE_RECEIPT_FIELDS:
+        receipt.pop(field, None)
+    nested = receipt.get("partial_function")
+    if isinstance(nested, Mapping):
+        nested_copy = dict(nested)
+        for field in _VOLATILE_CALLABLE_RECEIPT_FIELDS:
+            nested_copy.pop(field, None)
+        receipt["partial_function"] = nested_copy
+    return receipt
+
+
 def _freeze_observation_backend_callables() -> tuple[
     frozenset[str],
-    tuple[tuple[type, str, Any, Mapping[str, Any]], ...],
-    tuple[tuple[str, Any, Mapping[str, Any]], ...],
+    tuple[tuple[type, str, Mapping[str, Any]], ...],
+    tuple[tuple[str, Mapping[str, Any]], ...],
 ]:
     """Capture the trusted QSOL adapter callable surface at module import time."""
     names: set[str] = set()
-    class_bindings: list[tuple[type, str, Any, Mapping[str, Any]]] = []
+    class_bindings: list[tuple[type, str, Mapping[str, Any]]] = []
     for cls in HuggingFacePyTorchBackend.__mro__:
         if not getattr(cls, "__module__", "").startswith("qsol_geo_reason"):
             continue
@@ -45,10 +70,10 @@ def _freeze_observation_backend_callables() -> tuple[
                 continue
             names.add(name)
             class_bindings.append(
-                (cls, name, target, dict(_callable_execution_identity(target)))
+                (cls, name, _trusted_callable_receipt(target))
             )
 
-    execution_bindings: list[tuple[str, Any, Mapping[str, Any]]] = []
+    execution_bindings: list[tuple[str, Mapping[str, Any]]] = []
     for name in _OBSERVATION_BACKEND_EXECUTION_METHODS:
         target = _unwrap_backend_descriptor(getattr(HuggingFacePyTorchBackend, name, None))
         if not callable(target):
@@ -56,7 +81,7 @@ def _freeze_observation_backend_callables() -> tuple[
                 f"trusted canonical OBSERVATION backend is missing execution method {name!r}"
             )
         execution_bindings.append(
-            (name, target, dict(_callable_execution_identity(target)))
+            (name, _trusted_callable_receipt(target))
         )
     return frozenset(names), tuple(class_bindings), tuple(execution_bindings)
 
@@ -71,15 +96,14 @@ _TRUSTED_RESOLVE_HIDDEN_STATE_LAYOUT = _resolve_hidden_state_layout
 
 def _assert_observation_backend_execution_methods(backend: HuggingFacePyTorchBackend) -> None:
     """Reject instance or class substitutions on the canonical adapter dispatch surface."""
-    # The expected class implementation is an import-time receipt, not a fresh
-    # lookup from the mutable class. This detects class monkey-patching as well as
-    # in-place Python function code changes.
-    for cls, name, expected, expected_receipt in _OBSERVATION_BACKEND_CLASS_CALLABLES:
+    # The expected class implementation is an import-time executable receipt, not
+    # a fresh lookup from the mutable class. This detects class monkey-patching and
+    # in-place Python function code changes without depending on object addresses.
+    for cls, name, expected_receipt in _OBSERVATION_BACKEND_CLASS_CALLABLES:
         current = _unwrap_backend_descriptor(vars(cls).get(name))
         if (
-            current is not expected
-            or not callable(current)
-            or dict(_callable_execution_identity(current)) != dict(expected_receipt)
+            not callable(current)
+            or _trusted_callable_receipt(current) != dict(expected_receipt)
         ):
             raise CaptureContractError(
                 "canonical OBSERVATION backend class execution method changed after trusted import: "
@@ -97,14 +121,14 @@ def _assert_observation_backend_execution_methods(backend: HuggingFacePyTorchBac
         )
 
     # Keep explicit evidence-boundary checks for the public adapter methods, but
-    # compare against the frozen import-time target rather than the mutable class.
-    for name, expected, expected_receipt in _OBSERVATION_BACKEND_EXECUTION_BASELINE:
+    # compare against the frozen import-time executable receipt rather than the
+    # mutable class or a process-local function address.
+    for name, expected_receipt in _OBSERVATION_BACKEND_EXECUTION_BASELINE:
         resolved = getattr(backend, name, None)
         resolved_target = getattr(resolved, "__func__", resolved)
         if (
             not callable(resolved)
-            or resolved_target is not expected
-            or dict(_callable_execution_identity(resolved_target)) != dict(expected_receipt)
+            or _trusted_callable_receipt(resolved_target) != dict(expected_receipt)
         ):
             raise CaptureContractError(
                 f"canonical OBSERVATION backend execution method {name!r} is not the trusted import-time implementation"
