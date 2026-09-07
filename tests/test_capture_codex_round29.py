@@ -49,7 +49,7 @@ class CaptureRound29RegressionTests(unittest.TestCase):
         active = tail.index("observation_started = True")
         method_recheck = tail.index("_assert_observation_backend_execution_methods(backend)")
         routing_recheck = tail.index("_assert_observation_backend_routing_state(backend)")
-        capture = tail.index("steps, prefix_ids = _capture_steps(validated, backend)")
+        capture = tail.index("steps, prefix_ids = _capture_steps(")
         cleanup = tail.index("backend.end_observation()")
         self.assertLess(active, method_recheck)
         self.assertLess(active, routing_recheck)
