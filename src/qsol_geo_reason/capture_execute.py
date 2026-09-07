@@ -1,12 +1,12 @@
 """Execution and capture-step construction for GEO-CAP-001."""
 from __future__ import annotations
+import types
 from typing import Any, Mapping
 from .canonical import sha256_json
 from .capture_backend import _ExplicitNoAttentionBaseModel
 from .capture_backend_production import HuggingFacePyTorchBackend
 from .capture_common import (CAPTURE_PROTOCOL_ID, CAPTURE_SCHEMA_VERSION, _ALLOWED_EVIDENCE, _CAPTURE_PHASE, _LAYER_INDEX_SEMANTICS, _SIMULATION_BACKEND, _STEP_SPAN_SEMANTICS, CaptureBackend, CaptureContractError, _common_prefix_length, _compose_text, _pool_span, _require_git_sha, _sha256_text, _validate_backend_layer, _validate_token_ids)
 from .capture_dispatch import _MathSDPABaseModel
-from .capture_execution_state import _callable_execution_identity
 from .capture_validation import validate_capture_request
 from .capture_provenance import _resolve_hidden_state_layout, _validate_backend_metadata
 from .provenance import SourceIdentityError, resolve_implementation_revision
@@ -20,9 +20,6 @@ _OBSERVATION_BACKEND_EXECUTION_METHODS = (
     "hidden_states",
     "metadata",
 )
-_VOLATILE_CALLABLE_RECEIPT_FIELDS = frozenset(
-    {"identity", "bound_self", "class_identity", "call_identity"}
-)
 
 
 def _unwrap_backend_descriptor(value: Any) -> Any:
@@ -31,26 +28,59 @@ def _unwrap_backend_descriptor(value: Any) -> Any:
     return value
 
 
-def _trusted_callable_receipt(value: Any) -> dict[str, Any]:
-    """Return the stable executable part of a callable identity receipt.
+def _stable_code_constant(value: Any) -> Any:
+    if isinstance(value, types.CodeType):
+        return {"code": _stable_code_structure(value)}
+    if isinstance(value, tuple):
+        return {"tuple": [_stable_code_constant(item) for item in value]}
+    if isinstance(value, frozenset):
+        items = [_stable_code_constant(item) for item in value]
+        return {"frozenset": sorted(items, key=repr)}
+    if isinstance(value, bytes):
+        return {"bytes": value.hex()}
+    return {"type": type(value).__qualname__, "repr": repr(value)}
 
-    Python object addresses are process-local bookkeeping, not executable semantics.
-    The canonical import-time baseline therefore binds the callable's module and
-    qualified name, marshalled implementation code, callable implementation code,
-    defaults and keyword defaults. Replacing a backend method with different code
-    still fails closed, while an equivalent function object restored by a test or
-    instrumentation transaction does not permanently poison the process.
-    """
-    receipt = dict(_callable_execution_identity(value))
-    for field in _VOLATILE_CALLABLE_RECEIPT_FIELDS:
-        receipt.pop(field, None)
-    nested = receipt.get("partial_function")
-    if isinstance(nested, Mapping):
-        nested_copy = dict(nested)
-        for field in _VOLATILE_CALLABLE_RECEIPT_FIELDS:
-            nested_copy.pop(field, None)
-        receipt["partial_function"] = nested_copy
-    return receipt
+
+def _stable_code_structure(code: types.CodeType) -> dict[str, Any]:
+    """Describe executable Python code without CPython adaptive/runtime state."""
+    return {
+        "argcount": code.co_argcount,
+        "posonlyargcount": code.co_posonlyargcount,
+        "kwonlyargcount": code.co_kwonlyargcount,
+        "nlocals": code.co_nlocals,
+        "stacksize": code.co_stacksize,
+        "flags": code.co_flags,
+        "code": code.co_code.hex(),
+        "consts": [_stable_code_constant(item) for item in code.co_consts],
+        "names": list(code.co_names),
+        "varnames": list(code.co_varnames),
+        "freevars": list(code.co_freevars),
+        "cellvars": list(code.co_cellvars),
+        "name": code.co_name,
+        "qualname": code.co_qualname,
+        "firstlineno": code.co_firstlineno,
+        "linetable": code.co_linetable.hex(),
+        "exceptiontable": code.co_exceptiontable.hex(),
+    }
+
+
+def _trusted_callable_receipt(value: Any) -> dict[str, Any]:
+    """Return a stable import-time executable receipt for a backend callable."""
+    function = getattr(value, "__func__", value)
+    code = getattr(function, "__code__", None)
+    call_impl = getattr(type(function), "__call__", None)
+    call_code = getattr(call_impl, "__code__", None)
+    return {
+        "kind": "callable",
+        "module": getattr(function, "__module__", type(function).__module__),
+        "qualname": getattr(function, "__qualname__", type(function).__qualname__),
+        "code_sha256": sha256_json(_stable_code_structure(code)) if isinstance(code, types.CodeType) else None,
+        "call_module": getattr(call_impl, "__module__", None),
+        "call_qualname": getattr(call_impl, "__qualname__", None),
+        "call_code_sha256": sha256_json(_stable_code_structure(call_code)) if isinstance(call_code, types.CodeType) else None,
+        "defaults": repr(getattr(function, "__defaults__", None)),
+        "kwdefaults": repr(getattr(function, "__kwdefaults__", None)),
+    }
 
 
 def _freeze_observation_backend_callables() -> tuple[
@@ -69,9 +99,7 @@ def _freeze_observation_backend_callables() -> tuple[
             if not callable(target):
                 continue
             names.add(name)
-            class_bindings.append(
-                (cls, name, _trusted_callable_receipt(target))
-            )
+            class_bindings.append((cls, name, _trusted_callable_receipt(target)))
 
     execution_bindings: list[tuple[str, Mapping[str, Any]]] = []
     for name in _OBSERVATION_BACKEND_EXECUTION_METHODS:
@@ -80,9 +108,7 @@ def _freeze_observation_backend_callables() -> tuple[
             raise RuntimeError(
                 f"trusted canonical OBSERVATION backend is missing execution method {name!r}"
             )
-        execution_bindings.append(
-            (name, _trusted_callable_receipt(target))
-        )
+        execution_bindings.append((name, _trusted_callable_receipt(target)))
     return frozenset(names), tuple(class_bindings), tuple(execution_bindings)
 
 
@@ -96,15 +122,9 @@ _TRUSTED_RESOLVE_HIDDEN_STATE_LAYOUT = _resolve_hidden_state_layout
 
 def _assert_observation_backend_execution_methods(backend: HuggingFacePyTorchBackend) -> None:
     """Reject instance or class substitutions on the canonical adapter dispatch surface."""
-    # The expected class implementation is an import-time executable receipt, not
-    # a fresh lookup from the mutable class. This detects class monkey-patching and
-    # in-place Python function code changes without depending on object addresses.
     for cls, name, expected_receipt in _OBSERVATION_BACKEND_CLASS_CALLABLES:
         current = _unwrap_backend_descriptor(vars(cls).get(name))
-        if (
-            not callable(current)
-            or _trusted_callable_receipt(current) != dict(expected_receipt)
-        ):
+        if not callable(current) or _trusted_callable_receipt(current) != dict(expected_receipt):
             raise CaptureContractError(
                 "canonical OBSERVATION backend class execution method changed after trusted import: "
                 f"{cls.__module__}.{cls.__qualname__}.{name}"
@@ -120,16 +140,10 @@ def _assert_observation_backend_execution_methods(backend: HuggingFacePyTorchBac
             "instance: " + ", ".join(shadowed)
         )
 
-    # Keep explicit evidence-boundary checks for the public adapter methods, but
-    # compare against the frozen import-time executable receipt rather than the
-    # mutable class or a process-local function address.
     for name, expected_receipt in _OBSERVATION_BACKEND_EXECUTION_BASELINE:
         resolved = getattr(backend, name, None)
         resolved_target = getattr(resolved, "__func__", resolved)
-        if (
-            not callable(resolved)
-            or _trusted_callable_receipt(resolved_target) != dict(expected_receipt)
-        ):
+        if not callable(resolved) or _trusted_callable_receipt(resolved_target) != dict(expected_receipt):
             raise CaptureContractError(
                 f"canonical OBSERVATION backend execution method {name!r} is not the trusted import-time implementation"
             )
@@ -157,9 +171,6 @@ def _assert_observation_backend_routing_state(backend: HuggingFacePyTorchBackend
     if getattr(backend, "_hidden_state_count", None) != len(expected_blocks) + 1:
         raise CaptureContractError("canonical OBSERVATION hidden-state routing count is invalid")
 
-    # The policy facade always installs the no-attention wrapper. CPU/MPS SDPA
-    # adds the math-only wrapper outside it; all other lanes use the former
-    # directly. Bind exact wrapper classes, delegate identities, and backend owner.
     routed = getattr(backend, "_base_model", None)
     if (
         getattr(backend, "_device_type", None) in {"cpu", "mps"}
