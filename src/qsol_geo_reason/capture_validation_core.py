@@ -55,7 +55,7 @@ def validate_capture_request(request: Mapping[str, Any]) -> dict[str, Any]:
     device = _require_nonempty_string(backend["device"], "backend.device")
     if device not in {"cpu", "mps"} and not _CUDA_DEVICE.fullmatch(device):
         raise CaptureContractError("backend.device must be one of 'cpu', 'mps', or 'cuda:N' with an explicit non-negative CUDA index")
-    if backend["dtype"] not in _ALLOWED_DTYPES:
+    if not isinstance(backend["dtype"], str) or backend["dtype"] not in _ALLOWED_DTYPES:
         raise CaptureContractError(f"backend.dtype must be one of {sorted(_ALLOWED_DTYPES)}")
     if backend["quantization"] != "none":
         raise CaptureContractError("GEO-CAP-001 canonical capture requires backend.quantization='none'")
@@ -66,7 +66,7 @@ def validate_capture_request(request: Mapping[str, Any]) -> dict[str, Any]:
         required={"context_mode", "phase", "layers", "pooling", "prefix_text", "step_joiner"},
         where="capture",
     )
-    if capture["context_mode"] not in _ALLOWED_CONTEXT_MODES:
+    if not isinstance(capture["context_mode"], str) or capture["context_mode"] not in _ALLOWED_CONTEXT_MODES:
         raise CaptureContractError(f"capture.context_mode must be one of {sorted(_ALLOWED_CONTEXT_MODES)}")
     if capture["phase"] != _CAPTURE_PHASE:
         raise CaptureContractError(f"GEO-CAP-001 currently supports capture.phase={_CAPTURE_PHASE!r} only")
@@ -83,7 +83,7 @@ def validate_capture_request(request: Mapping[str, Any]) -> dict[str, Any]:
     capture["layers"] = normalized_layers
     pooling = _require_object(capture["pooling"], "capture.pooling")
     _require_exact_keys(pooling, required={"mode"}, optional={"window_tokens"}, where="capture.pooling")
-    if pooling["mode"] not in _ALLOWED_POOLING_MODES:
+    if not isinstance(pooling["mode"], str) or pooling["mode"] not in _ALLOWED_POOLING_MODES:
         raise CaptureContractError(f"capture.pooling.mode must be one of {sorted(_ALLOWED_POOLING_MODES)}")
     if pooling["mode"] == "bounded_context_mean":
         if "window_tokens" not in pooling:
@@ -97,7 +97,7 @@ def validate_capture_request(request: Mapping[str, Any]) -> dict[str, Any]:
 
     determinism = _require_object(root["determinism"], "determinism")
     _require_exact_keys(determinism, required={"mode", "seed"}, where="determinism")
-    if determinism["mode"] not in _ALLOWED_DETERMINISM:
+    if not isinstance(determinism["mode"], str) or determinism["mode"] not in _ALLOWED_DETERMINISM:
         raise CaptureContractError(f"determinism.mode must be one of {sorted(_ALLOWED_DETERMINISM)}")
     seed = _require_nonnegative_int(determinism["seed"], "determinism.seed")
     if seed > _MAX_TORCH_SEED:
@@ -135,7 +135,11 @@ def _validate_loading_info(loading_info: Any) -> None:
         raise CaptureContractError("Transformers did not return checkpoint loading information")
     problems: dict[str, list[Any]] = {}
     for key in _LOADING_INFO_KEYS:
-        value = loading_info.get(key, []) or []
+        if key not in loading_info:
+            raise CaptureContractError(
+                f"checkpoint loading info is missing required diagnostic {key!r}"
+            )
+        value = loading_info[key]
         if not isinstance(value, (list, tuple)):
             raise CaptureContractError(f"checkpoint loading info {key!r} has invalid shape")
         if value:
