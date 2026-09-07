@@ -274,6 +274,15 @@
       },
       "allOf": [
         {
+          "if": {
+            "properties": {"determinism_mode": {"const": "required"}},
+            "required": ["determinism_mode"]
+          },
+          "then": {
+            "properties": {"deterministic_algorithms_enabled": {"const": true}}
+          }
+        },
+        {
           "if": {"properties": {"device": {"const": "mps"}}, "required": ["device"]},
           "then": {
             "properties": {
