@@ -67,6 +67,13 @@ def _validate_dispatch_metadata(observed: Mapping[str, Any], device: str) -> Non
     elif capability is not None or environment is not None or known is not None:
         raise CaptureContractError("CPU dispatch provenance must be null outside CPU")
 
+    if device == "mps":
+        identity = (observed.get("mps_mac_model"), observed.get("mps_cpu_brand"))
+        if not any(type(value) is str and value.strip() for value in identity):
+            raise CaptureContractError(
+                "canonical MPS provenance requires a concrete non-whitespace Mac model or Apple chip/CPU identity"
+            )
+
 
 class _MathSDPABaseModel:
     """Force and verify math SDPA at the actual CPU/MPS base-model call boundary."""
