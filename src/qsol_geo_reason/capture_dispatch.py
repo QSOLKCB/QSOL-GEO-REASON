@@ -52,20 +52,23 @@ def _validate_dispatch_metadata(observed: Mapping[str, Any], device: str) -> Non
         raise CaptureContractError("canonical CUDA FP16 accumulation must be false or unavailable/null")
     if not device.startswith("cuda:") and accumulation is not None:
         raise CaptureContractError("CUDA FP16 accumulation must be null outside CUDA")
+
+    # Every canonical device performs final pooling on CPU in float64, so the
+    # effective ATen CPU dispatch lane is material execution provenance for CPU,
+    # CUDA, and MPS observations alike.
     capability = observed.get("cpu_aten_capability")
     environment = observed.get("aten_cpu_capability_env")
     known = observed.get("aten_cpu_capability_env_known")
-    if device == "cpu":
-        if type(capability) is not str or capability not in _CPU_CAPABILITIES:
-            raise CaptureContractError("canonical CPU provenance requires effective ATen CPU capability")
-        if type(known) is not bool:
-            raise CaptureContractError("aten_cpu_capability_env_known must be boolean on CPU")
-        if environment is not None and type(environment) is not str:
-            raise CaptureContractError("aten_cpu_capability_env must be string or null")
-        if not known and environment is not None:
-            raise CaptureContractError("unknown initialization-time ATen override must be null")
-    elif capability is not None or environment is not None or known is not None:
-        raise CaptureContractError("CPU dispatch provenance must be null outside CPU")
+    if type(capability) is not str or capability not in _CPU_CAPABILITIES:
+        raise CaptureContractError(
+            "canonical production provenance requires effective ATen CPU capability for CPU pooling"
+        )
+    if type(known) is not bool:
+        raise CaptureContractError("aten_cpu_capability_env_known must be boolean for CPU pooling provenance")
+    if environment is not None and type(environment) is not str:
+        raise CaptureContractError("aten_cpu_capability_env must be string or null")
+    if not known and environment is not None:
+        raise CaptureContractError("unknown initialization-time ATen override must be null")
 
     if device == "mps":
         identity = (observed.get("mps_mac_model"), observed.get("mps_cpu_brand"))
