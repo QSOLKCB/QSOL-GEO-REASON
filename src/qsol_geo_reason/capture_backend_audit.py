@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
+import weakref
 from typing import Any, Mapping
 
 from .capture_common import CaptureContractError
@@ -20,6 +21,36 @@ from . import capture_backend_production as _production
 _BaseProductionBackend = _production.HuggingFacePyTorchBackend
 
 
+def _make_snapshot_provenance_vault():
+    """Keep persisted snapshot baselines outside caller-writable instance state."""
+    baselines: weakref.WeakKeyDictionary[
+        Any, tuple[tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]]
+    ] = weakref.WeakKeyDictionary()
+
+    def remember(
+        instance: Any,
+        baseline: tuple[tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]],
+    ) -> None:
+        if instance in baselines:
+            raise CaptureContractError(
+                "canonical snapshot provenance baseline was already initialized"
+            )
+        baselines[instance] = baseline
+
+    def recall(
+        instance: Any,
+    ) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]] | None:
+        return baselines.get(instance)
+
+    return remember, recall
+
+
+_remember_snapshot_provenance_baseline, _recall_snapshot_provenance_baseline = (
+    _make_snapshot_provenance_vault()
+)
+del _make_snapshot_provenance_vault
+
+
 class HuggingFacePyTorchBackend(_BaseProductionBackend):
     """Audit-complete production backend exported at the canonical boundary."""
 
@@ -28,6 +59,10 @@ class HuggingFacePyTorchBackend(_BaseProductionBackend):
         "dnnl_max_cpu_isa": "DNNL_MAX_CPU_ISA",
         "mkl_cbwr": "MKL_CBWR",
     }
+    _NATIVE_SLOW_TOKENIZER_MODULE_PREFIXES = (
+        "sentencepiece",
+        "_sentencepiece",
+    )
 
     def __new__(cls, request: Mapping[str, Any]):
         """Freeze initialization-time audit inputs before the inherited constructor."""
@@ -48,11 +83,15 @@ class HuggingFacePyTorchBackend(_BaseProductionBackend):
         instance._canonical_cpu_math_environment_known = known if cpu_active else None
         instance._canonical_cpu_math_environment = environment if known else None
 
-        # The native Tokenizers receipt is initialized only after the inherited
-        # constructor has authenticated and loaded the tokenizer.
+        # Package and snapshot receipts are initialized only after the inherited
+        # constructor has authenticated and loaded its tokenizer/checkpoint.
+        instance._snapshot_provenance_baseline_initialized = False
         instance._tokenizers_native_backend_active = False
         instance._tokenizers_package_provenance = None
         instance._tokenizers_package_provenance_initialized = False
+        instance._safetensors_deserializer_active = False
+        instance._safetensors_package_provenance = None
+        instance._safetensors_package_provenance_initialized = False
         return instance
 
     def _assert_cpu_math_environment_policy(self) -> None:
@@ -77,6 +116,73 @@ class HuggingFacePyTorchBackend(_BaseProductionBackend):
         elif known is not False:
             raise CaptureContractError("CPU math-library dispatch provenance is missing")
 
+    @classmethod
+    def _native_slow_tokenizer_backend(cls, tokenizer: Any) -> str | None:
+        """Identify native execution objects used by a slow tokenizer.
+
+        GEO-CAP-001 currently content-binds the Rust Tokenizers fast path. A slow
+        tokenizer that delegates segmentation to SentencePiece is a distinct native
+        execution lane; reject it until that lane receives its own persisted receipt.
+        """
+        state = getattr(tokenizer, "__dict__", {})
+        candidates = [tokenizer]
+        if isinstance(state, Mapping):
+            candidates.extend(state.values())
+        for value in candidates:
+            module = getattr(type(value), "__module__", "")
+            if not isinstance(module, str):
+                continue
+            for prefix in cls._NATIVE_SLOW_TOKENIZER_MODULE_PREFIXES:
+                if module == prefix or module.startswith(prefix + "."):
+                    return "sentencepiece"
+        if (
+            isinstance(state, Mapping)
+            and any(name in state for name in ("sp_model", "spm", "sentencepiece_processor"))
+            and (
+                "sentencepiece" in sys.modules
+                or "_sentencepiece" in sys.modules
+            )
+        ):
+            return "sentencepiece"
+        return None
+
+    def _initialize_snapshot_provenance_baseline(self) -> None:
+        state = vars(self)
+        if "_snapshot_provenance_baseline_initialized" not in state:
+            return
+        if state.get("_snapshot_provenance_baseline_initialized") is True:
+            return
+        model_hashes = state.get("_model_snapshot_hashes")
+        tokenizer_hashes = state.get("_tokenizer_snapshot_hashes")
+        if model_hashes is None and tokenizer_hashes is None:
+            # Dependency-free constructor fixtures intentionally bypass loading.
+            return
+        if not isinstance(model_hashes, Mapping) or not isinstance(tokenizer_hashes, Mapping):
+            raise CaptureContractError("canonical snapshot provenance maps are missing")
+        baseline = (
+            tuple(sorted((str(path), str(digest)) for path, digest in model_hashes.items())),
+            tuple(sorted((str(path), str(digest)) for path, digest in tokenizer_hashes.items())),
+        )
+        _remember_snapshot_provenance_baseline(self, baseline)
+        state["_snapshot_provenance_baseline_initialized"] = True
+
+    def _assert_snapshot_provenance_baseline(self) -> None:
+        baseline = _recall_snapshot_provenance_baseline(self)
+        if baseline is None:
+            return
+        model_hashes = getattr(self, "_model_snapshot_hashes", None)
+        tokenizer_hashes = getattr(self, "_tokenizer_snapshot_hashes", None)
+        if not isinstance(model_hashes, Mapping) or not isinstance(tokenizer_hashes, Mapping):
+            raise CaptureContractError("canonical snapshot provenance maps were removed")
+        observed = (
+            tuple(sorted((str(path), str(digest)) for path, digest in model_hashes.items())),
+            tuple(sorted((str(path), str(digest)) for path, digest in tokenizer_hashes.items())),
+        )
+        if observed != baseline:
+            raise CaptureContractError(
+                "persisted model/tokenizer snapshot provenance changed after authenticated loading"
+            )
+
     def _initialize_tokenizers_package_provenance(self) -> None:
         state = vars(self)
         # Synthetic fixtures built with object.__new__ intentionally do not acquire
@@ -90,6 +196,15 @@ class HuggingFacePyTorchBackend(_BaseProductionBackend):
             return
 
         backend_tokenizer = getattr(tokenizer, "backend_tokenizer", None)
+        if backend_tokenizer is None:
+            native_slow_backend = self._native_slow_tokenizer_backend(tokenizer)
+            if native_slow_backend is not None:
+                raise CaptureContractError(
+                    "canonical OBSERVATION does not support native slow-tokenizer "
+                    f"execution ({native_slow_backend}); use a receipt-bound fast tokenizer "
+                    "or define a future native slow-tokenizer provenance lane"
+                )
+
         active = backend_tokenizer is not None
         state["_tokenizers_native_backend_active"] = active
         state["_tokenizers_package_provenance"] = None
@@ -104,16 +219,99 @@ class HuggingFacePyTorchBackend(_BaseProductionBackend):
             )
         state["_tokenizers_package_provenance_initialized"] = True
 
+    def _initialize_checkpoint_deserializer_provenance(self) -> None:
+        state = vars(self)
+        if "_safetensors_package_provenance_initialized" not in state:
+            return
+        if state.get("_safetensors_package_provenance_initialized") is True:
+            return
+        model_hashes = state.get("_model_snapshot_hashes")
+        if model_hashes is None:
+            return
+        if not isinstance(model_hashes, Mapping):
+            raise CaptureContractError("canonical model snapshot provenance is missing")
+
+        active = any(
+            isinstance(path, str) and path.lower().endswith(".safetensors")
+            for path in model_hashes
+        )
+        state["_safetensors_deserializer_active"] = active
+        state["_safetensors_package_provenance"] = None
+        if active:
+            process_safetensors = sys.modules.get("safetensors")
+            if process_safetensors is None:
+                raise CaptureContractError(
+                    "Safetensors checkpoint was loaded without an inspectable imported safetensors package"
+                )
+            state["_safetensors_package_provenance"] = _python_package_provenance(
+                process_safetensors, "Safetensors"
+            )
+        state["_safetensors_package_provenance_initialized"] = True
+
+    def _assert_checkpoint_deserializer_provenance(self) -> None:
+        state = vars(self)
+        if "_safetensors_package_provenance_initialized" not in state:
+            return
+        initialized = state.get("_safetensors_package_provenance_initialized")
+        model_hashes = state.get("_model_snapshot_hashes")
+        if initialized is not True:
+            if model_hashes is not None:
+                raise CaptureContractError(
+                    "checkpoint deserializer provenance was not initialized"
+                )
+            return
+        active = state.get("_safetensors_deserializer_active")
+        if type(active) is not bool:
+            raise CaptureContractError("Safetensors deserializer activation state is invalid")
+        provenance = state.get("_safetensors_package_provenance")
+        if active:
+            process_safetensors = sys.modules.get("safetensors")
+            if process_safetensors is None or not isinstance(provenance, Mapping):
+                raise CaptureContractError("Safetensors package provenance is missing")
+            if _python_package_provenance(
+                process_safetensors, "Safetensors"
+            ) != dict(provenance):
+                raise CaptureContractError(
+                    "imported Safetensors package changed after authenticated checkpoint loading"
+                )
+        elif provenance is not None:
+            raise CaptureContractError(
+                "inactive Safetensors deserializer cannot carry package provenance"
+            )
+
+    @staticmethod
+    def _assert_no_active_python_instrumentation() -> None:
+        trace = sys.gettrace()
+        profile = sys.getprofile()
+        if trace is not None or profile is not None:
+            raise CaptureContractError(
+                "canonical OBSERVATION forbids active Python trace/profile callbacks"
+            )
+
+    def _assert_no_active_torch_override_modes(self) -> None:
+        # Production begin_observation invokes this after acquiring the exclusive
+        # Python-thread boundary, so tracing/profile instrumentation is rejected
+        # before any capture-state mutation or first model forward.
+        super()._assert_no_active_torch_override_modes()
+        self._assert_no_active_python_instrumentation()
+
+    def _assert_live_state_authentication(self) -> None:
+        super()._assert_live_state_authentication()
+        self._assert_snapshot_provenance_baseline()
+        self._assert_checkpoint_deserializer_provenance()
+
     def _assert_cpu_dispatch_policy(self) -> None:
         # Production __init__ invokes this after the inherited model/tokenizer load,
         # making it a construction-end hook without replacing the canonical __init__.
         super()._assert_cpu_dispatch_policy()
         self._assert_cpu_math_environment_policy()
+        self._initialize_snapshot_provenance_baseline()
         self._initialize_tokenizers_package_provenance()
+        self._initialize_checkpoint_deserializer_provenance()
 
     def metadata(self) -> Mapping[str, Any]:
-        # super().metadata() dynamically reaches the override above, rechecking CPU
-        # dispatch policy and ensuring the native-tokenizer baseline is initialized.
+        # super().metadata() dynamically reaches the live-state override above,
+        # rechecking snapshot/deserializer provenance before producing persisted JSON.
         data = dict(super().metadata())
         state = vars(self)
 
@@ -159,6 +357,26 @@ class HuggingFacePyTorchBackend(_BaseProductionBackend):
                     tokenizers_provenance["receipt_sha256"]
                     if isinstance(tokenizers_provenance, Mapping)
                     else None
+                )
+
+        if "_safetensors_package_provenance_initialized" in state:
+            initialized = state.get("_safetensors_package_provenance_initialized")
+            model_hashes = state.get("_model_snapshot_hashes")
+            if initialized is not True:
+                if model_hashes is not None:
+                    raise CaptureContractError(
+                        "Safetensors package provenance was not initialized"
+                    )
+            else:
+                self._assert_checkpoint_deserializer_provenance()
+                active = state.get("_safetensors_deserializer_active")
+                provenance = state.get("_safetensors_package_provenance")
+                data["safetensors_deserializer_active"] = active
+                data["safetensors_package_file_count"] = (
+                    provenance["file_count"] if isinstance(provenance, Mapping) else None
+                )
+                data["safetensors_package_receipt_sha256"] = (
+                    provenance["receipt_sha256"] if isinstance(provenance, Mapping) else None
                 )
 
         if "_canonical_cpu_math_environment_known" in state:
