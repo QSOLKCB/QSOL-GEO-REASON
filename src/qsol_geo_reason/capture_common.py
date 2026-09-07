@@ -58,6 +58,8 @@ _PRODUCTION_BACKEND_KEYS = {
     "transformers_package_file_count", "transformers_package_receipt_sha256",
     "tokenizers_native_backend_active", "tokenizers_package_file_count",
     "tokenizers_package_receipt_sha256",
+    "safetensors_deserializer_active", "safetensors_package_file_count",
+    "safetensors_package_receipt_sha256",
     "torch_build_config", "torch_build_config_sha256",
     "tokenizers_version", "huggingface_hub_version", "model_class", "tokenizer_class",
     "observed_model_commit", "observed_tokenizer_commit", "checkpoint_loading_clean",
