@@ -296,6 +296,9 @@ class HuggingFacePyTorchBackend(_BaseProductionBackend):
         self._assert_no_active_python_instrumentation()
 
     def _assert_live_state_authentication(self) -> None:
+        # Preserve the explicit source-visible module-hook guard expected at the
+        # final OBSERVATION boundary, even though the production parent also checks it.
+        self._assert_no_registered_module_hooks()
         super()._assert_live_state_authentication()
         self._assert_snapshot_provenance_baseline()
         self._assert_checkpoint_deserializer_provenance()
