@@ -203,9 +203,24 @@ def _execution_dependencies_sha256(roots: Sequence[Any]) -> str:
 
 
 def _model_execution_dependency_roots(model: Any) -> list[Any]:
-    """Include forwards and self-resolved Python helper methods without invoking them."""
+    """Bind model forwards, call dispatch, and self-resolved Python helpers."""
     roots: list[Any] = []
     for _name, module in model.named_modules():
+        # nn.Module.__call__ dynamically enters _wrapped_call_impl/_call_impl before
+        # forward. Bind the effective inherited dispatch functions explicitly so a
+        # class- or process-level call-path substitution changes the executable seal.
+        for dispatch_name in ("__call__", "_wrapped_call_impl", "_call_impl"):
+            try:
+                dispatch = inspect.getattr_static(module, dispatch_name)
+            except AttributeError:
+                continue
+            if isinstance(dispatch, (staticmethod, classmethod)):
+                dispatch = dispatch.__func__
+            if callable(dispatch):
+                roots.append(dispatch)
+                if len(roots) > 4096:
+                    raise CaptureContractError("model execution dependency root limit exceeded")
+
         pending = [getattr(module, "forward", None)]
         seen: set[int] = set()
         while pending:
