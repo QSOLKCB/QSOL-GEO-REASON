@@ -131,6 +131,8 @@ class CaptureRound6RegressionTests(unittest.TestCase):
     def test_backend_reuse_is_bound_to_applied_seed(self):
         request = fixture_request()
         backend = object.__new__(HuggingFacePyTorchBackend)
+        # Synthetic construction binding; this fixture isolates request identity.
+        backend._torch = backend._canonical_torch_module = object()
         backend._applied_seed = 17
         backend._determinism_mode = request["determinism"]["mode"]
         backend._model_identifier = request["model"]["identifier"]

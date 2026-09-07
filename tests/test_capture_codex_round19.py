@@ -125,6 +125,7 @@ class CaptureRound19RegressionTests(unittest.TestCase):
     def test_observation_backend_is_single_use(self):
         request = fixture_request()
         backend = object.__new__(HuggingFacePyTorchBackend)
+        backend._torch = backend._canonical_torch_module = FakeProcessTorch()
         backend._applied_seed = request["determinism"]["seed"]
         backend._determinism_mode = request["determinism"]["mode"]
         backend._model_identifier = request["model"]["identifier"]
@@ -141,6 +142,7 @@ class CaptureRound19RegressionTests(unittest.TestCase):
     def test_observation_session_restores_host_rng_and_determinism(self):
         backend = object.__new__(HuggingFacePyTorchBackend)
         backend._torch = FakeProcessTorch()
+        backend._canonical_torch_module = backend._torch
         backend._device = "cpu"
         backend._applied_seed = 17
         backend._determinism_mode = "required"

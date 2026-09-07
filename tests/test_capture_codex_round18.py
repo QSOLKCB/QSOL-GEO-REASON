@@ -69,6 +69,7 @@ class CaptureRound18RegressionTests(unittest.TestCase):
     def _sealed_backend(self):
         backend = object.__new__(HuggingFacePyTorchBackend)
         backend._torch = SimpleNamespace(uint8=object())
+        backend._canonical_torch_module = backend._torch
         backend._model = FakeContentModel()
         backend._tokenizer = FakeTokenizer()
         backend._canonical_model_live_state = backend._model_live_state_seal()

@@ -22,6 +22,8 @@ class CaptureRound7RegressionTests(unittest.TestCase):
     def test_reused_backend_is_bound_to_model_and_tokenizer_repository_ids(self):
         request = fixture_request()
         backend = object.__new__(HuggingFacePyTorchBackend)
+        # Synthetic construction binding; this fixture isolates request identity.
+        backend._torch = backend._canonical_torch_module = object()
         backend._applied_seed = request["determinism"]["seed"]
         backend._determinism_mode = request["determinism"]["mode"]
         backend._model_identifier = request["model"]["identifier"]

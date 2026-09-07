@@ -207,6 +207,7 @@ class CaptureRound24RegressionTests(unittest.TestCase):
                 backend = object.__new__(HuggingFacePyTorchBackend)
                 backend._model = HelperModel()
                 backend._torch = SimpleNamespace(is_tensor=lambda value: False)
+                backend._canonical_torch_module = backend._torch
                 if existing_override:
                     backend._model.attention._attn = lambda value: value
                 forward_seal = backend._model_executable_state_seal()
