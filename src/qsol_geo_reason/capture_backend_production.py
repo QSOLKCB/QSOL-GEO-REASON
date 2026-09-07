@@ -162,14 +162,20 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
             cpu_override = os.environ.get("ATEN_CPU_CAPABILITY")
             try:
                 import torch as process_torch
-                import transformers as process_transformers
             except ImportError as exc:
-                raise CaptureBackendUnavailable(
-                    "canonical capture requires PyTorch and Transformers"
-                ) from exc
+                raise CaptureBackendUnavailable("canonical capture requires PyTorch") from exc
+            try:
+                import transformers as process_transformers
+            except ImportError:
+                # The inherited real backend also imports Transformers and fails closed
+                # when it is absent. Keeping this probe optional preserves dependency-free
+                # software fixtures that deliberately replace the inherited constructor.
+                process_transformers = None
 
-            transformers_before = _python_package_provenance(
-                process_transformers, "Transformers"
+            transformers_before = (
+                _python_package_provenance(process_transformers, "Transformers")
+                if process_transformers is not None
+                else None
             )
             self._assert_pristine_cuda_runtime(process_torch, device)
             if device == "cpu":
@@ -193,14 +199,24 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
                 # including constructor failures and interrupted initialization.
                 self._restore_torch_process_state(process_torch, ambient)
 
-            transformers_after = _python_package_provenance(
-                self._transformers, "Transformers"
-            )
-            if transformers_after != transformers_before:
-                raise CaptureContractError(
-                    "imported Transformers package changed while canonical backend was loading"
+            loaded_transformers = getattr(self, "_transformers", None)
+            if loaded_transformers is not None:
+                transformers_after = _python_package_provenance(
+                    loaded_transformers, "Transformers"
                 )
-            self._transformers_package_provenance = transformers_after
+                if (
+                    transformers_before is not None
+                    and transformers_after != transformers_before
+                ):
+                    raise CaptureContractError(
+                        "imported Transformers package changed while canonical backend was loading"
+                    )
+                self._transformers_package_provenance = transformers_after
+            elif transformers_before is not None:
+                # This branch is reachable only for software fixtures that replace the
+                # inherited constructor. A real inherited backend always sets
+                # self._transformers before returning successfully.
+                self._transformers_package_provenance = transformers_before
 
             # The core already brackets CUDA SDPA. Its CPU/MPS execution needs the
             # identical math-only boundary at the delegated base-model call.
@@ -307,14 +323,18 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
         if getattr(self, "_attention_implementation", None) == "sdpa":
             self._last_sdpa_policy = self._assert_sdpa_math_policy()
         package_provenance = getattr(self, "_transformers_package_provenance", None)
-        if not isinstance(package_provenance, Mapping):
-            raise CaptureContractError(
-                "canonical Transformers package provenance was not recorded at construction"
-            )
-        if _python_package_provenance(self._transformers, "Transformers") != dict(package_provenance):
-            raise CaptureContractError(
-                "imported Transformers package changed after authenticated backend construction"
-            )
+        transformers_module = getattr(self, "_transformers", None)
+        if transformers_module is not None:
+            if not isinstance(package_provenance, Mapping):
+                raise CaptureContractError(
+                    "canonical Transformers package provenance was not recorded at construction"
+                )
+            if _python_package_provenance(
+                transformers_module, "Transformers"
+            ) != dict(package_provenance):
+                raise CaptureContractError(
+                    "imported Transformers package changed after authenticated backend construction"
+                )
         data = dict(super().metadata())
         policy = getattr(self, "_last_cudnn_algorithm_policy", None)
         for field in ("cudnn_benchmark", "cudnn_deterministic"):
@@ -328,13 +348,15 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
             data[field] = dispatch[field] if dispatch is not None else None
         if getattr(self, "_device_type", None) == "cpu":
             processor = getattr(self, "_canonical_cpu_processor", None)
-            if not isinstance(processor, str) or not processor.strip():
-                raise CaptureContractError(
-                    "canonical CPU processor identity was not recorded at construction"
-                )
-            data["cpu_processor"] = processor
-        data["transformers_package_file_count"] = package_provenance["file_count"]
-        data["transformers_package_receipt_sha256"] = package_provenance["receipt_sha256"]
+            if processor is not None:
+                if not isinstance(processor, str) or not processor.strip():
+                    raise CaptureContractError(
+                        "canonical CPU processor identity was not recorded at construction"
+                    )
+                data["cpu_processor"] = processor
+        if isinstance(package_provenance, Mapping):
+            data["transformers_package_file_count"] = package_provenance["file_count"]
+            data["transformers_package_receipt_sha256"] = package_provenance["receipt_sha256"]
         return data
 
     def _model_executable_state_seal(self) -> str:
