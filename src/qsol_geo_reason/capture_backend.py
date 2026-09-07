@@ -96,7 +96,6 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
         self._canonical_model_live_state: tuple[tuple[Any, ...], ...] | None = None
         self._canonical_model_content_state: tuple[tuple[str, str, str], ...] | None = None
         self._canonical_tokenizer_live_state: str | None = None
-        self._live_state_seal_initialized = False
 
         super().__init__(validated)
 
@@ -139,7 +138,6 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
             self._torch.float64,
             self._torch.long,
         ))
-        self._live_state_seal_initialized = True
 
         # The core forward remains unchanged; this proxy injects an explicit
         # output_attentions=False into every resolved base-model call.
@@ -477,16 +475,20 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
         return sha256_json(payload)
 
     def _assert_live_state_authentication(self) -> None:
-        if not getattr(self, "_live_state_seal_initialized", False):
-            return
+        # The closure-owned vault is the authority for real production instances.
+        # Never let caller-writable instance state decide whether the vault is read.
         baseline = _recall_live_state_baseline(self)
         if baseline is None:
-            # Dependency-free unit fixtures may deliberately bypass __init__.
-            # Production construction always externalizes this baseline.
+            # Dependency-free unit fixtures may deliberately bypass __init__. They
+            # can still exercise a synthetic seal through the historical instance
+            # fields, but an entirely unsealed hand-built fixture has nothing to
+            # authenticate and returns without pretending to be production state.
             expected_model = getattr(self, "_canonical_model_live_state", None)
             expected_content = getattr(self, "_canonical_model_content_state", None)
             expected_tokenizer = getattr(self, "_canonical_tokenizer_live_state", None)
             float64_dtype = long_dtype = None
+            if expected_model is None and expected_content is None and expected_tokenizer is None:
+                return
         else:
             expected_model, expected_content, expected_tokenizer, float64_dtype, long_dtype = baseline
         if expected_model is None or expected_tokenizer is None:
@@ -583,17 +585,15 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
         *,
         pool_span: tuple[int, int],
     ) -> Mapping[int, Mapping[str, Any]]:
-        # Synthetic unit-test backends can deliberately bypass __init__. New
-        # policy guards apply only when the corresponding construction snapshot
-        # exists; every real backend created through __init__ has all snapshots.
+        # Synthetic unit-test backends can deliberately bypass __init__. Each guard
+        # knows how to no-op only when its construction baseline is genuinely absent;
+        # live-state authentication itself always consults the external vault first.
         determinism_frozen = getattr(self, "_canonical_deterministic_algorithms_enabled", None) is not None
         threads_frozen = getattr(self, "_canonical_cpu_thread_policy", None) is not None
         cuda_environment_frozen = getattr(self, "_canonical_cuda_environment", None) is not None
         evaluation_frozen = getattr(self, "_canonical_evaluation_mode", False)
-        live_state_frozen = getattr(self, "_live_state_seal_initialized", False)
 
-        if live_state_frozen:
-            self._assert_live_state_authentication()
+        self._assert_live_state_authentication()
         if determinism_frozen:
             self._force_canonical_determinism_policy()
         if threads_frozen:
@@ -616,8 +616,7 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
             self._assert_cuda_environment_policy()
         if evaluation_frozen:
             self._assert_model_eval_policy()
-        if live_state_frozen:
-            self._assert_live_state_authentication()
+        self._assert_live_state_authentication()
         return result
 
     def metadata(self) -> Mapping[str, Any]:
@@ -629,8 +628,7 @@ class HuggingFacePyTorchBackend(_CoreHuggingFacePyTorchBackend):
             self._last_cpu_thread_policy = self._assert_cpu_thread_policy()
         if getattr(self, "_canonical_evaluation_mode", False):
             self._assert_model_eval_policy()
-        if getattr(self, "_live_state_seal_initialized", False):
-            self._assert_live_state_authentication()
+        self._assert_live_state_authentication()
 
         data = dict(super().metadata())
 
