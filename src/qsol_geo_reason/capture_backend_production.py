@@ -143,6 +143,7 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
         self._canonical_cudnn_algorithm_policy: dict[str, bool] | None = None
         self._last_cudnn_algorithm_policy: dict[str, bool] | None = None
         self._canonical_cpu_dispatch: dict[str, Any] | None = None
+        self._canonical_cpu_environment: str | None = None
         self._canonical_cpu_processor: str | None = None
         self._canonical_fp16_accumulation_supported: bool | None = None
         self._last_fp16_accumulation: bool | None = None
@@ -181,16 +182,21 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
                 else None
             )
             self._assert_pristine_cuda_runtime(process_torch, device)
+
+            # CPU float64 pooling is part of every canonical device lane. Bind the
+            # effective ATen CPU dispatch identity and the initialization-time override
+            # whenever it can be known, even when model execution itself is CUDA/MPS.
+            self._canonical_cpu_dispatch = {
+                "cpu_aten_capability": _effective_cpu_capability(process_torch),
+                "aten_cpu_capability_env": cpu_override if cpu_override_known else None,
+                "aten_cpu_capability_env_known": cpu_override_known,
+            }
+            self._canonical_cpu_environment = cpu_override
+            if os.environ.get("ATEN_CPU_CAPABILITY") != cpu_override:
+                raise CaptureContractError("ATen CPU override changed during initialization")
             if device == "cpu":
                 self._canonical_cpu_processor = _concrete_cpu_identity()
-                self._canonical_cpu_dispatch = {
-                    "cpu_aten_capability": _effective_cpu_capability(process_torch),
-                    "aten_cpu_capability_env": cpu_override if cpu_override_known else None,
-                    "aten_cpu_capability_env_known": cpu_override_known,
-                }
-                self._canonical_cpu_environment = cpu_override
-                if os.environ.get("ATEN_CPU_CAPABILITY") != cpu_override:
-                    raise CaptureContractError("ATen CPU override changed during initialization")
+
             if device.startswith("cuda:"):
                 self._canonical_cudnn_algorithm_policy = _cudnn_algorithm_policy_state(process_torch)
                 self._canonical_fp16_accumulation_supported = _fp16_accumulation_state(process_torch) is not None
