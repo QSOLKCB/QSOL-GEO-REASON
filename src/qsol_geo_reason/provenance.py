@@ -343,15 +343,6 @@ def git_source_revision(
     if git_root != root.resolve():
         return None
 
-    head = subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    if not head:
-        raise SourceIdentityError("git HEAD is empty")
-
     if require_clean:
         status = subprocess.run(
             ["git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=all"],
@@ -363,9 +354,19 @@ def git_source_revision(
             raise SourceIdentityError(
                 "source checkout is dirty; commit or stash source-relevant changes before binding an implementation revision"
             )
-        if reject_importable_bytecode:
-            _assert_tracked_importable_source_matches_head(root, head)
-            _authenticate_importable_bytecode(root, _ignored_importable_bytecode(root))
+
+    head = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if not head:
+        raise SourceIdentityError("git HEAD is empty")
+
+    if require_clean and reject_importable_bytecode:
+        _assert_tracked_importable_source_matches_head(root, head)
+        _authenticate_importable_bytecode(root, _ignored_importable_bytecode(root))
 
     return head
 
