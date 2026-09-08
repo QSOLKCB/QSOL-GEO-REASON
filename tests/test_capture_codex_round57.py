@@ -11,23 +11,23 @@ from unittest.mock import patch
 
 from qsol_geo_reason import capture
 from qsol_geo_reason import capture_backend_round56 as round56
-from qsol_geo_reason import capture_backend_round57 as round57
+from qsol_geo_reason import capture_backend_round58 as round58
 from qsol_geo_reason import capture_common
+from qsol_geo_reason import capture_execute
 from qsol_geo_reason import provenance
 
 
-class Round57TrustBoundaryTests(unittest.TestCase):
-    def test_public_backend_identity_is_preserved_while_round57_hardens_it(self):
+class Round58TrustBoundaryTests(unittest.TestCase):
+    def test_public_backend_identity_is_preserved_while_round58_hardens_it(self):
         self.assertIs(capture.HuggingFacePyTorchBackend, round56.HuggingFacePyTorchBackend)
-        self.assertIs(round57.HuggingFacePyTorchBackend, round56.HuggingFacePyTorchBackend)
+        self.assertIs(round58.HuggingFacePyTorchBackend, round56.HuggingFacePyTorchBackend)
         self.assertIs(
             round56.HuggingFacePyTorchBackend._assert_round56_torch_package_provenance,
-            round57._assert_round57_torch_package_provenance,
+            round58._assert_round58_torch_package_provenance,
         )
 
-    def test_source_identity_uses_private_git_runner_after_module_slot_rebind(self):
-        sealed_resolve = provenance.resolve_implementation_revision
-        sealed_git_source = provenance.git_source_revision
+    def test_canonical_source_identity_uses_private_git_runner_after_module_rebind(self):
+        sealed_resolve = capture_execute.resolve_implementation_revision
         original = provenance._git_run
 
         def forged_git(*_args, **_kwargs):
@@ -36,15 +36,18 @@ class Round57TrustBoundaryTests(unittest.TestCase):
         try:
             provenance._git_run = forged_git
             self.assertIs(
-                sealed_resolve.__globals__["_git_run"],
-                round57._git_run_round57,
+                sealed_resolve,
+                round58._resolve_implementation_revision_round58,
             )
             self.assertIs(
-                sealed_git_source.__globals__["_git_run"],
-                round57._git_run_round57,
+                sealed_resolve.__globals__["_git_run"],
+                round58._git_run_round58,
+            )
+            self.assertIs(
+                sealed_resolve.__globals__["git_source_revision"],
+                round58._git_source_revision_round58,
             )
             self.assertIsNot(sealed_resolve.__globals__, provenance.__dict__)
-            self.assertIsNot(sealed_git_source.__globals__, provenance.__dict__)
         finally:
             provenance._git_run = original
 
@@ -60,15 +63,15 @@ class Round57TrustBoundaryTests(unittest.TestCase):
             "LIBPATH": "/tmp/aix",
             "SHLIB_PATH": "/tmp/hpux",
             "GIT_EXEC_PATH": "/tmp/fake-git-core",
-            "ROUND57_SAFE_SENTINEL": "kept",
+            "ROUND58_SAFE_SENTINEL": "kept",
         }
         with patch.dict(os.environ, hostile, clear=False):
-            environment = round57._git_child_environment_round57()
+            environment = round58._git_child_environment_round58()
 
         for key in hostile:
-            if key != "ROUND57_SAFE_SENTINEL":
+            if key != "ROUND58_SAFE_SENTINEL":
                 self.assertNotIn(key, environment)
-        self.assertEqual(environment["ROUND57_SAFE_SENTINEL"], "kept")
+        self.assertEqual(environment["ROUND58_SAFE_SENTINEL"], "kept")
         self.assertEqual(environment["GIT_NO_REPLACE_OBJECTS"], "1")
         self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
         self.assertEqual(environment["GIT_CONFIG_GLOBAL"], os.devnull)
@@ -92,7 +95,7 @@ class Round57TrustBoundaryTests(unittest.TestCase):
         )
         segment = struct.pack(
             "<II16sQQQQiiII",
-            round57._LC_SEGMENT_64,
+            round58._LC_SEGMENT_64,
             segment_size,
             b"__TEXT" + b"\x00" * 10,
             0x100000000,
@@ -114,20 +117,20 @@ class Round57TrustBoundaryTests(unittest.TestCase):
             path.write_bytes(self._macho64(mapped_uuid, b"A" * 64))
             fd = os.open(path, os.O_RDONLY)
             try:
-                identities = round57._macho_identities_from_fd_round57(fd)
+                identities = round58._macho_identities_from_fd_round58(fd)
             finally:
                 os.close(fd)
             self.assertEqual(len(identities), 1)
             mapped_identity = next(iter(identities))
             self.assertEqual(mapped_identity[0], mapped_uuid.hex())
-            entry = round57._DarwinMappedLibraryRound57(
+            entry = round58._DarwinMappedLibraryRound58(
                 path, mapped_identity[0], mapped_identity[1]
             )
 
             path.write_bytes(self._macho64(mapped_uuid, b"B" * 64))
             fd = os.open(path, os.O_RDONLY)
             try:
-                replaced = round57._macho_identities_from_fd_round57(fd)
+                replaced = round58._macho_identities_from_fd_round58(fd)
             finally:
                 os.close(fd)
             self.assertEqual({item[0] for item in replaced}, {mapped_uuid.hex()})
@@ -137,7 +140,7 @@ class Round57TrustBoundaryTests(unittest.TestCase):
                 capture_common.CaptureContractError,
                 "executable bytes no longer match their pathname",
             ):
-                round57._runtime_library_measurement_round57(
+                round58._runtime_library_measurement_round58(
                     entry,
                     predicate=lambda _value: True,
                     label="CPU",
@@ -155,7 +158,7 @@ class Round57TrustBoundaryTests(unittest.TestCase):
             module = types.ModuleType("torch")
             module.__file__ = str(init)
 
-            baseline = round57._torch_package_stability_receipt(module)
+            baseline = round58._torch_package_stability_receipt_round58(module)
 
             source.write_bytes(b"VALUE = 'hostile'\n")
             restored = root / ".lazy.py.restored"
@@ -163,7 +166,7 @@ class Round57TrustBoundaryTests(unittest.TestCase):
             os.replace(restored, source)
 
             self.assertEqual(source.read_bytes(), original)
-            observed = round57._torch_package_stability_receipt(module)
+            observed = round58._torch_package_stability_receipt_round58(module)
             self.assertNotEqual(observed, baseline)
 
 
