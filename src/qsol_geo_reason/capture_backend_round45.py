@@ -7,6 +7,7 @@ Transformers loaders, and rejects snapshot paths that cannot be canonical UTF-8.
 """
 from __future__ import annotations
 
+import hashlib
 import sys
 import types
 from typing import Any, Mapping
@@ -21,6 +22,9 @@ from . import capture_backend_production as _production
 from . import capture_provenance as _capture_provenance
 
 
+_CPU_FLUSH_DENORMAL_PREFIX = "QSOL_GEO_CPU_FLUSH_DENORMAL="
+_CPU_FLUSH_DENORMAL_RECORD = _CPU_FLUSH_DENORMAL_PREFIX + "false"
+_CPU_RUNTIME_PREFIX = "QSOL_GEO_CPU_RUNTIME="
 _ORIGINAL_CANONICAL_SNAPSHOT_PATH = _capture_provenance._is_canonical_snapshot_path
 _ORIGINAL_VALIDATE_BACKEND_METADATA = _capture_provenance._validate_backend_metadata
 
@@ -40,6 +44,41 @@ def _is_canonical_snapshot_path_round45(value: Any) -> bool:
 _capture_provenance._is_canonical_snapshot_path = _is_canonical_snapshot_path_round45
 
 
+def _validate_cpu_flush_denormal_receipt(config: Any) -> None:
+    if not isinstance(config, str) or not config.strip():
+        raise CaptureContractError("canonical CPU flush-denormal receipt is missing")
+    records = [
+        line
+        for line in config.splitlines()
+        if line.startswith(_CPU_FLUSH_DENORMAL_PREFIX)
+    ]
+    if records != [_CPU_FLUSH_DENORMAL_RECORD]:
+        raise CaptureContractError(
+            "torch_build_config must contain exactly one cpu_flush_denormal=false receipt"
+        )
+
+
+def _record_cpu_flush_denormal_receipt(config: Any) -> str:
+    if not isinstance(config, str) or not config.strip():
+        raise CaptureContractError("torch_build_config is unavailable for CPU policy receipt")
+    lines = config.rstrip("\n").split("\n")
+    if any(line.startswith(_CPU_FLUSH_DENORMAL_PREFIX) for line in lines):
+        raise CaptureContractError(
+            "torch_build_config already contains a CPU flush-denormal receipt"
+        )
+    cpu_runtime_indices = [
+        index for index, line in enumerate(lines) if line.startswith(_CPU_RUNTIME_PREFIX)
+    ]
+    if len(cpu_runtime_indices) != 1:
+        raise CaptureContractError(
+            "canonical CPU denormal policy requires exactly one CPU runtime provenance record"
+        )
+    lines.insert(cpu_runtime_indices[0], _CPU_FLUSH_DENORMAL_RECORD)
+    recorded = "\n".join(lines) + ("\n" if config.endswith("\n") else "")
+    _validate_cpu_flush_denormal_receipt(recorded)
+    return recorded
+
+
 def _validate_backend_metadata_round45(
     observed: Mapping[str, Any], request: Mapping[str, Any], evidence_class: str
 ) -> None:
@@ -51,10 +90,7 @@ def _validate_backend_metadata_round45(
         raise CaptureContractError(
             "canonical OBSERVATION CPU pooling requires a concrete processor model identity"
         )
-    if observed.get("cpu_flush_denormal") is not False:
-        raise CaptureContractError(
-            "canonical OBSERVATION requires cpu_flush_denormal=false"
-        )
+    _validate_cpu_flush_denormal_receipt(observed.get("torch_build_config"))
 
 
 _capture_provenance._validate_backend_metadata = _validate_backend_metadata_round45
@@ -103,12 +139,7 @@ class HuggingFacePyTorchBackend(_Round44Backend):
     def _assert_pristine_mps_import_state(
         device: str, modules: Mapping[str, Any] | None = None
     ) -> None:
-        """Require real production runtimes to begin before Torch/Transformers import.
-
-        Synthetic regression doubles deliberately populate ``sys.modules`` with plain
-        objects; those are not executable PyTorch/Transformers runtimes and therefore
-        do not satisfy the preloaded-runtime predicate below.
-        """
+        """Require real production runtimes to begin before Torch/Transformers import."""
         module_table = sys.modules if modules is None else modules
 
         # Preserve the established MPS fail-closed contract and diagnostic. MPS must
@@ -212,7 +243,11 @@ class HuggingFacePyTorchBackend(_Round44Backend):
         if self._real_torch_runtime():
             self._force_round45_cpu_flush_denormal_policy()
             data["cpu_processor"] = self._assert_round45_cpu_pooling_identity()
-            data["cpu_flush_denormal"] = False
+            recorded = _record_cpu_flush_denormal_receipt(data.get("torch_build_config"))
+            data["torch_build_config"] = recorded
+            data["torch_build_config_sha256"] = hashlib.sha256(
+                recorded.encode("utf-8")
+            ).hexdigest()
         return data
 
 
