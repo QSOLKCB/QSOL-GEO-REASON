@@ -312,7 +312,7 @@
         },
         "torch_build_config": {
           "type": "string", "minLength": 1, "pattern": "\\S",
-          "description": "Verbatim torch.__config__.show() result captured at backend construction, including compiler, BLAS/MKL/oneDNN and CPU build settings."
+          "description": "torch.__config__.show() captured at backend construction; on CUDA observations the producer appends a QSOL_GEO_CUDA_RUNTIME line containing the count and SHA-256 receipt of the actual mapped CUDA/NVIDIA shared objects."
         },
         "torch_build_config_sha256": {
           "$ref": "#/$defs/sha256",
@@ -471,13 +471,15 @@
           "then": {
             "properties": {
               "cuda_device_name": {"type": "string", "minLength": 1, "pattern": "\\S"},
-              "cuda_device_capability": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"}
+              "cuda_device_capability": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
+              "cuda_resolved_device_index": {"type": "integer", "minimum": 0}
             }
           },
           "else": {
             "properties": {
               "cuda_device_name": {"type": "null"},
               "cuda_device_capability": {"type": "null"},
+              "cuda_resolved_device_index": {"type": "null"},
               "cuda_device_uuid": {"type": "null"}
             }
           }
