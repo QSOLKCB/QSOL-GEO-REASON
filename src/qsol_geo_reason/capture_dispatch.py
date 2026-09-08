@@ -47,10 +47,15 @@ def _effective_cpu_capability(torch: Any) -> str:
 
 
 def _validate_dispatch_metadata(observed: Mapping[str, Any], device: str) -> None:
+    cuda_active = device.startswith("cuda:")
+    cuda_identity_fields = ("cuda_device_name", "cuda_device_capability", "cuda_device_uuid")
+    if not cuda_active and any(observed.get(field) is not None for field in cuda_identity_fields):
+        raise CaptureContractError("CUDA device identity fields must be null outside CUDA")
+
     accumulation = observed.get("cuda_matmul_allow_fp16_accumulation")
     if accumulation is not None and accumulation is not False:
         raise CaptureContractError("canonical CUDA FP16 accumulation must be false or unavailable/null")
-    if not device.startswith("cuda:") and accumulation is not None:
+    if not cuda_active and accumulation is not None:
         raise CaptureContractError("CUDA FP16 accumulation must be null outside CUDA")
 
     # Every canonical device performs final pooling on CPU in float64, so the
