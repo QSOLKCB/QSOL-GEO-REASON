@@ -129,7 +129,7 @@
       "backend_observed.determinism_mode must equal determinism.mode exactly.",
       "backend_observed observed model/tokenizer commits must equal the corresponding frozen model revisions.",
       "Production OBSERVATION manifests require model.revision_tree_sha256 and model.tokenizer_revision_tree_sha256 so verified Hub commits retain the same frozen tree binding required by the canonical constructor.",
-      "Production OBSERVATION model snapshots must contain at least one .safetensors weight artifact and must not contain .bin, .pt, .pth, or .ckpt checkpoint artifacts.",
+      "Production OBSERVATION model snapshots must contain Safetensors weights and must not contain .bin, .pt, .pth, or .ckpt checkpoint artifacts.",
       "CUDA device identity fields must be null on CPU and MPS manifests.",
       "Every production torch_build_config must contain exactly one canonical QSOL_GEO_CPU_RUNTIME record for the CPU float64 pooling instrument; on CUDA it immediately precedes the final CUDA runtime record.",
       "CUDA torch_build_config must contain exactly one canonical QSOL_GEO_CUDA_RUNTIME record as its final line; non-CUDA manifests must not contain that record."
@@ -295,24 +295,52 @@
         "platform": {"type": "string", "minLength": 1, "pattern": "\\S"},
         "torch_version": {"type": "string", "minLength": 1, "pattern": "\\S"},
         "transformers_version": {"type": "string", "minLength": 1, "pattern": "\\S"},
-        "torch_package_file_count": {"type": "integer", "minimum": 1},
-        "torch_package_receipt_sha256": {"$ref": "#/$defs/sha256"},
-        "transformers_package_file_count": {"type": "integer", "minimum": 1},
-        "transformers_package_receipt_sha256": {"$ref": "#/$defs/sha256"},
+        "torch_package_file_count": {
+          "type": "integer", "minimum": 1,
+          "description": "Count of regular files in the imported PyTorch package tree, including native binaries and excluding only authenticated source-equivalent bytecode caches."
+        },
+        "torch_package_receipt_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 canonical receipt over package-relative file paths and content digests for the actually imported PyTorch implementation."
+        },
+        "transformers_package_file_count": {
+          "type": "integer", "minimum": 1,
+          "description": "Count of regular files in the imported Transformers package tree, excluding disposable Python bytecode caches."
+        },
+        "transformers_package_receipt_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 canonical receipt over package-relative file paths and content digests for the actually imported Transformers implementation."
+        },
         "tokenizers_native_backend_active": {"type": "boolean"},
-        "tokenizers_package_file_count": {"type": ["integer", "null"], "minimum": 1},
-        "tokenizers_package_receipt_sha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "tokenizers_package_file_count": {
+          "type": ["integer", "null"], "minimum": 1,
+          "description": "Count of receipt-bound files in the imported native Tokenizers package when a fast tokenizer backend is active."
+        },
+        "tokenizers_package_receipt_sha256": {
+          "anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}],
+          "description": "Content receipt for the active native Tokenizers implementation, or null when the native fast-tokenizer backend is inactive. Canonical production currently rejects loaded slow tokenizers."
+        },
         "safetensors_deserializer_active": {
           "const": true,
           "description": "Canonical OBSERVATION requires Safetensors checkpoint loading; legacy pickle-capable checkpoint lanes are forbidden."
         },
-        "safetensors_package_file_count": {"type": "integer", "minimum": 1},
-        "safetensors_package_receipt_sha256": {"$ref": "#/$defs/sha256"},
+        "safetensors_package_file_count": {
+          "type": "integer", "minimum": 1,
+          "description": "Count of receipt-bound files in the imported Safetensors package used by the canonical checkpoint loader."
+        },
+        "safetensors_package_receipt_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Content receipt for the active Safetensors checkpoint deserializer."
+        },
         "torch_build_config": {
           "type": "string", "minLength": 1,
-          "pattern": "(?:^|\\n)QSOL_GEO_CPU_RUNTIME=\\{\"loaded_cpu_runtime_libraries\":\\{\"cpu_runtime_library_file_count\":[0-9]+,\"cpu_runtime_library_receipt_sha256\":\"[0-9a-f]{64}\"\\}\\}\\n(?:QSOL_GEO_CUDA_RUNTIME=\\{\"loaded_cuda_runtime_libraries\":\\{\"cuda_runtime_library_file_count\":[1-9][0-9]*,\"cuda_runtime_library_receipt_sha256\":\"[0-9a-f]{64}\"\\}\\}\\n?)?$"
+          "pattern": "(?:^|\\n)QSOL_GEO_CPU_RUNTIME=\\{\"loaded_cpu_runtime_libraries\":\\{\"cpu_runtime_library_file_count\":[0-9]+,\"cpu_runtime_library_receipt_sha256\":\"[0-9a-f]{64}\"\\}\\}\\n(?:QSOL_GEO_CUDA_RUNTIME=\\{\"loaded_cuda_runtime_libraries\":\\{\"cuda_runtime_library_file_count\":[1-9][0-9]*,\"cuda_runtime_library_receipt_sha256\":\"[0-9a-f]{64}\"\\}\\}\\n?)?$",
+          "description": "torch.__config__.show() captured at backend construction, followed by exactly one QSOL_GEO_CPU_RUNTIME receipt for the CPU float64 pooling instrument on every production device; CUDA observations append the QSOL_GEO_CUDA_RUNTIME receipt after it as the final line."
         },
-        "torch_build_config_sha256": {"$ref": "#/$defs/sha256"},
+        "torch_build_config_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 of the UTF-8 bytes of torch_build_config; the canonical bundle verifier recomputes this receipt."
+        },
         "tokenizers_version": {"$ref": "#/$defs/nullableString"},
         "huggingface_hub_version": {"$ref": "#/$defs/nullableString"},
         "model_class": {"type": "string", "minLength": 1, "pattern": "\\S"},
@@ -327,9 +355,12 @@
         "cpu_machine": {"$ref": "#/$defs/nullableString"},
         "cpu_processor": {"$ref": "#/$defs/nullableString"},
         "cpu_instruction_flags": {"$ref": "#/$defs/nullableString"},
-        "cpu_aten_capability": {"enum": ["DEFAULT", "VSX", "Z VECTOR", "NO AVX", "AVX2", "AVX512", "SVE256"]},
-        "aten_cpu_capability_env": {"$ref": "#/$defs/nullableString"},
-        "aten_cpu_capability_env_known": {"type": "boolean"},
+        "cpu_aten_capability": {
+          "enum": ["DEFAULT", "VSX", "Z VECTOR", "NO AVX", "AVX2", "AVX512", "SVE256"],
+          "description": "Effective ATen ISA used by the CPU float64 pooling instrument on every production device."
+        },
+        "aten_cpu_capability_env": {"$ref": "#/$defs/nullableString", "description": "Initialization-time ATEN_CPU_CAPABILITY override only when captured before the first PyTorch import. Otherwise unknown/null."},
+        "aten_cpu_capability_env_known": {"type": "boolean", "description": "Whether the initialization-time ATEN_CPU_CAPABILITY override is known for the CPU pooling instrument; false requires a null override while effective runtime capability remains mandatory."},
         "cpu_math_dispatch_env_known": {"$ref": "#/$defs/nullableBoolean"},
         "onednn_max_cpu_isa": {"$ref": "#/$defs/nullableString"},
         "dnnl_max_cpu_isa": {"$ref": "#/$defs/nullableString"},
@@ -341,7 +372,9 @@
         "cpu_mkldnn_enabled": {"$ref": "#/$defs/nullableBoolean"},
         "cpu_mkldnn_matmul_fp32_precision": {"$ref": "#/$defs/nullableString"},
         "cuda_device_name": {"$ref": "#/$defs/nullableString"},
-        "cuda_device_capability": {"anyOf": [{"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"}, {"type": "null"}]},
+        "cuda_device_capability": {
+          "anyOf": [{"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"}, {"type": "null"}]
+        },
         "cuda_resolved_device_index": {"$ref": "#/$defs/nullableInteger"},
         "cuda_device_uuid": {"$ref": "#/$defs/nullableString"},
         "cuda_visible_devices": {"$ref": "#/$defs/nullableString"},
@@ -355,7 +388,7 @@
         "cudnn_deterministic": {"$ref": "#/$defs/nullableBoolean"},
         "cuda_matmul_allow_fp16_reduced_precision_reduction": {"$ref": "#/$defs/nullableBoolean"},
         "cuda_matmul_allow_bf16_reduced_precision_reduction": {"$ref": "#/$defs/nullableBoolean"},
-        "cuda_matmul_allow_fp16_accumulation": {"enum": [false, null]},
+        "cuda_matmul_allow_fp16_accumulation": {"enum": [false, null], "description": "False when exposed by the CUDA build; null when unavailable or outside CUDA."},
         "sdpa_flash_enabled": {"$ref": "#/$defs/nullableBoolean"},
         "sdpa_mem_efficient_enabled": {"$ref": "#/$defs/nullableBoolean"},
         "sdpa_math_enabled": {"$ref": "#/$defs/nullableBoolean"},
@@ -395,10 +428,10 @@
         "quantization": {"const": "none"},
         "offloading": {"const": "none"},
         "local_files_only": {"const": true},
-        "trust_remote_code": {"const": false},
-        "use_cache": {"const": false},
+        "trust_remote_code": false,
+        "use_cache": false,
         "capture_phase": {"const": "replayed_prefix"},
-        "kv_cache_reuse": {"const": false},
+        "kv_cache_reuse": false,
         "deterministic_algorithms_enabled": {"type": "boolean"},
         "determinism_mode": {"enum": ["required", "best_effort"]}
       },
@@ -410,15 +443,6 @@
         "properties": {"deterministic_algorithms_enabled": {"const": true}}
       },
       "allOf": [
-        {
-          "properties": {
-            "model_snapshot_file_sha256": {
-              "propertyNames": {
-                "pattern": "^(?!.*\\.(?:[Bb][Ii][Nn]|[Pp][Tt]|[Pp][Tt][Hh]|[Cc][Kk][Pp][Tt])$).+$"
-              }
-            }
-          }
-        },
         {
           "if": {"properties": {"device": {"const": "mps"}}, "required": ["device"]},
           "then": {
@@ -444,7 +468,9 @@
               {"properties": {"mps_cpu_brand": {"type": "string", "minLength": 1, "pattern": "\\S"}}, "required": ["mps_cpu_brand"]}
             ]
           },
-          "else": {"properties": {"mps_device_active": {"const": false}}}
+          "else": {
+            "properties": {"mps_device_active": {"const": false}}
+          }
         },
         {
           "if": {
@@ -454,16 +480,26 @@
             },
             "required": ["device", "determinism_mode"]
           },
-          "then": {"properties": {"cublas_workspace_config": {"enum": [":4096:8", ":16:8"]}}}
+          "then": {
+            "properties": {
+              "cublas_workspace_config": {"enum": [":4096:8", ":16:8"]}
+            }
+          }
         },
         {
-          "if": {"properties": {"device": {"type": "string", "pattern": "^cuda:[0-9]+$"}}, "required": ["device"]},
+          "if": {
+            "properties": {"device": {"type": "string", "pattern": "^cuda:[0-9]+$"}},
+            "required": ["device"]
+          },
           "then": {
             "properties": {
               "cuda_device_name": {"type": "string", "minLength": 1, "pattern": "\\S"},
               "cuda_device_capability": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
               "cuda_resolved_device_index": {"type": "integer", "minimum": 0},
-              "torch_build_config": {"type": "string", "pattern": "(?:^|\\n)QSOL_GEO_CUDA_RUNTIME=\\{\"loaded_cuda_runtime_libraries\":\\{\"cuda_runtime_library_file_count\":[1-9][0-9]*,\"cuda_runtime_library_receipt_sha256\":\"[0-9a-f]{64}\"\\}\\}\\n?$"}
+              "torch_build_config": {
+                "type": "string",
+                "pattern": "(?:^|\\n)QSOL_GEO_CUDA_RUNTIME=\\{\"loaded_cuda_runtime_libraries\":\\{\"cuda_runtime_library_file_count\":[1-9][0-9]*,\"cuda_runtime_library_receipt_sha256\":\"[0-9a-f]{64}\"\\}\\}\\n?$"
+              }
             }
           },
           "else": {
@@ -472,7 +508,9 @@
               "cuda_device_capability": {"type": "null"},
               "cuda_resolved_device_index": {"type": "null"},
               "cuda_device_uuid": {"type": "null"},
-              "torch_build_config": {"not": {"pattern": "(?:^|\\n)QSOL_GEO_CUDA_RUNTIME="}}
+              "torch_build_config": {
+                "not": {"pattern": "(?:^|\\n)QSOL_GEO_CUDA_RUNTIME="}
+              }
             }
           }
         },
@@ -510,7 +548,9 @@
                 "type": "string",
                 "minLength": 1,
                 "pattern": "\\S",
-                "not": {"pattern": "^\\s*(?:[Uu][Nn][Kk][Nn][Oo][Ww][Nn]|[Gg][Ee][Nn][Ee][Rr][Ii][Cc]|[Cc][Pp][Uu]|[Pp][Rr][Oo][Cc][Ee][Ss][Ss][Oo][Rr]|[Xx]86_64|[Aa][Mm][Dd]64|[Xx]64|[Ii]386|[Ii]686|[Aa][Rr][Mm]|[Aa][Rr][Mm]64|[Aa][Aa][Rr][Cc][Hh]64|[Pp][Pp][Cc]64|[Pp][Pp][Cc]64[Ll][Ee]|[Ss]390[Xx])\\s*$"}
+                "not": {
+                  "pattern": "^\\s*(?:[Uu][Nn][Kk][Nn][Oo][Ww][Nn]|[Gg][Ee][Nn][Ee][Rr][Ii][Cc]|[Cc][Pp][Uu]|[Pp][Rr][Oo][Cc][Ee][Ss][Ss][Oo][Rr]|[Xx]86_64|[Aa][Mm][Dd]64|[Xx]64|[Ii]386|[Ii]686|[Aa][Rr][Mm]|[Aa][Rr][Mm]64|[Aa][Aa][Rr][Cc][Hh]64|[Pp][Pp][Cc]64|[Pp][Pp][Cc]64[Ll][Ee]|[Ss]390[Xx])\\s*$"
+                }
               },
               "cpu_math_dispatch_env_known": {"type": "boolean"}
             }
@@ -563,6 +603,18 @@
           "if": {"properties": {"attention_implementation": {"const": "sdpa"}}, "required": ["attention_implementation"]},
           "then": {"properties": {"sdpa_flash_enabled": {"const": false}, "sdpa_mem_efficient_enabled": {"const": false}, "sdpa_math_enabled": {"const": true}, "sdpa_cudnn_enabled": {"enum": [false, null]}}},
           "else": {"properties": {"sdpa_flash_enabled": {"type": "null"}, "sdpa_mem_efficient_enabled": {"type": "null"}, "sdpa_math_enabled": {"type": "null"}, "sdpa_cudnn_enabled": {"type": "null"}}}
+        },
+        {
+          "if": {"properties": {"safetensors_deserializer_active": {"const": true}}, "required": ["safetensors_deserializer_active"]},
+          "then": {
+            "properties": {
+              "model_snapshot_file_sha256": {
+                "propertyNames": {
+                  "pattern": "^(?!.*\\.(?:[Bb][Ii][Nn]|[Pp][Tt]|[Pp][Tt][Hh]|[Cc][Kk][Pp][Tt])$).+$"
+                }
+              }
+            }
+          }
         }
       ]
     }
