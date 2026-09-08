@@ -258,7 +258,12 @@ def _validate_backend_layer(value: Any, *, layer_index: int, expected_dimension:
     for item in vector:
         if isinstance(item, bool) or not isinstance(item, (int, float)):
             raise CaptureContractError(f"{where}.vector contains a non-numeric value")
-        number = float(item)
+        try:
+            number = float(item)
+        except (OverflowError, ValueError) as exc:
+            raise CaptureContractError(
+                f"{where}.vector contains a value outside the supported binary64 domain"
+            ) from exc
         if not math.isfinite(number):
             raise CaptureContractError(f"{where}.vector contains a non-finite value")
         normalized.append(number)
