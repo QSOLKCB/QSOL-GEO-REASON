@@ -22,6 +22,7 @@ from . import capture_provenance as _capture_provenance
 
 
 _ORIGINAL_CANONICAL_SNAPSHOT_PATH = _capture_provenance._is_canonical_snapshot_path
+_ORIGINAL_VALIDATE_BACKEND_METADATA = _capture_provenance._validate_backend_metadata
 
 
 def _is_canonical_snapshot_path_round45(value: Any) -> bool:
@@ -37,6 +38,26 @@ def _is_canonical_snapshot_path_round45(value: Any) -> bool:
 # _validate_snapshot_receipt() resolves this helper through module globals at call
 # time, including when invoked by the public verifier imported later by capture.py.
 _capture_provenance._is_canonical_snapshot_path = _is_canonical_snapshot_path_round45
+
+
+def _validate_backend_metadata_round45(
+    observed: Mapping[str, Any], request: Mapping[str, Any], evidence_class: str
+) -> None:
+    """Require provenance for the CPU pooling instrument on every observation lane."""
+    _ORIGINAL_VALIDATE_BACKEND_METADATA(observed, request, evidence_class)
+    if evidence_class != "OBSERVATION":
+        return
+    if not _is_concrete_cpu_identity(observed.get("cpu_processor")):
+        raise CaptureContractError(
+            "canonical OBSERVATION CPU pooling requires a concrete processor model identity"
+        )
+    if observed.get("cpu_flush_denormal") is not False:
+        raise CaptureContractError(
+            "canonical OBSERVATION requires cpu_flush_denormal=false"
+        )
+
+
+_capture_provenance._validate_backend_metadata = _validate_backend_metadata_round45
 
 
 def _is_real_runtime_module(value: Any, root: str) -> bool:
