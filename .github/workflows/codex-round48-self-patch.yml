@@ -22,35 +22,9 @@ jobs:
           fetch-depth: 0
 
       - name: Apply guarded review fixes
-        run: python tools/codex_round48_patch.py
-
-      - name: Align prior concrete-boundary source audit
         run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path("tests/test_capture_codex_round21.py")
-          text = path.read_text(encoding="utf-8")
-          old = '''        self.assertIn(
-            'if production_backend and evidence_class != "OBSERVATION":',
-            source,
-        )
-        self.assertIn("if not production_backend:", source)
-'''
-          new = '''        self.assertIn(
-            "production_backend_instance = isinstance(backend, HuggingFacePyTorchBackend)",
-            source,
-        )
-        self.assertIn(
-            'if production_backend_instance and evidence_class != "OBSERVATION":',
-            source,
-        )
-        self.assertIn("if not production_backend:", source)
-'''
-          if text.count(old) != 1:
-              raise SystemExit("round21 concrete-boundary audit did not match exactly once")
-          path.write_text(text.replace(old, new, 1), encoding="utf-8")
-          PY
+          python tools/codex_round48_patch.py
+          python tools/codex_round48_legacy_patch.py
 
       - name: Install test environment
         run: |
@@ -70,6 +44,7 @@ jobs:
         run: |
           rm .github/workflows/codex-round48-self-patch.yml
           rm tools/codex_round48_patch.py
+          rm tools/codex_round48_legacy_patch.py
           git config user.name "chatgpt-codex-connector[bot]"
           git config user.email "chatgpt-codex-connector[bot]@users.noreply.github.com"
           git add src/qsol_geo_reason/capture_execute.py
@@ -79,5 +54,6 @@ jobs:
           git add tests/test_capture_codex_round48.py
           git add .github/workflows/codex-round48-self-patch.yml
           git add tools/codex_round48_patch.py
+          git add tools/codex_round48_legacy_patch.py
           git commit -m "fix: harden observation startup boundary"
           git push origin HEAD:phase2a-canonical-hidden-state-capture
