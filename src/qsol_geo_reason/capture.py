@@ -4,7 +4,7 @@ from .capture_common import (CAPTURE_PROTOCOL_ID, CAPTURE_SCHEMA_VERSION, Captur
 from .capture_validation import _quantization_reasons, _validate_loading_info, validate_capture_request
 from .capture_provenance import _resolve_hidden_state_layout
 from .capture_snapshot import _snapshot_file_hashes
-from .capture_backend_audit import HuggingFacePyTorchBackend
+from .capture_backend_final import HuggingFacePyTorchBackend
 from .capture_execute import execute_capture
 from .capture_verify import verify_capture_bundle
 from .capture_publish import write_capture_bundle
