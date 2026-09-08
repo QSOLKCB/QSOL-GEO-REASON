@@ -14,6 +14,7 @@ from typing import Any, Mapping
 from .canonical import sha256_json
 from .capture_common import CaptureBackendUnavailable, CaptureContractError
 from .capture_snapshot import _snapshot_file_hashes
+from .capture_validation import validate_capture_request
 from . import capture_backend_audit as _audit
 from . import capture_backend_production as _production
 
@@ -150,50 +151,33 @@ def _assert_safetensors_only_checkpoint(model_hashes: Mapping[str, str]) -> None
 class HuggingFacePyTorchBackend(_BaseAuditedBackend):
     """Final canonical backend with preregistered Hub-tree and runtime trust anchors."""
 
-    @classmethod
-    def _validate_pre_cuda_environment(cls, request: Mapping[str, Any]) -> None:
-        # Preserve the inherited pre-import CUDA policy first. Record the already
-        # validated request receipts externally, but defer requiring them until the
-        # unmocked core loader reaches its pre-snapshot autocast guard. This keeps
-        # dependency-free constructor-boundary fixtures truthful without creating a
-        # bypass in a real model-loading path.
-        super()._validate_pre_cuda_environment(request)
-        model = request["model"]
-        instance = None
-        # classmethod dispatch does not expose self; the production constructor calls
-        # this through self but Python supplies the class. Request binding is therefore
-        # completed in the instance guard below from the construction-shadow copy.
-        # The no-op body here intentionally preserves the established constructor hook.
-        _ = (model.get("revision_tree_sha256"), model.get("tokenizer_revision_tree_sha256"), instance)
-
-    def _bind_pending_tree_receipts_from_construction_request(self) -> None:
-        """Recover request receipts from the immutable construction shadow when present."""
-        if _recall_final_construction_request(self) is not None:
-            return
-        # The audited hierarchy freezes a detached validated request shadow before the
-        # core loader is entered. Use only that detached copy; do not trust mutable
-        # caller-owned request state or later instance substitutions.
-        request = getattr(self, "_construction_request", None)
-        if isinstance(request, Mapping):
-            model = request.get("model")
-            if isinstance(model, Mapping):
-                _remember_final_construction_request(
-                    self,
-                    (
-                        model.get("revision_tree_sha256") if isinstance(model.get("revision_tree_sha256"), str) else None,
-                        model.get("tokenizer_revision_tree_sha256") if isinstance(model.get("tokenizer_revision_tree_sha256"), str) else None,
-                    ),
-                )
+    def __new__(cls, request: Mapping[str, Any]):
+        # The inherited audit __new__ performs its established pre-construction
+        # validation and environment capture. Add only two detached receipt strings to
+        # the external vault here: no filesystem access and no new rejection occurs at
+        # this boundary, so dependency-free lower-loader fixtures retain their meaning.
+        instance = super().__new__(cls, request)
+        validated = validate_capture_request(request)
+        model = validated["model"]
+        _remember_final_construction_request(
+            instance,
+            (
+                model.get("revision_tree_sha256"),
+                model.get("tokenizer_revision_tree_sha256"),
+            ),
+        )
+        return instance
 
     def _assert_autocast_disabled(self) -> None:
         """Run frozen-tree/Safetensors preflight at the real core pre-load boundary."""
-        self._bind_pending_tree_receipts_from_construction_request()
         request_receipts = _recall_final_construction_request(self)
         preflight = _recall_final_construction_preflight(self)
 
         # Object-level software fixtures can call inherited helpers without ever
-        # entering production construction. They have no construction request marker
-        # and therefore exercise only the inherited autocast policy.
+        # entering production construction. They have no external request marker and
+        # therefore exercise only the inherited autocast policy. Every normally
+        # constructed final backend has the marker, even when both receipt values are
+        # absent, and a real core load therefore fails closed before snapshot loading.
         if request_receipts is not None and preflight is None:
             model_tree_receipt, tokenizer_tree_receipt = _require_frozen_tree_receipts(
                 request_receipts
