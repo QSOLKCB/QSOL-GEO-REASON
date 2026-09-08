@@ -6,11 +6,12 @@ import unittest
 from pathlib import Path
 
 from qsol_geo_reason.canonical import sha256_json
-from qsol_geo_reason.capture import CaptureContractError, verify_capture_bundle
-from qsol_geo_reason.capture_backend_final import (
-    HuggingFacePyTorchBackend as FinalBackend,
-    _remember_final_construction_request,
+from qsol_geo_reason.capture import (
+    CaptureContractError,
+    HuggingFacePyTorchBackend as CanonicalBackend,
+    verify_capture_bundle,
 )
+from qsol_geo_reason.capture_backend_final import _remember_final_construction_request
 from qsol_geo_reason.capture_execute import _assert_observation_backend_execution_methods
 from qsol_geo_reason.capture_provenance import _validate_production_metadata_shape
 from qsol_geo_reason.capture_validation import validate_capture_request
@@ -25,7 +26,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class CaptureRound38RegressionTests(unittest.TestCase):
     def test_live_final_construction_vault_entries_are_opaque_to_dependency_hashing(self):
-        backend = object.__new__(FinalBackend)
+        # Use the current concrete OBSERVATION boundary. It still inherits the final
+        # construction vault whose mutable WeakKeyDictionary contents this regression
+        # protects, while the import-time adapter receipt correctly tracks the newest
+        # production subclass.
+        backend = object.__new__(CanonicalBackend)
         _assert_observation_backend_execution_methods(backend)
 
         # A real final backend adds itself to a closure-owned WeakKeyDictionary in
