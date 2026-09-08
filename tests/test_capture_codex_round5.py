@@ -63,13 +63,24 @@ class CaptureRound5RegressionTests(unittest.TestCase):
         required = {"determinism": {"mode": "required"}}
         with self.assertRaisesRegex(CaptureContractError, "required determinism"):
             _validate_required_determinism(
-                {"deterministic_algorithms_enabled": False}, required
+                {
+                    "deterministic_algorithms_enabled": False,
+                    "deterministic_warn_only_enabled": False,
+                },
+                required,
             )
         _validate_required_determinism(
-            {"deterministic_algorithms_enabled": True}, required
+            {
+                "deterministic_algorithms_enabled": True,
+                "deterministic_warn_only_enabled": False,
+            },
+            required,
         )
         _validate_required_determinism(
-            {"deterministic_algorithms_enabled": False},
+            {
+                "deterministic_algorithms_enabled": False,
+                "deterministic_warn_only_enabled": False,
+            },
             {"determinism": {"mode": "best_effort"}},
         )
 
