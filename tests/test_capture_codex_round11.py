@@ -100,8 +100,11 @@ def rebind_bundle(manifest: dict, trajectory: dict) -> None:
 
 
 def production_observed(request: dict) -> dict:
-    # Schema-validation data only, never an empirical capture.
-    model_hashes = {"config.json": "0" * 64}
+    # Schema-validation data only, never an empirical capture. Keep this synthetic
+    # OBSERVATION fixture aligned with the canonical production pre-load contract.
+    request["model"].setdefault("revision_tree_sha256", "2" * 64)
+    request["model"].setdefault("tokenizer_revision_tree_sha256", "3" * 64)
+    model_hashes = {"model.safetensors": "0" * 64}
     tokenizer_hashes = {"tokenizer.json": "1" * 64}
     return {
         **valid_production_shape(request),
@@ -111,6 +114,9 @@ def production_observed(request: dict) -> dict:
         "checkpoint_loading_clean": True,
         "quantization_config_present": False,
         "model_reports_quantized": False,
+        "safetensors_deserializer_active": True,
+        "safetensors_package_file_count": 1,
+        "safetensors_package_receipt_sha256": "4" * 64,
         "device": "cpu",
         "dtype": request["backend"]["dtype"],
         "observed_hidden_state_dtypes": {
