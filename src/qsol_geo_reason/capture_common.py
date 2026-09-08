@@ -79,7 +79,7 @@ _PRODUCTION_BACKEND_KEYS = {
     "sdpa_flash_enabled", "sdpa_mem_efficient_enabled", "sdpa_math_enabled", "sdpa_cudnn_enabled",
     "nvidia_tf32_override", "torch_allow_tf32_cublas_override", "cublas_workspace_config",
     "mps_device_active", "mps_built", "mps_available", "mps_mac_model", "mps_cpu_brand",
-    "mps_macos_version", "mps_fallback_env", "mps_fast_math_env", "autocast_disabled",
+    "mps_macos_version", "mps_fallback_env", "mps_fast_math_env", "mps_prefer_metal_env", "autocast_disabled",
     "dtype", "observed_hidden_state_dtypes", "pool_accumulation_dtype",
     "pool_accumulation_device", "hidden_state_capture_strategy", "hidden_state_block_path",
     "hidden_state_count", "snapshot_authentication", "model_snapshot_file_count",
@@ -87,7 +87,7 @@ _PRODUCTION_BACKEND_KEYS = {
     "tokenizer_snapshot_file_count", "tokenizer_snapshot_file_sha256",
     "tokenizer_snapshot_receipt_sha256", "quantization", "offloading", "local_files_only",
     "trust_remote_code", "use_cache", "capture_phase", "kv_cache_reuse",
-    "deterministic_algorithms_enabled", "determinism_mode",
+    "deterministic_algorithms_enabled", "deterministic_warn_only_enabled", "determinism_mode",
 }
 
 

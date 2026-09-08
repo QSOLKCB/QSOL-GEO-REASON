@@ -227,6 +227,17 @@ class HuggingFacePyTorchBackend:
             raise CaptureContractError("deterministic algorithm state must be boolean")
         return enabled
 
+    def _deterministic_warn_only_state(self) -> bool:
+        checker = getattr(self._torch, "is_deterministic_algorithms_warn_only_enabled", None)
+        if not callable(checker):
+            raise CaptureContractError(
+                "canonical capture requires torch.is_deterministic_algorithms_warn_only_enabled"
+            )
+        enabled = checker()
+        if not isinstance(enabled, bool):
+            raise CaptureContractError("deterministic warn-only state must be boolean")
+        return enabled
+
     def _assert_required_determinism_policy(self) -> bool:
         enabled = self._deterministic_algorithms_state()
         if self._determinism_mode == "required" and enabled is not True:
@@ -650,6 +661,7 @@ class HuggingFacePyTorchBackend:
         deterministic_enabled = self._last_deterministic_algorithms_enabled
         if deterministic_enabled is None:
             deterministic_enabled = self._deterministic_algorithms_state()
+        deterministic_warn_only = self._deterministic_warn_only_state()
         return {
             "name": _PRODUCTION_BACKEND,
             "python_version": sys.version.split()[0], "platform": platform.platform(),
@@ -686,6 +698,7 @@ class HuggingFacePyTorchBackend:
             "mps_macos_version": (platform.mac_ver()[0] or None) if mps_active else None,
             "mps_fallback_env": os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK"),
             "mps_fast_math_env": os.environ.get("PYTORCH_MPS_FAST_MATH"),
+            "mps_prefer_metal_env": os.environ.get("PYTORCH_MPS_PREFER_METAL"),
             "autocast_disabled": True,
             "dtype": self._dtype_name,
             "observed_hidden_state_dtypes": {str(k): sorted(v) for k, v in sorted(self._observed_hidden_state_dtypes.items())},
@@ -700,5 +713,6 @@ class HuggingFacePyTorchBackend:
             "quantization": "none", "offloading": "none", "local_files_only": True,
             "trust_remote_code": False, "use_cache": False, "capture_phase": _CAPTURE_PHASE,
             "kv_cache_reuse": False, "deterministic_algorithms_enabled": deterministic_enabled,
+            "deterministic_warn_only_enabled": deterministic_warn_only,
             "determinism_mode": self._determinism_mode,
         }

@@ -84,6 +84,13 @@ def _validate_required_determinism(observed: Mapping[str, Any], request: Mapping
     enabled = observed.get("deterministic_algorithms_enabled")
     if not isinstance(enabled, bool):
         raise CaptureContractError("deterministic_algorithms_enabled must be boolean")
+    warn_only = observed.get("deterministic_warn_only_enabled")
+    if not isinstance(warn_only, bool):
+        raise CaptureContractError("deterministic_warn_only_enabled must be boolean")
+    if warn_only is not False:
+        raise CaptureContractError(
+            "canonical observation requires deterministic_warn_only_enabled=false"
+        )
     if request["determinism"]["mode"] == "required" and enabled is not True:
         raise CaptureContractError(
             "required determinism requires deterministic_algorithms_enabled=true"
@@ -144,17 +151,18 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
     native_tokenizers = observed.get("tokenizers_native_backend_active")
     if not isinstance(native_tokenizers, bool):
         raise CaptureContractError("tokenizers_native_backend_active must be boolean")
-    if native_tokenizers:
-        if not isinstance(observed.get("tokenizers_version"), str) or not observed["tokenizers_version"].strip():
-            raise CaptureContractError("active native tokenizer requires tokenizers_version")
-        _validate_python_package_provenance(
-            observed,
-            count_field="tokenizers_package_file_count",
-            receipt_field="tokenizers_package_receipt_sha256",
-            where="Tokenizers",
+    if native_tokenizers is not True:
+        raise CaptureContractError(
+            "canonical observation requires tokenizers_native_backend_active=true"
         )
-    elif observed.get("tokenizers_package_file_count") is not None or observed.get("tokenizers_package_receipt_sha256") is not None:
-        raise CaptureContractError("inactive native tokenizer must not carry package provenance")
+    if not isinstance(observed.get("tokenizers_version"), str) or not observed["tokenizers_version"].strip():
+        raise CaptureContractError("active native tokenizer requires tokenizers_version")
+    _validate_python_package_provenance(
+        observed,
+        count_field="tokenizers_package_file_count",
+        receipt_field="tokenizers_package_receipt_sha256",
+        where="Tokenizers",
+    )
 
     safetensors_active = observed.get("safetensors_deserializer_active")
     if not isinstance(safetensors_active, bool):
@@ -200,7 +208,7 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
         "cuda_visible_devices", "cuda_build_version", "nvidia_driver_version",
         "float32_matmul_precision", "nvidia_tf32_override", "torch_allow_tf32_cublas_override",
         "cublas_workspace_config", "mps_mac_model", "mps_cpu_brand", "mps_macos_version",
-        "mps_fallback_env", "mps_fast_math_env",
+        "mps_fallback_env", "mps_fast_math_env", "mps_prefer_metal_env",
     )
     for field in nullable_strings:
         _validate_nullable_string(observed.get(field), f"production backend field {field}")
@@ -364,6 +372,8 @@ def _validate_production_metadata_shape(observed: Mapping[str, Any], request: Ma
             raise CaptureContractError("canonical MPS provenance forbids fallback enablement")
         if _env_flag_enabled(observed.get("mps_fast_math_env")):
             raise CaptureContractError("canonical MPS provenance forbids fast-math enablement")
+        if _env_flag_enabled(observed.get("mps_prefer_metal_env")):
+            raise CaptureContractError("canonical MPS provenance forbids Metal matmul preference")
 
 
 def _validate_backend_metadata(observed: Mapping[str, Any], request: Mapping[str, Any], evidence_class: str) -> None:
