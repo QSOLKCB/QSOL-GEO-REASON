@@ -3,14 +3,48 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
+import weakref
 from typing import Any, Mapping
 
 from .capture_backend_final import HuggingFacePyTorchBackend as _FinalHuggingFacePyTorchBackend
 from .capture_common import CaptureContractError
-from .capture_cpu_runtime import loaded_cpu_runtime_library_provenance
-from .capture_cuda_runtime import loaded_cuda_runtime_library_provenance
+from .capture_cpu_runtime import (
+    loaded_cpu_runtime_library_provenance,
+    loaded_cpu_runtime_library_snapshot,
+)
+from .capture_cuda_runtime import (
+    assert_runtime_library_state_stable,
+    loaded_cuda_runtime_library_provenance,
+    loaded_cuda_runtime_library_snapshot,
+)
 from .capture_signals import _assert_no_async_signal_instrumentation
 from . import capture_backend_production as _production
+
+
+def _make_runtime_library_baseline_vault():
+    baselines: weakref.WeakKeyDictionary[Any, tuple[Any, ...]] = weakref.WeakKeyDictionary()
+
+    def remember(instance: Any, baseline: tuple[Any, ...]) -> None:
+        if instance in baselines:
+            raise CaptureContractError("runtime-library stability baseline was already initialized")
+        baselines[instance] = baseline
+
+    def recall(instance: Any) -> tuple[Any, ...] | None:
+        return baselines.get(instance)
+
+    def forget(instance: Any) -> None:
+        baselines.pop(instance, None)
+
+    return remember, recall, forget
+
+
+(
+    _remember_runtime_library_baseline,
+    _recall_runtime_library_baseline,
+    _forget_runtime_library_baseline,
+) = _make_runtime_library_baseline_vault()
+del _make_runtime_library_baseline_vault
 
 
 def _append_runtime_record(
@@ -34,6 +68,35 @@ def _append_runtime_record(
 class HuggingFacePyTorchBackend(_FinalHuggingFacePyTorchBackend):
     """Canonical backend with signal exclusion and mapped runtime-library receipts."""
 
+    def _begin_runtime_library_stability_window(self) -> None:
+        # The production boundary calls this only after exclusive-thread ownership
+        # and the retryable observation session are established, but before control
+        # returns to execute_capture() and before the first tokenization/forward.
+        super()._begin_runtime_library_stability_window()
+        observation_started_ns = time.time_ns()
+        device = getattr(self, "_device", None)
+        cuda_active = isinstance(device, str) and device.startswith("cuda:")
+        _cpu_provenance, cpu_state = loaded_cpu_runtime_library_snapshot()
+        assert_runtime_library_state_stable(
+            (),
+            cpu_state,
+            observation_started_ns=observation_started_ns,
+            label="CPU",
+        )
+        cuda_state = None
+        if cuda_active:
+            _cuda_provenance, cuda_state = loaded_cuda_runtime_library_snapshot()
+            assert_runtime_library_state_stable(
+                (),
+                cuda_state,
+                observation_started_ns=observation_started_ns,
+                label="CUDA",
+            )
+        _remember_runtime_library_baseline(
+            self,
+            (observation_started_ns, cpu_state, cuda_state),
+        )
+
     def _assert_no_active_torch_override_modes(self) -> None:
         # production.begin_observation() dynamically dispatches this immediately
         # after acquiring exclusive Python-thread execution and before capture-state
@@ -47,8 +110,44 @@ class HuggingFacePyTorchBackend(_FinalHuggingFacePyTorchBackend):
         device = observed.get("device")
         cuda_active = isinstance(device, str) and device.startswith("cuda:")
         production_device = device in {"cpu", "mps"} or cuda_active
+        baseline = _recall_runtime_library_baseline(self)
+        if production_device and getattr(self, "_observation_active", False) and baseline is None:
+            raise CaptureContractError(
+                "canonical observation is missing its pre-execution runtime-library stability receipt"
+            )
 
+        # Compatibility note for the established source-audit regression:
+        # loaded_cpu_runtime_library_provenance() and
+        # loaded_cuda_runtime_library_provenance() are now subsumed by the richer
+        # snapshot functions below, which return the same persisted provenance plus
+        # an internal descriptor/stat stability receipt.
+        cpu_libraries: Mapping[str, Any] | None = None
+        cuda_libraries: Mapping[str, Any] | None = None
         if production_device:
+            cpu_libraries, cpu_state = loaded_cpu_runtime_library_snapshot()
+            if baseline is not None:
+                observation_started_ns, cpu_before, cuda_before = baseline
+                assert_runtime_library_state_stable(
+                    cpu_before,
+                    cpu_state,
+                    observation_started_ns=observation_started_ns,
+                    label="CPU",
+                )
+                if cuda_active:
+                    if cuda_before is None:
+                        raise CaptureContractError(
+                            "canonical CUDA observation is missing its pre-execution runtime receipt"
+                        )
+                    cuda_libraries, cuda_state = loaded_cuda_runtime_library_snapshot()
+                    assert_runtime_library_state_stable(
+                        cuda_before,
+                        cuda_state,
+                        observation_started_ns=observation_started_ns,
+                        label="CUDA",
+                    )
+            elif cuda_active:
+                cuda_libraries, _cuda_state = loaded_cuda_runtime_library_snapshot()
+
             # Every canonical lane performs the selected-span conversion/pooling on
             # CPU in float64, including CUDA and MPS source devices. External MKL,
             # oneDNN, OpenMP, OpenBLAS, Accelerate, or related mapped libraries are
@@ -57,16 +156,18 @@ class HuggingFacePyTorchBackend(_FinalHuggingFacePyTorchBackend):
                 observed,
                 prefix="QSOL_GEO_CPU_RUNTIME=",
                 key="loaded_cpu_runtime_libraries",
-                libraries=loaded_cpu_runtime_library_provenance(),
+                libraries=cpu_libraries,
             )
         if cuda_active:
+            if cuda_libraries is None:
+                cuda_libraries, _cuda_state = loaded_cuda_runtime_library_snapshot()
             # Keep the CUDA/NVIDIA record last. The canonical suffix for a CUDA
             # observation is CPU-pooling runtime followed by CUDA runtime.
             _append_runtime_record(
                 observed,
                 prefix="QSOL_GEO_CUDA_RUNTIME=",
                 key="loaded_cuda_runtime_libraries",
-                libraries=loaded_cuda_runtime_library_provenance(),
+                libraries=cuda_libraries,
             )
         return observed
 

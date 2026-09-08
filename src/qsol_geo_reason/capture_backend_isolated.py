@@ -393,11 +393,11 @@ class HuggingFacePyTorchBackend(_PolicyHuggingFacePyTorchBackend):
             self._force_canonical_determinism_policy()
             self._assert_live_state_authentication()
         except BaseException:
-            try:
-                self._restore_torch_process_state(self._torch, ambient)
-            finally:
-                self._observation_active = False
-                self._observation_ambient_process_state = None
+            # Startup cleanup must use the same retryable ownership semantics as
+            # normal session shutdown.  Keep the ambient receipt live until the
+            # restore is complete; deterministic restore failures remain retryable
+            # by execute_capture() instead of discarding the caller's only receipt.
+            HuggingFacePyTorchBackend.end_observation(self)
             raise
 
     def end_observation(self) -> None:

@@ -253,91 +253,222 @@ def _sha256_fd(fd: int, where: Path) -> str:
     return digest.hexdigest()
 
 
+def _stat_fingerprint(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        int(value.st_dev),
+        int(value.st_ino),
+        int(value.st_size),
+        int(value.st_mtime_ns),
+        int(value.st_ctime_ns),
+    )
+
+
+def _runtime_library_measurement(
+    raw_path: Path | _MappedLibrary,
+    *,
+    predicate: _LibraryPredicate,
+    label: str,
+) -> tuple[str, str, str, tuple[int, int, int, int, int]] | None:
+    if isinstance(raw_path, _MappedLibrary):
+        display_path = raw_path.path
+        content_path = raw_path.content_path
+        expected_device = raw_path.device
+        expected_inode = raw_path.inode
+        if expected_device is None or expected_inode is None:
+            raise CaptureContractError(
+                f"mapped {label} runtime library is missing device/inode identity: {display_path}"
+            )
+    else:
+        display_path = Path(raw_path)
+        content_path = display_path
+        expected_device = None
+        expected_inode = None
+
+    if not predicate(str(display_path)):
+        return None
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        # Open the ordinary pathname exactly once.  For Linux mappings the
+        # descriptor is authenticated against /proc/self/maps device/inode data;
+        # this avoids privileged /proc/self/map_files while still pinning identity.
+        fd = os.open(content_path, flags)
+    except OSError as exc:
+        raise CaptureContractError(
+            f"unable to open mapped {label} runtime library {display_path}"
+        ) from exc
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise CaptureContractError(
+                f"mapped {label} runtime object is not a regular file: {display_path}"
+            )
+        if (
+            expected_device is not None
+            and (before.st_dev != expected_device or before.st_ino != expected_inode)
+        ):
+            raise CaptureContractError(
+                f"mapped {label} runtime library identity changed before hashing: {display_path}"
+            )
+        before_fingerprint = _stat_fingerprint(before)
+        digest = _sha256_fd(fd, display_path)
+        after_fingerprint = _stat_fingerprint(os.fstat(fd))
+        if after_fingerprint != before_fingerprint:
+            raise CaptureContractError(
+                f"mapped {label} runtime library changed while hashing: {display_path}"
+            )
+    finally:
+        os.close(fd)
+    return str(display_path), display_path.name, digest, before_fingerprint
+
+
 def _runtime_library_digest(
     raw_path: Path | _MappedLibrary,
     *,
     predicate: _LibraryPredicate,
     label: str,
 ) -> tuple[str, str] | None:
-    if isinstance(raw_path, _MappedLibrary):
-        display_path = raw_path.path
-        if not predicate(str(display_path)):
-            return None
-        if raw_path.device is None or raw_path.inode is None:
-            raise CaptureContractError(
-                f"mapped {label} runtime library is missing device/inode identity: {display_path}"
-            )
-        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
-        try:
-            # Production Linux mappings use the ordinary pathname from
-            # /proc/self/maps. fstat() below proves that this descriptor still
-            # names the exact mapped device/inode before any bytes are hashed.
-            # Replacement before open fails authentication; replacement after
-            # open cannot change the inode pinned by this descriptor.
-            fd = os.open(raw_path.content_path, flags)
-        except OSError as exc:
-            raise CaptureContractError(
-                f"unable to open mapped {label} runtime library {display_path}"
-            ) from exc
-        try:
-            observed = os.fstat(fd)
-            if not stat.S_ISREG(observed.st_mode):
-                raise CaptureContractError(
-                    f"mapped {label} runtime object is not a regular file: {display_path}"
-                )
-            if observed.st_dev != raw_path.device or observed.st_ino != raw_path.inode:
-                raise CaptureContractError(
-                    f"mapped {label} runtime library identity changed before hashing: {display_path}"
-                )
-            digest = _sha256_fd(fd, display_path)
-        finally:
-            os.close(fd)
-        return display_path.name, digest
-
-    try:
-        path = Path(raw_path).resolve(strict=True)
-    except OSError as exc:
-        raise CaptureContractError(
-            f"loaded {label} runtime library path is unavailable: {raw_path}"
-        ) from exc
-    if not path.is_file() or not predicate(str(path)):
+    measured = _runtime_library_measurement(
+        raw_path, predicate=predicate, label=label
+    )
+    if measured is None:
         return None
-    return path.name, _sha256_file(path)
+    _display_path, name, digest, _fingerprint = measured
+    return name, digest
+
+
+def _runtime_library_snapshot(
+    paths: Iterable[Path | _MappedLibrary],
+    *,
+    predicate: _LibraryPredicate,
+    label: str,
+    require_nonempty: bool,
+) -> tuple[int, str, tuple[tuple[Any, ...], ...]]:
+    """Return content provenance plus a stat-bound execution-stability receipt."""
+    by_name: dict[str, str] = {}
+    stability: list[tuple[Any, ...]] = []
+    for raw_path in paths:
+        measured = _runtime_library_measurement(
+            raw_path, predicate=predicate, label=label
+        )
+        if measured is None:
+            continue
+        display_path, name, digest, fingerprint = measured
+        prior = by_name.get(name)
+        if prior is not None and prior != digest:
+            raise CaptureContractError(
+                f"multiple loaded {label} libraries share basename {name!r} with different content"
+            )
+        by_name[name] = digest
+        stability.append((display_path, name, digest, *fingerprint))
+    if require_nonempty and not by_name:
+        raise CaptureContractError(
+            f"canonical {label} observation could not content-bind any loaded {label}/NVIDIA shared objects"
+            if label == "CUDA"
+            else f"canonical {label} observation could not content-bind any loaded runtime shared objects"
+        )
+    return (
+        len(by_name),
+        sha256_json(dict(sorted(by_name.items()))),
+        tuple(sorted(stability, key=lambda item: (str(item[0]), str(item[1])))),
+    )
+
+
+def assert_runtime_library_state_stable(
+    before: tuple[tuple[Any, ...], ...],
+    after: tuple[tuple[Any, ...], ...],
+    *,
+    observation_started_ns: int,
+    label: str,
+) -> None:
+    """Reject runtime files modified after the canonical observation began.
+
+    Existing mappings must retain the same descriptor identity/content/stat receipt.
+    A runtime library loaded lazily during the forward is allowed only when its file
+    metadata proves it had not been modified since observation start.  Linux ctime
+    makes an in-place write/restore ABA visible even when final bytes match again.
+    """
+    if (
+        isinstance(observation_started_ns, bool)
+        or not isinstance(observation_started_ns, int)
+        or observation_started_ns <= 0
+    ):
+        raise CaptureContractError("runtime-library observation timestamp is malformed")
+
+    def normalize(
+        entries: tuple[tuple[Any, ...], ...],
+    ) -> dict[str, tuple[Any, ...]]:
+        normalized: dict[str, tuple[Any, ...]] = {}
+        for entry in entries:
+            if not isinstance(entry, tuple) or len(entry) != 8:
+                raise CaptureContractError(f"{label} runtime stability receipt is malformed")
+            display_path = entry[0]
+            if not isinstance(display_path, str) or not display_path:
+                raise CaptureContractError(f"{label} runtime stability receipt is malformed")
+            mtime_ns = entry[6]
+            ctime_ns = entry[7]
+            if (
+                isinstance(mtime_ns, bool)
+                or not isinstance(mtime_ns, int)
+                or isinstance(ctime_ns, bool)
+                or not isinstance(ctime_ns, int)
+            ):
+                raise CaptureContractError(f"{label} runtime stability receipt is malformed")
+            if mtime_ns > observation_started_ns or ctime_ns > observation_started_ns:
+                raise CaptureContractError(
+                    f"{label} runtime library changed after canonical observation began: {display_path}"
+                )
+            if display_path in normalized:
+                raise CaptureContractError(
+                    f"duplicate {label} runtime path in stability receipt: {display_path}"
+                )
+            normalized[display_path] = entry[1:]
+        return normalized
+
+    expected = normalize(before)
+    observed = normalize(after)
+    for display_path, expected_state in expected.items():
+        if observed.get(display_path) != expected_state:
+            raise CaptureContractError(
+                f"{label} runtime library identity/content changed during canonical observation: "
+                f"{display_path}"
+            )
 
 
 def _cuda_runtime_library_receipt(
     paths: Iterable[Path | _MappedLibrary],
 ) -> tuple[int, str]:
     """Hash actual mapped library bytes; relocation does not change the receipt."""
-    by_name: dict[str, str] = {}
-    for raw_path in paths:
-        item = _runtime_library_digest(
-            raw_path,
-            predicate=_is_cuda_runtime_library,
-            label="CUDA",
-        )
-        if item is None:
-            continue
-        name, digest = item
-        prior = by_name.get(name)
-        if prior is not None and prior != digest:
-            raise CaptureContractError(
-                f"multiple loaded CUDA libraries share basename {name!r} with different content"
-            )
-        by_name[name] = digest
-    if not by_name:
-        raise CaptureContractError(
-            "canonical CUDA observation could not content-bind any loaded CUDA/NVIDIA shared objects"
-        )
-    return len(by_name), sha256_json(dict(sorted(by_name.items())))
+    count, receipt, _stability = _runtime_library_snapshot(
+        paths,
+        predicate=_is_cuda_runtime_library,
+        label="CUDA",
+        require_nonempty=True,
+    )
+    return count, receipt
+
+
+def loaded_cuda_runtime_library_snapshot() -> tuple[
+    dict[str, int | str], tuple[tuple[Any, ...], ...]
+]:
+    count, receipt, stability = _runtime_library_snapshot(
+        _loaded_cuda_library_entries(),
+        predicate=_is_cuda_runtime_library,
+        label="CUDA",
+        require_nonempty=True,
+    )
+    return (
+        {
+            "cuda_runtime_library_file_count": count,
+            "cuda_runtime_library_receipt_sha256": receipt,
+        },
+        stability,
+    )
 
 
 def loaded_cuda_runtime_library_provenance() -> dict[str, int | str]:
-    count, receipt = _cuda_runtime_library_receipt(_loaded_cuda_library_entries())
-    return {
-        "cuda_runtime_library_file_count": count,
-        "cuda_runtime_library_receipt_sha256": receipt,
-    }
+    provenance, _stability = loaded_cuda_runtime_library_snapshot()
+    return provenance
 
 
 __all__ = ["loaded_cuda_runtime_library_provenance"]

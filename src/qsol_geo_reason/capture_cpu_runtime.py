@@ -14,6 +14,7 @@ from .capture_cuda_runtime import (
     _darwin_loaded_library_paths,
     _linux_loaded_library_mappings,
     _runtime_library_digest,
+    _runtime_library_snapshot,
     _windows_loaded_library_paths,
 )
 
@@ -63,34 +64,39 @@ def _cpu_runtime_library_receipt(
     paths: Iterable[Path | _MappedLibrary],
 ) -> tuple[int, str]:
     """Hash mapped external CPU math/runtime libraries by basename and content."""
-    by_name: dict[str, str] = {}
-    for raw_path in paths:
-        item = _runtime_library_digest(
-            raw_path,
-            predicate=_is_cpu_runtime_library,
-            label="CPU",
-        )
-        if item is None:
-            continue
-        name, digest = item
-        prior = by_name.get(name)
-        if prior is not None and prior != digest:
-            raise CaptureContractError(
-                f"multiple loaded CPU runtime libraries share basename {name!r} with different content"
-            )
-        by_name[name] = digest
     # A statically linked PyTorch build can legitimately have no external CPU
     # math library in this set. The empty-set receipt is still an explicit,
     # canonical statement that enumeration succeeded and found none.
-    return len(by_name), sha256_json(dict(sorted(by_name.items())))
+    count, receipt, _stability = _runtime_library_snapshot(
+        paths,
+        predicate=_is_cpu_runtime_library,
+        label="CPU",
+        require_nonempty=False,
+    )
+    return count, receipt
+
+
+def loaded_cpu_runtime_library_snapshot() -> tuple[
+    dict[str, int | str], tuple[tuple[object, ...], ...]
+]:
+    count, receipt, stability = _runtime_library_snapshot(
+        _loaded_cpu_library_entries(),
+        predicate=_is_cpu_runtime_library,
+        label="CPU",
+        require_nonempty=False,
+    )
+    return (
+        {
+            "cpu_runtime_library_file_count": count,
+            "cpu_runtime_library_receipt_sha256": receipt,
+        },
+        stability,
+    )
 
 
 def loaded_cpu_runtime_library_provenance() -> dict[str, int | str]:
-    count, receipt = _cpu_runtime_library_receipt(_loaded_cpu_library_entries())
-    return {
-        "cpu_runtime_library_file_count": count,
-        "cpu_runtime_library_receipt_sha256": receipt,
-    }
+    provenance, _stability = loaded_cpu_runtime_library_snapshot()
+    return provenance
 
 
 __all__ = ["loaded_cpu_runtime_library_provenance"]

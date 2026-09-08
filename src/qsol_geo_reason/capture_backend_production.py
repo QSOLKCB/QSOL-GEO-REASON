@@ -664,6 +664,10 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
         super().assert_execution_request(request)
         self._assert_model_runtime_attributes()
 
+    def _begin_runtime_library_stability_window(self) -> None:
+        """Extension hook owned by the existing exclusive observation boundary."""
+        return None
+
     def begin_observation(self) -> None:
         try:
             # Boundary entry itself is cleanup-protected. An asynchronous interrupt
@@ -680,6 +684,15 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
             # activity has been excluded, closing the final pre-first-forward window.
             self._assert_model_runtime_attributes()
             super().begin_observation()
+            try:
+                # Runtime-library stability starts only after inherited startup has
+                # acquired its ambient-state receipt. A hook failure therefore uses
+                # the same retryable restoration path before this boundary releases
+                # thread exclusion.
+                self._begin_runtime_library_stability_window()
+            except BaseException:
+                super().end_observation()
+                raise
         except BaseException:
             self._leave_exclusive_python_thread_boundary()
             raise
