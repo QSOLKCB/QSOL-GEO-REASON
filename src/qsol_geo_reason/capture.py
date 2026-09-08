@@ -7,14 +7,14 @@ from .capture_snapshot import _snapshot_file_hashes
 from .capture_backend_round45 import HuggingFacePyTorchBackend as _Round45HuggingFacePyTorchBackend
 from .capture_backend_round46 import HuggingFacePyTorchBackend
 from .capture_backend_round56 import HuggingFacePyTorchBackend
-from . import capture_backend_round58 as _capture_backend_round58
+from . import capture_backend_round59 as _capture_backend_round59
 
 # Round 46 must retain its runtime try/finally so private authenticated loader
 # redirects are restored on every construction exit, including BaseException paths.
 # The long-standing source-invariant regression suite intentionally inspects the
 # inherited production constructor, however. Mark the narrow cleanup wrapper as an
 # introspection wrapper without changing which callable Python actually executes.
-# Round 56 subclasses that wrapper; Round 58 hardens that exported class in place.
+# Round 56 subclasses that wrapper; Rounds 58/59 harden its trust boundary in place.
 HuggingFacePyTorchBackend.__init__.__wrapped__ = _Round45HuggingFacePyTorchBackend.__init__
 
 from .capture_execute import execute_capture
