@@ -41,6 +41,23 @@ def valid_production_shape(request: dict) -> dict:
             + extension
             + "\n"
         )
+    elif device == "cpu":
+        extension = json.dumps(
+            {
+                "loaded_cpu_runtime_libraries": {
+                    "cpu_runtime_library_file_count": 0,
+                    "cpu_runtime_library_receipt_sha256": "d" * 64,
+                }
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        build_config = (
+            build_config.rstrip("\n")
+            + "\nQSOL_GEO_CPU_RUNTIME="
+            + extension
+            + "\n"
+        )
     return {
         "python_version": "3.13.0",
         "platform": "Linux",
