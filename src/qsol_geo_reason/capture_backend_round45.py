@@ -2,9 +2,9 @@
 
 The canonical OBSERVATION lane performs CPU float64 pooling for every source device.
 This layer therefore binds the host CPU and denormal policy on every real production
-lane, requires a fresh PyTorch/Transformers/Safetensors/Tokenizers import boundary,
-authenticates delegated Transformers loaders, and rejects snapshot paths that cannot
-be canonical UTF-8.
+lane, requires a fresh PyTorch/Transformers/Safetensors/Tokenizers/HuggingFace Hub
+import boundary, authenticates delegated Transformers loaders, and rejects snapshot
+paths that cannot be canonical UTF-8.
 """
 from __future__ import annotations
 
@@ -154,13 +154,20 @@ class HuggingFacePyTorchBackend(_Round44Backend):
 
         preloaded = [
             root
-            for root in ("torch", "transformers", "safetensors", "tokenizers")
+            for root in (
+                "torch",
+                "transformers",
+                "safetensors",
+                "tokenizers",
+                "huggingface_hub",
+            )
             if _module_tree_preloaded(module_table, root)
         ]
         if preloaded:
             raise CaptureContractError(
                 "canonical OBSERVATION requires a fresh PyTorch/Transformers/"
-                "Safetensors/Tokenizers import boundary; preloaded=" + ",".join(preloaded)
+                "Safetensors/Tokenizers/HuggingFace Hub import boundary; preloaded="
+                + ",".join(preloaded)
             )
 
     def _real_torch_runtime(self) -> bool:
