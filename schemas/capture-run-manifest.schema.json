@@ -131,7 +131,7 @@
       "Production OBSERVATION manifests require model.revision_tree_sha256 and model.tokenizer_revision_tree_sha256 so verified Hub commits retain the same frozen tree binding required by the canonical constructor.",
       "Production OBSERVATION model snapshots must contain Safetensors weights and must not contain .bin, .pt, .pth, or .ckpt checkpoint artifacts.",
       "CUDA device identity fields must be null on CPU and MPS manifests.",
-      "Every production torch_build_config must contain exactly one canonical QSOL_GEO_CPU_RUNTIME record for the CPU float64 pooling instrument; on CUDA it immediately precedes the final CUDA runtime record.",
+      "Every production torch_build_config must contain exactly one canonical QSOL_GEO_CPU_FLUSH_DENORMAL=false record immediately before exactly one canonical QSOL_GEO_CPU_RUNTIME record for the CPU float64 pooling instrument; on CUDA the CPU runtime record immediately precedes the final CUDA runtime record.",
       "CUDA torch_build_config must contain exactly one canonical QSOL_GEO_CUDA_RUNTIME record as its final line; non-CUDA manifests must not contain that record."
     ]
   },
@@ -334,8 +334,8 @@
         },
         "torch_build_config": {
           "type": "string", "minLength": 1,
-          "pattern": "(?:^|\\n)QSOL_GEO_CPU_RUNTIME=\\{\"loaded_cpu_runtime_libraries\":\\{\"cpu_runtime_library_file_count\":[0-9]+,\"cpu_runtime_library_receipt_sha256\":\"[0-9a-f]{64}\"\\}\\}\\n(?:QSOL_GEO_CUDA_RUNTIME=\\{\"loaded_cuda_runtime_libraries\":\\{\"cuda_runtime_library_file_count\":[1-9][0-9]*,\"cuda_runtime_library_receipt_sha256\":\"[0-9a-f]{64}\"\\}\\}\\n?)?$",
-          "description": "torch.__config__.show() captured at backend construction, followed by exactly one QSOL_GEO_CPU_RUNTIME receipt for the CPU float64 pooling instrument on every production device; CUDA observations append the QSOL_GEO_CUDA_RUNTIME receipt after it as the final line."
+          "pattern": "(?:^|\\n)QSOL_GEO_CPU_FLUSH_DENORMAL=false\\nQSOL_GEO_CPU_RUNTIME=\\{\"loaded_cpu_runtime_libraries\":\\{\"cpu_runtime_library_file_count\":[0-9]+,\"cpu_runtime_library_receipt_sha256\":\"[0-9a-f]{64}\"\\}\\}\\n(?:QSOL_GEO_CUDA_RUNTIME=\\{\"loaded_cuda_runtime_libraries\":\\{\"cuda_runtime_library_file_count\":[1-9][0-9]*,\"cuda_runtime_library_receipt_sha256\":\"[0-9a-f]{64}\"\\}\\}\\n?)?$",
+          "description": "torch.__config__.show() captured at backend construction, followed by exactly one QSOL_GEO_CPU_FLUSH_DENORMAL=false receipt and exactly one QSOL_GEO_CPU_RUNTIME receipt for the CPU float64 pooling instrument on every production device; CUDA observations append the QSOL_GEO_CUDA_RUNTIME receipt after it as the final line."
         },
         "torch_build_config_sha256": {
           "$ref": "#/$defs/sha256",
@@ -353,7 +353,14 @@
         "attention_implementation": {"enum": ["eager", "sdpa"]},
         "device": {"$ref": "#/$defs/device"},
         "cpu_machine": {"$ref": "#/$defs/nullableString"},
-        "cpu_processor": {"$ref": "#/$defs/nullableString"},
+        "cpu_processor": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "not": {
+            "pattern": "^\\s*(?:[Uu][Nn][Kk][Nn][Oo][Ww][Nn]|[Gg][Ee][Nn][Ee][Rr][Ii][Cc]|[Cc][Pp][Uu]|[Pp][Rr][Oo][Cc][Ee][Ss][Ss][Oo][Rr]|[Xx]86_64|[Aa][Mm][Dd]64|[Xx]64|[Ii]386|[Ii]686|[Aa][Rr][Mm]|[Aa][Rr][Mm]64|[Aa][Aa][Rr][Cc][Hh]64|[Pp][Pp][Cc]64|[Pp][Pp][Cc]64[Ll][Ee]|[Ss]390[Xx])\\s*$"
+          }
+        },
         "cpu_instruction_flags": {"$ref": "#/$defs/nullableString"},
         "cpu_aten_capability": {
           "enum": ["DEFAULT", "VSX", "Z VECTOR", "NO AVX", "AVX2", "AVX512", "SVE256"],
