@@ -77,21 +77,12 @@ class HuggingFacePyTorchBackend(_FinalHuggingFacePyTorchBackend):
         device = getattr(self, "_device", None)
         cuda_active = isinstance(device, str) and device.startswith("cuda:")
         _cpu_provenance, cpu_state = loaded_cpu_runtime_library_snapshot()
-        assert_runtime_library_state_stable(
-            (),
-            cpu_state,
-            observation_started_ns=observation_started_ns,
-            label="CPU",
-        )
+        # This is the pre-execution baseline, not a set of libraries discovered
+        # after start.  Absolute file timestamps are therefore not freshness tests;
+        # exact baseline-to-final receipts enforce stability at metadata time.
         cuda_state = None
         if cuda_active:
             _cuda_provenance, cuda_state = loaded_cuda_runtime_library_snapshot()
-            assert_runtime_library_state_stable(
-                (),
-                cuda_state,
-                observation_started_ns=observation_started_ns,
-                label="CUDA",
-            )
         _remember_runtime_library_baseline(
             self,
             (observation_started_ns, cpu_state, cuda_state),

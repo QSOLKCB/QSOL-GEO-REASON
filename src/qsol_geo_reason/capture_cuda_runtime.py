@@ -381,12 +381,14 @@ def assert_runtime_library_state_stable(
     observation_started_ns: int,
     label: str,
 ) -> None:
-    """Reject runtime files modified after the canonical observation began.
+    """Reject runtime-file drift across the canonical observation window.
 
-    Existing mappings must retain the same descriptor identity/content/stat receipt.
-    A runtime library loaded lazily during the forward is allowed only when its file
-    metadata proves it had not been modified since observation start.  Linux ctime
-    makes an in-place write/restore ABA visible even when final bytes match again.
+    Existing mappings are authenticated by exact baseline-to-final descriptor, content,
+    and stat equality.  Their absolute mtimes are deliberately not compared with wall
+    clock start time because package extraction may preserve a legitimate future build
+    timestamp.  A library first observed after the baseline is accepted only when its
+    change-time predates the observation; on POSIX, ctime also exposes in-place
+    write/restore ABA even when final bytes and preserved mtime match again.
     """
     if (
         isinstance(observation_started_ns, bool)
@@ -414,10 +416,6 @@ def assert_runtime_library_state_stable(
                 or not isinstance(ctime_ns, int)
             ):
                 raise CaptureContractError(f"{label} runtime stability receipt is malformed")
-            if mtime_ns > observation_started_ns or ctime_ns > observation_started_ns:
-                raise CaptureContractError(
-                    f"{label} runtime library changed after canonical observation began: {display_path}"
-                )
             if display_path in normalized:
                 raise CaptureContractError(
                     f"duplicate {label} runtime path in stability receipt: {display_path}"
@@ -432,6 +430,19 @@ def assert_runtime_library_state_stable(
             raise CaptureContractError(
                 f"{label} runtime library identity/content changed during canonical observation: "
                 f"{display_path}"
+            )
+
+    # Only entries absent from the pre-execution baseline need a wall-clock
+    # freshness test.  Do not use mtime for that test: preserved package/build
+    # timestamps may legitimately lie in the future.  ctime/change-time is retained
+    # in the exact receipt and is the post-start mutation discriminator here.
+    for display_path, observed_state in observed.items():
+        if display_path in expected:
+            continue
+        ctime_ns = observed_state[6]
+        if ctime_ns > observation_started_ns:
+            raise CaptureContractError(
+                f"{label} runtime library changed after canonical observation began: {display_path}"
             )
 
 

@@ -145,7 +145,7 @@ class CaptureRound53RegressionTests(unittest.TestCase):
             started - 10_000,
             started + 1,
         ),)
-        with self.assertRaisesRegex(CaptureContractError, "changed after canonical observation began"):
+        with self.assertRaisesRegex(CaptureContractError, "identity/content changed during canonical observation"):
             cuda_runtime.assert_runtime_library_state_stable(
                 before, after, observation_started_ns=started, label="CUDA"
             )

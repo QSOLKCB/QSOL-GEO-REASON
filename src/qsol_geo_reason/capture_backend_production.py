@@ -694,14 +694,28 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
                 super().end_observation()
                 raise
         except BaseException:
-            self._leave_exclusive_python_thread_boundary()
+            # Do not release thread exclusion while inherited startup still owns
+            # an ambient-state receipt.  A failed restoration must be retried while
+            # caller threads remain excluded from the temporary process-global state.
+            if (
+                not getattr(self, "_observation_active", False)
+                and getattr(self, "_observation_ambient_process_state", None) is None
+            ):
+                self._leave_exclusive_python_thread_boundary()
             raise
 
     def end_observation(self) -> None:
         try:
             super().end_observation()
         finally:
-            self._leave_exclusive_python_thread_boundary()
+            # Release the Python-thread boundary only after the inherited session has
+            # fully restored and relinquished its ambient-state receipt. Ordinary
+            # restore failures keep both ownership records live for a safe retry.
+            if (
+                not getattr(self, "_observation_active", False)
+                and getattr(self, "_observation_ambient_process_state", None) is None
+            ):
+                self._leave_exclusive_python_thread_boundary()
 
 
 __all__ = ["HuggingFacePyTorchBackend"]

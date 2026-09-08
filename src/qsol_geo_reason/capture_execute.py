@@ -450,8 +450,8 @@ def execute_capture(
         ):
             # Also cover a partially entered production boundary whose thread-start
             # patches are active even though inherited observation activation has not
-            # completed yet. end_observation() is idempotent for the inactive parent
-            # session and always releases the production thread boundary in finally.
+            # completed yet.  end_observation() releases exclusion only after ambient
+            # restoration fully succeeds; a failed restore keeps ownership retryable.
             backend.end_observation()
 
     request_sha = sha256_json(validated)
