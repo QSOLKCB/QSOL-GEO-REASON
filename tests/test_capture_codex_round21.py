@@ -84,7 +84,11 @@ class CaptureRound21RegressionTests(unittest.TestCase):
             source,
         )
         self.assertIn(
-            'if production_backend and evidence_class != "OBSERVATION":',
+            "production_backend_instance = isinstance(backend, HuggingFacePyTorchBackend)",
+            source,
+        )
+        self.assertIn(
+            'if production_backend_instance and evidence_class != "OBSERVATION":',
             source,
         )
         self.assertIn("if not production_backend:", source)

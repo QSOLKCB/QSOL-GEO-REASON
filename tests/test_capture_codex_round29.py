@@ -45,16 +45,20 @@ class CaptureRound29RegressionTests(unittest.TestCase):
     def test_adapter_and_routing_are_rechecked_after_exclusive_boundary_starts(self):
         source = inspect.getsource(execute_capture)
         begin = source.index("backend.begin_observation()")
+        protected_try = source.rfind("\n    try:", 0, begin)
+        self.assertNotEqual(protected_try, -1)
+        self.assertLess(protected_try, begin)
+
         tail = source[begin:]
-        active = tail.index("observation_started = True")
         method_recheck = tail.index("_assert_observation_backend_execution_methods(backend)")
         routing_recheck = tail.index("_assert_observation_backend_routing_state(backend)")
         capture = tail.index("steps, prefix_ids = _capture_steps(")
+        active_guard = tail.index('getattr(backend, "_observation_active", False)')
         cleanup = tail.index("backend.end_observation()")
-        self.assertLess(active, method_recheck)
-        self.assertLess(active, routing_recheck)
         self.assertLess(method_recheck, capture)
         self.assertLess(routing_recheck, capture)
+        self.assertGreater(active_guard, capture)
+        self.assertLess(active_guard, cleanup)
         self.assertGreater(cleanup, method_recheck)
         self.assertGreater(cleanup, routing_recheck)
 

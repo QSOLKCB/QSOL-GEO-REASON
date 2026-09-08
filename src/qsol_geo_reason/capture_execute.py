@@ -403,14 +403,14 @@ def execute_capture(
     if evidence_class not in _ALLOWED_EVIDENCE:
         raise CaptureContractError(f"evidence_class must be one of {sorted(_ALLOWED_EVIDENCE)}")
 
+    production_backend_instance = isinstance(backend, HuggingFacePyTorchBackend)
     production_backend = type(backend) is HuggingFacePyTorchBackend
-    if production_backend and evidence_class != "OBSERVATION":
+    if production_backend_instance and evidence_class != "OBSERVATION":
         raise CaptureContractError(
-            "the concrete HuggingFacePyTorchBackend may execute only as OBSERVATION; "
-            "use a software simulation backend for SIMULATION"
+            "HuggingFacePyTorchBackend instances, including subclasses, may execute "
+            "only as OBSERVATION; use a software simulation backend for SIMULATION"
         )
 
-    observation_started = False
     if evidence_class == "OBSERVATION":
         if not production_backend:
             raise CaptureContractError("OBSERVATION capture requires the concrete HuggingFacePyTorchBackend")
@@ -426,11 +426,10 @@ def execute_capture(
             ) from exc
         backend.assert_execution_request(validated)
         backend._observed_hidden_state_dtypes.clear()
-        backend.begin_observation()
-        observation_started = True
 
     try:
         if evidence_class == "OBSERVATION":
+            backend.begin_observation()
             # begin_observation() owns the exclusive Python-thread boundary. Repeat
             # adapter and routing authentication only after that exclusion is held,
             # so a short-lived pre-boundary mutator cannot race the first tokenization.
@@ -445,7 +444,7 @@ def execute_capture(
             observed["name"] = _SIMULATION_BACKEND
         _validate_backend_metadata(observed, validated, evidence_class)
     finally:
-        if observation_started:
+        if production_backend and getattr(backend, "_observation_active", False):
             backend.end_observation()
 
     request_sha = sha256_json(validated)

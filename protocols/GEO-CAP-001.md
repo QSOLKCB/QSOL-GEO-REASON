@@ -218,7 +218,7 @@ The run manifest binds the request to the executing repository revision and obse
 - CUDA device name/capability;
 - PyTorch CUDA build version;
 - cuDNN version;
-- NVIDIA driver version reported by `nvidia-smi` for CUDA captures;
+- NVIDIA driver version read, on Linux only, from the loaded kernel module via `/sys/module/nvidia/version`, falling back to `/proc/driver/nvidia/version`; the field is null when those trusted interfaces are unavailable and on unsupported platforms, and the canonical probe does not invoke `nvidia-smi`;
 - quantization and offloading state;
 - cache policy;
 - capture phase; and
