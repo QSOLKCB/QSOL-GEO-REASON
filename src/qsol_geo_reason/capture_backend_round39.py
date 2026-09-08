@@ -1,6 +1,8 @@
 """Round-39 production boundary: asynchronous-signal and CUDA-library provenance."""
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Mapping
 
 from .capture_backend_final import HuggingFacePyTorchBackend as _FinalHuggingFacePyTorchBackend
@@ -24,10 +26,24 @@ class HuggingFacePyTorchBackend(_FinalHuggingFacePyTorchBackend):
         observed = dict(super().metadata())
         device = observed.get("device")
         if isinstance(device, str) and device.startswith("cuda:"):
-            observed.update(loaded_cuda_runtime_library_provenance())
-        else:
-            observed["cuda_runtime_library_file_count"] = None
-            observed["cuda_runtime_library_receipt_sha256"] = None
+            # Preserve the established exact metadata key surface while extending the
+            # already content-authenticated PyTorch build receipt with the *actual
+            # mapped* CUDA/NVIDIA shared-object receipt observed after capture. The
+            # resulting torch_build_config_sha256 participates in run_manifest_id.
+            libraries = loaded_cuda_runtime_library_provenance()
+            extension = json.dumps(
+                {"loaded_cuda_runtime_libraries": libraries},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            config = observed.get("torch_build_config")
+            if not isinstance(config, str) or not config.strip():
+                raise ValueError("canonical PyTorch build configuration is missing")
+            config = config.rstrip("\n") + "\nQSOL_GEO_CUDA_RUNTIME=" + extension + "\n"
+            observed["torch_build_config"] = config
+            observed["torch_build_config_sha256"] = hashlib.sha256(
+                config.encode("utf-8")
+            ).hexdigest()
         return observed
 
 
