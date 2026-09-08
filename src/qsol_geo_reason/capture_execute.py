@@ -403,9 +403,16 @@ def execute_capture(
     if evidence_class not in _ALLOWED_EVIDENCE:
         raise CaptureContractError(f"evidence_class must be one of {sorted(_ALLOWED_EVIDENCE)}")
 
+    production_backend = type(backend) is HuggingFacePyTorchBackend
+    if production_backend and evidence_class != "OBSERVATION":
+        raise CaptureContractError(
+            "the concrete HuggingFacePyTorchBackend may execute only as OBSERVATION; "
+            "use a software simulation backend for SIMULATION"
+        )
+
     observation_started = False
     if evidence_class == "OBSERVATION":
-        if type(backend) is not HuggingFacePyTorchBackend:
+        if not production_backend:
             raise CaptureContractError("OBSERVATION capture requires the concrete HuggingFacePyTorchBackend")
         _assert_observation_backend_execution_methods(backend)
         _assert_observation_backend_routing_state(backend)
