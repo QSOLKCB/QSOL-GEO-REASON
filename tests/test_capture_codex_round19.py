@@ -171,8 +171,12 @@ class CaptureRound19RegressionTests(unittest.TestCase):
         self.assertIn("finally:", source)
         self.assertIn("backend.end_observation()", source)
         init_source = inspect.getsource(HuggingFacePyTorchBackend.__init__)
+        restore_source = inspect.getsource(
+            HuggingFacePyTorchBackend._restore_construction_process_state
+        )
         self.assertIn("finally:", init_source)
-        self.assertIn("self._restore_torch_process_state", init_source)
+        self.assertIn("self._restore_construction_process_state()", init_source)
+        self.assertIn("self._restore_torch_process_state", restore_source)
 
     def test_publisher_writes_private_snapshots_not_later_caller_mutations(self):
         request = {"request": "before"}
