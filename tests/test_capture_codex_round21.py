@@ -79,7 +79,15 @@ class CaptureRound21RegressionTests(unittest.TestCase):
 
     def test_execute_capture_requires_the_final_concrete_boundary(self):
         source = inspect.getsource(execute_capture)
-        self.assertIn("type(backend) is not HuggingFacePyTorchBackend", source)
+        self.assertIn(
+            "production_backend = type(backend) is HuggingFacePyTorchBackend",
+            source,
+        )
+        self.assertIn(
+            'if production_backend and evidence_class != "OBSERVATION":',
+            source,
+        )
+        self.assertIn("if not production_backend:", source)
         self.assertEqual(
             HuggingFacePyTorchBackend.__module__,
             "qsol_geo_reason.capture_backend_production",
