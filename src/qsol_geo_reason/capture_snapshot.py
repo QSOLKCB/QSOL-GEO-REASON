@@ -66,7 +66,7 @@ def _cached_hub_commit_tree(
         tree_bytes = tree_path.read_bytes()
     except FileNotFoundError as exc:
         raise CaptureContractError(
-            f"{where} snapshot lacks QSOL Hub commit-tree metadata for {expected_commit}; "
+            f"{where} snapshot lacks cached Hub commit-tree metadata (QSOL export) for {expected_commit}; "
             "run qsol-geo-capture REQUEST.json --prepare-tree-receipts while online, "
             "freeze the printed receipt into the request, then perform the capture offline"
         ) from exc
