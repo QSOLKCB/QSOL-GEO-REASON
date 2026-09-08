@@ -68,7 +68,9 @@ class CaptureRound38RegressionTests(unittest.TestCase):
         request = simulation_fixture_request()
         manifest, trajectory = execute(request)
         record = trajectory["steps"][0]["layers"][0]
-        record["vector"][0] = 10**10000
+        # 10**1000 is JSON-serializable under Python's default integer-string
+        # limit but still far outside binary64, so float(value) raises OverflowError.
+        record["vector"][0] = 10**1000
         record["vector_sha256"] = sha256_json(record["vector"])
         rehash_outer_bundle(manifest, trajectory)
 
