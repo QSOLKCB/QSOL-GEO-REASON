@@ -6,6 +6,7 @@ import json
 from typing import Any, Mapping
 
 from .capture_backend_final import HuggingFacePyTorchBackend as _FinalHuggingFacePyTorchBackend
+from .capture_common import CaptureContractError
 from .capture_cuda_runtime import loaded_cuda_runtime_library_provenance
 from .capture_signals import _assert_no_async_signal_instrumentation
 from . import capture_backend_production as _production
@@ -38,7 +39,7 @@ class HuggingFacePyTorchBackend(_FinalHuggingFacePyTorchBackend):
             )
             config = observed.get("torch_build_config")
             if not isinstance(config, str) or not config.strip():
-                raise ValueError("canonical PyTorch build configuration is missing")
+                raise CaptureContractError("canonical PyTorch build configuration is missing")
             config = config.rstrip("\n") + "\nQSOL_GEO_CUDA_RUNTIME=" + extension + "\n"
             observed["torch_build_config"] = config
             observed["torch_build_config_sha256"] = hashlib.sha256(
