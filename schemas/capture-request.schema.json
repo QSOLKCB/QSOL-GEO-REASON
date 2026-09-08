@@ -6,7 +6,7 @@
   "x-qsol-semantic-validation": {
     "required": true,
     "command": "qsol-geo-capture --validate-only REQUEST.json",
-    "constraints": ["steps[].step_id must be unique"]
+    "constraints": ["steps[].step_id must be unique", "Production OBSERVATION requires model.revision_tree_sha256 and model.tokenizer_revision_tree_sha256 to bind cached Hub commit-tree metadata to the frozen request."]
   },
   "type": "object",
   "additionalProperties": false,
@@ -29,6 +29,7 @@
     "notes": {"type": "string"}
   },
   "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "gitSha": {"type": "string", "pattern": "^[0-9a-fA-F]{40}$"},
     "hubRepoId": {
       "type": "string",
@@ -44,9 +45,11 @@
         "identifier": {"$ref": "#/$defs/hubRepoId"},
         "revision": {"$ref": "#/$defs/gitSha"},
         "revision_kind": {"const": "hf_commit"},
+        "revision_tree_sha256": {"$ref": "#/$defs/sha256", "description": "SHA-256 of the exact cached Hub trees/<revision>.json bytes obtained during the trusted online warm-up; required by the production OBSERVATION backend before deserialization."},
         "tokenizer_identifier": {"$ref": "#/$defs/hubRepoId"},
         "tokenizer_revision": {"$ref": "#/$defs/gitSha"},
-        "tokenizer_revision_kind": {"const": "hf_commit"}
+        "tokenizer_revision_kind": {"const": "hf_commit"},
+        "tokenizer_revision_tree_sha256": {"$ref": "#/$defs/sha256", "description": "SHA-256 of the exact cached Hub trees/<tokenizer_revision>.json bytes obtained during the trusted online warm-up; required by the production OBSERVATION backend before tokenization/model loading."}
       }
     },
     "backend": {
