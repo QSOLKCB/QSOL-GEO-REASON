@@ -1,7 +1,9 @@
 """Final production hardening for GEO-CAP-001 canonical OBSERVATION.
 
 This layer keeps construction-only trust anchors outside caller-writable instance
-state and performs the checks that must precede the inherited Transformers loader.
+state. It preflights frozen Hub-tree identities before the inherited constructor and
+seals the resulting runtime provenance at the existing construction-end audit hook,
+without replacing the long-established production ``__init__`` implementation.
 """
 from __future__ import annotations
 
@@ -22,26 +24,65 @@ _TREE_RECEIPT_FIELDS = ("revision_tree_sha256", "tokenizer_revision_tree_sha256"
 _LEGACY_PICKLE_SUFFIXES = (".bin", ".pt", ".pth", ".ckpt")
 
 
+# The preregistered Hub-tree receipts, trusted pre-load snapshot bytes, and final
+# runtime provenance are closure-owned. Instance attribute rewrites therefore cannot
+# redefine what construction originally authenticated.
 def _make_final_construction_vault():
+    preflight: weakref.WeakKeyDictionary[
+        Any,
+        tuple[str, str, Path, Path, tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]],
+    ] = weakref.WeakKeyDictionary()
     baselines: weakref.WeakKeyDictionary[
         Any,
         tuple[str, str, str, str, str, str],
     ] = weakref.WeakKeyDictionary()
 
-    def remember(instance: Any, baseline: tuple[str, str, str, str, str, str]) -> None:
+    def remember_preflight(
+        instance: Any,
+        value: tuple[
+            str,
+            str,
+            Path,
+            Path,
+            tuple[tuple[str, str], ...],
+            tuple[tuple[str, str], ...],
+        ],
+    ) -> None:
+        if instance in preflight:
+            raise CaptureContractError("final construction preflight was already initialized")
+        preflight[instance] = value
+
+    def recall_preflight(
+        instance: Any,
+    ) -> tuple[
+        str,
+        str,
+        Path,
+        Path,
+        tuple[tuple[str, str], ...],
+        tuple[tuple[str, str], ...],
+    ] | None:
+        return preflight.get(instance)
+
+    def remember_baseline(
+        instance: Any, baseline: tuple[str, str, str, str, str, str]
+    ) -> None:
         if instance in baselines:
             raise CaptureContractError("final construction provenance baseline was already initialized")
         baselines[instance] = baseline
 
-    def recall(instance: Any) -> tuple[str, str, str, str, str, str] | None:
+    def recall_baseline(instance: Any) -> tuple[str, str, str, str, str, str] | None:
         return baselines.get(instance)
 
-    return remember, recall
+    return remember_preflight, recall_preflight, remember_baseline, recall_baseline
 
 
-_remember_final_construction_baseline, _recall_final_construction_baseline = (
-    _make_final_construction_vault()
-)
+(
+    _remember_final_construction_preflight,
+    _recall_final_construction_preflight,
+    _remember_final_construction_baseline,
+    _recall_final_construction_baseline,
+) = _make_final_construction_vault()
 del _make_final_construction_vault
 
 
@@ -58,11 +99,13 @@ def _require_frozen_tree_receipts(model: Mapping[str, Any]) -> tuple[str, str]:
 def _assert_safetensors_only_checkpoint(model_hashes: Mapping[str, str]) -> None:
     """Reject every pickle-capable checkpoint lane before Transformers is invoked."""
     safetensors = sorted(
-        path for path in model_hashes
+        path
+        for path in model_hashes
         if isinstance(path, str) and path.lower().endswith(".safetensors")
     )
     legacy = sorted(
-        path for path in model_hashes
+        path
+        for path in model_hashes
         if isinstance(path, str) and path.lower().endswith(_LEGACY_PICKLE_SUFFIXES)
     )
     if not safetensors:
@@ -80,14 +123,15 @@ def _assert_safetensors_only_checkpoint(model_hashes: Mapping[str, str]) -> None
 class HuggingFacePyTorchBackend(_BaseAuditedBackend):
     """Final canonical backend with preregistered Hub-tree and loader trust anchors."""
 
-    def __init__(self, request: Mapping[str, Any]):
+    def __new__(cls, request: Mapping[str, Any]):
         validated = validate_capture_request(request)
+        instance = super().__new__(cls, validated)
         model_cfg = validated["model"]
         model_tree_receipt, tokenizer_tree_receipt = _require_frozen_tree_receipts(model_cfg)
 
-        # Resolve and authenticate both cache snapshots before importing/loading the
-        # PyTorch/Transformers model path in the inherited constructor. The tree JSON
-        # is trusted only when its exact bytes match the preregistered request receipt.
+        # This preflight occurs before the inherited production constructor imports
+        # and invokes the Transformers model loader. The local Hub tree is usable only
+        # when its exact bytes match the preregistered request receipt.
         try:
             from huggingface_hub import snapshot_download
         except ImportError as exc:
@@ -122,54 +166,88 @@ class HuggingFacePyTorchBackend(_BaseAuditedBackend):
             expected_tree_receipt_sha256=tokenizer_tree_receipt,
         )
         _assert_safetensors_only_checkpoint(trusted_model_before)
+        _remember_final_construction_preflight(
+            instance,
+            (
+                model_tree_receipt,
+                tokenizer_tree_receipt,
+                model_snapshot,
+                tokenizer_snapshot,
+                tuple(sorted(trusted_model_before.items())),
+                tuple(sorted(trusted_tokenizer_before.items())),
+            ),
+        )
+        return instance
 
-        super().__init__(validated)
+    def _finalize_or_assert_construction_baseline(self) -> None:
+        preflight = _recall_final_construction_preflight(self)
+        if preflight is None:
+            # Dependency-free fixtures may deliberately bypass production __new__.
+            return
+        (
+            model_tree_receipt,
+            tokenizer_tree_receipt,
+            model_snapshot,
+            tokenizer_snapshot,
+            model_before_items,
+            tokenizer_before_items,
+        ) = preflight
+        model_before = dict(model_before_items)
+        tokenizer_before = dict(tokenizer_before_items)
 
-        # Re-authenticate against the frozen tree after loading and require the
-        # inherited receipts to describe those exact trusted bytes. A cache/tree swap
-        # during construction therefore cannot become accepted provenance.
         trusted_model_after = _snapshot_file_hashes(
             model_snapshot,
-            model_cfg["revision"],
+            getattr(self, "_model_revision", ""),
             "model",
             expected_tree_receipt_sha256=model_tree_receipt,
         )
         trusted_tokenizer_after = _snapshot_file_hashes(
             tokenizer_snapshot,
-            model_cfg["tokenizer_revision"],
+            getattr(self, "_tokenizer_revision", ""),
             "tokenizer",
             expected_tree_receipt_sha256=tokenizer_tree_receipt,
         )
-        if trusted_model_before != trusted_model_after:
+        if model_before != trusted_model_after:
             raise CaptureContractError("trusted model snapshot changed during canonical loading")
-        if trusted_tokenizer_before != trusted_tokenizer_after:
+        if tokenizer_before != trusted_tokenizer_after:
             raise CaptureContractError("trusted tokenizer snapshot changed during canonical loading")
         if dict(getattr(self, "_model_snapshot_hashes", {})) != trusted_model_after:
             raise CaptureContractError("loaded model receipt does not match the trusted Hub tree")
         if dict(getattr(self, "_tokenizer_snapshot_hashes", {})) != trusted_tokenizer_after:
             raise CaptureContractError("loaded tokenizer receipt does not match the trusted Hub tree")
 
-        torch_build = getattr(self, "_torch_build_provenance", None)
-        if not isinstance(torch_build, Mapping):
-            raise CaptureContractError("canonical PyTorch build provenance baseline is missing")
-        attention = getattr(self, "_attention_implementation", None)
-        live_attention = getattr(getattr(self, "_model", None).config, "_attn_implementation", None)
-        if attention != live_attention or not isinstance(attention, str):
-            raise CaptureContractError(
-                "canonical attention implementation is not bound to the loaded model configuration"
+        baseline = _recall_final_construction_baseline(self)
+        if baseline is None:
+            torch_build = getattr(self, "_torch_build_provenance", None)
+            if not isinstance(torch_build, Mapping):
+                raise CaptureContractError("canonical PyTorch build provenance baseline is missing")
+            attention = getattr(self, "_attention_implementation", None)
+            model = getattr(self, "_model", None)
+            config = getattr(model, "config", None)
+            live_attention = getattr(config, "_attn_implementation", None)
+            if attention != live_attention or not isinstance(attention, str):
+                raise CaptureContractError(
+                    "canonical attention implementation is not bound to the loaded model configuration"
+                )
+            _remember_final_construction_baseline(
+                self,
+                (
+                    model_tree_receipt,
+                    tokenizer_tree_receipt,
+                    sha256_json(dict(torch_build)),
+                    attention,
+                    sha256_json(dict(sorted(trusted_model_after.items()))),
+                    sha256_json(dict(sorted(trusted_tokenizer_after.items()))),
+                ),
             )
+        else:
+            self._assert_final_construction_baseline()
 
-        _remember_final_construction_baseline(
-            self,
-            (
-                model_tree_receipt,
-                tokenizer_tree_receipt,
-                sha256_json(dict(torch_build)),
-                attention,
-                sha256_json(dict(sorted(trusted_model_after.items()))),
-                sha256_json(dict(sorted(trusted_tokenizer_after.items()))),
-            ),
-        )
+    def _assert_cpu_dispatch_policy(self) -> None:
+        # The inherited production constructor calls this after authenticated loading.
+        # Preserve every earlier audit check first, then seal the final external state.
+        super()._assert_cpu_dispatch_policy()
+        self._finalize_or_assert_construction_baseline()
 
     def _assert_final_construction_baseline(self) -> None:
         baseline = _recall_final_construction_baseline(self)
@@ -191,7 +269,9 @@ class HuggingFacePyTorchBackend(_BaseAuditedBackend):
                 "PyTorch build provenance changed after authenticated backend construction"
             )
 
-        live_attention = getattr(getattr(self, "_model", None).config, "_attn_implementation", None)
+        model = getattr(self, "_model", None)
+        config = getattr(model, "config", None)
+        live_attention = getattr(config, "_attn_implementation", None)
         if (
             getattr(self, "_attention_implementation", None) != expected_attention
             or live_attention != expected_attention
