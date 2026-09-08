@@ -12,6 +12,7 @@ from unittest.mock import patch
 from qsol_geo_reason import capture
 from qsol_geo_reason import capture_backend_round56 as round56
 from qsol_geo_reason import capture_backend_round58 as round58
+from qsol_geo_reason import capture_backend_round60 as round60
 from qsol_geo_reason import capture_common
 from qsol_geo_reason import capture_execute
 from qsol_geo_reason import provenance
@@ -37,7 +38,7 @@ class Round58TrustBoundaryTests(unittest.TestCase):
             provenance._git_run = forged_git
             self.assertIs(
                 sealed_resolve,
-                round58._resolve_implementation_revision_round58,
+                round60._resolve_implementation_revision_round60,
             )
             self.assertIs(
                 sealed_resolve.__globals__["_git_run"],
@@ -45,7 +46,7 @@ class Round58TrustBoundaryTests(unittest.TestCase):
             )
             self.assertIs(
                 sealed_resolve.__globals__["git_source_revision"],
-                round58._git_source_revision_round58,
+                round60._git_source_revision_round60,
             )
             self.assertIsNot(sealed_resolve.__globals__, provenance.__dict__)
         finally:
