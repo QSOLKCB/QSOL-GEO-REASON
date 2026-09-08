@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import types
 from typing import Any, Mapping
@@ -10,6 +11,14 @@ from .capture_common import CaptureContractError
 from .capture_package import (
     _python_package_provenance,
     _validate_python_package_provenance,
+)
+
+_CUDA_RUNTIME_CONFIG_PREFIX = "QSOL_GEO_CUDA_RUNTIME="
+_CUDA_RUNTIME_PROVENANCE_KEYS = frozenset(
+    {
+        "cuda_runtime_library_file_count",
+        "cuda_runtime_library_receipt_sha256",
+    }
 )
 
 
@@ -162,6 +171,65 @@ def _require_torch_build_config(value: Any) -> str:
     return value
 
 
+def _cuda_runtime_library_provenance_from_build_config(
+    config: str,
+) -> dict[str, int | str] | None:
+    """Parse and validate the canonical CUDA shared-library receipt extension.
+
+    The producer appends exactly one compact JSON record as the final build-config
+    line. Canonical verification must understand that record rather than treating it
+    as opaque text, otherwise a caller can replace the complete config and merely
+    recompute its outer SHA-256.
+    """
+    record_lines = [
+        line
+        for line in config.splitlines()
+        if line.startswith(_CUDA_RUNTIME_CONFIG_PREFIX)
+    ]
+    if not record_lines:
+        return None
+    if len(record_lines) != 1:
+        raise CaptureContractError(
+            "torch_build_config must contain exactly one CUDA runtime provenance record"
+        )
+    record_line = record_lines[0]
+    if config.rstrip("\n").split("\n")[-1] != record_line:
+        raise CaptureContractError(
+            "CUDA runtime provenance record must be the final torch_build_config line"
+        )
+    try:
+        payload = json.loads(record_line[len(_CUDA_RUNTIME_CONFIG_PREFIX) :])
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise CaptureContractError("CUDA runtime provenance record is malformed") from exc
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"loaded_cuda_runtime_libraries"}
+        or not isinstance(payload["loaded_cuda_runtime_libraries"], dict)
+    ):
+        raise CaptureContractError("CUDA runtime provenance record is malformed")
+    provenance = payload["loaded_cuda_runtime_libraries"]
+    if set(provenance) != _CUDA_RUNTIME_PROVENANCE_KEYS:
+        raise CaptureContractError("CUDA runtime provenance record is malformed")
+    count = provenance["cuda_runtime_library_file_count"]
+    receipt = provenance["cuda_runtime_library_receipt_sha256"]
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise CaptureContractError(
+            "CUDA runtime library file count must be a positive integer"
+        )
+    if (
+        not isinstance(receipt, str)
+        or len(receipt) != 64
+        or any(character not in "0123456789abcdef" for character in receipt)
+    ):
+        raise CaptureContractError(
+            "CUDA runtime library receipt must be a lowercase SHA-256 digest"
+        )
+    return {
+        "cuda_runtime_library_file_count": count,
+        "cuda_runtime_library_receipt_sha256": receipt,
+    }
+
+
 def _torch_build_metadata(torch: Any) -> dict[str, Any]:
     show = getattr(getattr(torch, "__config__", None), "show", None)
     if not callable(show):
@@ -188,6 +256,20 @@ def _validate_torch_build_metadata(observed: Mapping[str, Any]) -> None:
     expected = hashlib.sha256(config.encode("utf-8")).hexdigest()
     if observed.get("torch_build_config_sha256") != expected:
         raise CaptureContractError("torch_build_config_sha256 does not authenticate the recorded build")
+
+    cuda_runtime = _cuda_runtime_library_provenance_from_build_config(config)
+    device = observed.get("device")
+    if isinstance(device, str):
+        cuda_active = re.fullmatch(r"cuda:[0-9]+", device) is not None
+        if cuda_active and cuda_runtime is None:
+            raise CaptureContractError(
+                "CUDA torch_build_config is missing the authenticated CUDA runtime library receipt"
+            )
+        if not cuda_active and cuda_runtime is not None:
+            raise CaptureContractError(
+                "CUDA runtime library provenance must be absent outside CUDA"
+            )
+
     # Standalone build-receipt tests may intentionally exercise only __config__.
     # Canonical production metadata exact-key validation requires both package
     # fields, so when either is present validate the pair as a complete receipt.
