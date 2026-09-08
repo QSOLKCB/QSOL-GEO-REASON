@@ -24,7 +24,10 @@ REV = "e" * 40
 
 
 def fixture_request() -> dict:
-    return json.loads(REQUEST.read_text(encoding="utf-8"))
+    request = json.loads(REQUEST.read_text(encoding="utf-8"))
+    request["model"].setdefault("revision_tree_sha256", "2" * 64)
+    request["model"].setdefault("tokenizer_revision_tree_sha256", "3" * 64)
+    return request
 
 
 class FakeBackend:
