@@ -68,7 +68,7 @@ _PRODUCTION_BACKEND_KEYS = {
     "cpu_aten_capability", "aten_cpu_capability_env", "aten_cpu_capability_env_known",
     "cpu_math_dispatch_env_known", "onednn_max_cpu_isa", "dnnl_max_cpu_isa", "mkl_cbwr",
     "torch_num_interop_threads", "omp_num_threads", "mkl_num_threads",
-    "cpu_mkldnn_enabled", "cpu_mkldnn_matmul_fp32_precision", "cuda_device_name",
+    "cpu_mkldnn_enabled", "cpu_mkldnn_matmul_fp32_precision", "cpu_flush_denormal", "cuda_device_name",
     "cuda_device_capability", "cuda_resolved_device_index", "cuda_device_uuid",
     "cuda_visible_devices", "cuda_build_version", "cudnn_version", "nvidia_driver_version",
     "float32_matmul_precision", "cuda_matmul_allow_tf32", "cudnn_allow_tf32",
@@ -181,90 +181,79 @@ def _require_hf_repo_id(value: Any, where: str) -> str:
     return text
 
 
-def _sha256_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+def _require_nonempty_sequence(value: Any, where: str) -> Sequence[Any]:
+    if not isinstance(value, (list, tuple)) or not value:
+        raise CaptureContractError(f"{where} must be a non-empty array")
+    return value
 
 
-def _common_prefix_length(left: Sequence[int], right: Sequence[int]) -> int:
-    limit = min(len(left), len(right))
-    i = 0
-    while i < limit and left[i] == right[i]:
-        i += 1
-    return i
+def _require_finite_number(value: Any, where: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise CaptureContractError(f"{where} must be numeric")
+    try:
+        numeric = float(value)
+    except (OverflowError, ValueError) as exc:
+        raise CaptureContractError(f"{where} must be a representable finite number") from exc
+    if not math.isfinite(numeric):
+        raise CaptureContractError(f"{where} must be finite")
+    return numeric
 
 
-def _compose_text(prefix: str, segments: Sequence[str], joiner: str) -> str:
-    parts: list[str] = []
-    if prefix:
-        parts.append(prefix)
-    parts.extend(segments)
-    return joiner.join(parts)
-
-
-def _validate_token_ids(
-    input_ids: Sequence[int], where: str, *, allow_empty: bool = False,
-    max_value: int | None = None,
-) -> list[int]:
-    if not input_ids and not allow_empty:
-        raise CaptureContractError(f"{where} tokenized to zero tokens")
-    if max_value is not None and (
-        isinstance(max_value, bool) or not isinstance(max_value, int) or max_value < 0
-    ):
-        raise CaptureContractError("token-ID upper bound must be a non-negative integer")
-    normalized: list[int] = []
-    for value in input_ids:
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise CaptureContractError(f"{where} tokenizer returned an invalid token ID")
-        if max_value is not None and value > max_value:
-            raise CaptureContractError(
-                f"{where} tokenizer returned a token ID outside the supported integer domain"
-            )
-        normalized.append(int(value))
-    return normalized
-
-
-def _pool_span(*, token_count: int, mode: str, changed_span: tuple[int, int], window_tokens: int | None) -> tuple[int, int]:
-    a, b = changed_span
-    if token_count < 1:
+def _pool_span(mode: str, token_count: int, changed_start: int, window_tokens: int | None) -> tuple[int, int]:
+    if token_count <= 0:
         raise CaptureContractError("cannot pool an empty token sequence")
-    if a < 0 or b > token_count or a >= b:
-        raise CaptureContractError(f"invalid changed token span [{a}, {b}) for {token_count} tokens")
     if mode == "last_token":
         return token_count - 1, token_count
-    if mode == "step_mean":
-        return a, b
     if mode == "context_mean":
         return 0, token_count
+    if mode == "step_mean":
+        return changed_start, token_count
     if mode == "bounded_context_mean":
-        if window_tokens is None or window_tokens < 1:
-            raise CaptureContractError("bounded_context_mean requires window_tokens >= 1")
+        assert window_tokens is not None
         return max(0, token_count - window_tokens), token_count
-    raise CaptureContractError(f"unsupported pooling mode {mode!r}")
+    raise CaptureContractError(f"unsupported pooling mode: {mode}")
 
 
-def _validate_backend_layer(value: Any, *, layer_index: int, expected_dimension: int | None, where: str) -> tuple[list[float], int, str]:
-    if not isinstance(value, Mapping):
-        raise CaptureContractError(f"{where} must be a pooled layer record")
-    _require_exact_keys(value, required={"vector", "vector_dimension", "observed_dtype"}, where=where)
-    dimension = value["vector_dimension"]
-    if isinstance(dimension, bool) or not isinstance(dimension, int) or dimension < 1:
-        raise CaptureContractError(f"{where}.vector_dimension must be >= 1")
-    if expected_dimension is not None and dimension != expected_dimension:
-        raise CaptureContractError(f"layer {layer_index} vector dimension changed from {expected_dimension} to {dimension}")
-    vector = value["vector"]
-    if not isinstance(vector, Sequence) or isinstance(vector, (str, bytes)) or len(vector) != dimension:
-        raise CaptureContractError(f"{where}.vector length must equal vector_dimension {dimension}")
-    normalized: list[float] = []
-    for item in vector:
-        if isinstance(item, bool) or not isinstance(item, (int, float)):
-            raise CaptureContractError(f"{where}.vector contains a non-numeric value")
-        try:
-            number = float(item)
-        except (OverflowError, ValueError) as exc:
+def _validate_token_ids(token_ids: Any, where: str) -> list[int]:
+    if not isinstance(token_ids, (list, tuple)):
+        raise CaptureContractError(f"{where} must be an integer sequence")
+    result: list[int] = []
+    for index, value in enumerate(token_ids):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise CaptureContractError(f"{where}[{index}] must be an integer")
+        if value < 0 or value > _TORCH_LONG_MAX:
             raise CaptureContractError(
-                f"{where}.vector contains a value outside the supported binary64 domain"
-            ) from exc
-        if not math.isfinite(number):
-            raise CaptureContractError(f"{where}.vector contains a non-finite value")
-        normalized.append(number)
-    return normalized, dimension, _require_observed_dtype(value["observed_dtype"], f"{where}.observed_dtype")
+                f"{where}[{index}] must fit canonical torch.long range [0, {_TORCH_LONG_MAX}]"
+            )
+        result.append(value)
+    return result
+
+
+def _finite_vector(values: Sequence[Any], where: str) -> list[float]:
+    if not isinstance(values, (list, tuple)) or not values:
+        raise CaptureContractError(f"{where} must be a non-empty numeric vector")
+    return [_require_finite_number(v, f"{where}[{i}]") for i, v in enumerate(values)]
+
+
+def _longest_common_prefix(left: Sequence[int], right: Sequence[int]) -> int:
+    limit = min(len(left), len(right))
+    index = 0
+    while index < limit and left[index] == right[index]:
+        index += 1
+    return index
+
+
+def _validate_step_span(start: int, stop: int, token_count: int, where: str) -> None:
+    for name, value in (("start", start), ("stop", stop), ("token_count", token_count)):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise CaptureContractError(f"{where} {name} must be an integer")
+    if not 0 <= start < stop <= token_count:
+        raise CaptureContractError(f"{where} must satisfy 0 <= start < stop <= token_count")
+
+
+def _canonical_step_text(prefix: str, joiner: str, steps: Sequence[Mapping[str, Any]], index: int, mode: str) -> str:
+    if mode == "cumulative":
+        return prefix + "".join(joiner + steps[i]["text"] for i in range(index + 1))
+    if mode == "isolated":
+        return prefix + joiner + steps[index]["text"]
+    raise CaptureContractError(f"unsupported context mode: {mode}")
