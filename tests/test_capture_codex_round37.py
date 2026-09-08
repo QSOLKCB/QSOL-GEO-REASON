@@ -15,6 +15,7 @@ from qsol_geo_reason.canonical import sha256_json
 from qsol_geo_reason.capture_backend_final import (
     HuggingFacePyTorchBackend as FinalBackend,
     _assert_safetensors_only_checkpoint,
+    _hardened_core_init,
     _remember_final_construction_baseline,
 )
 from qsol_geo_reason.capture_common import CaptureContractError
@@ -155,7 +156,7 @@ class CaptureRound37RegressionTests(unittest.TestCase):
                     expected_tree_receipt_sha256=frozen,
                 )
 
-    def test_safetensors_only_gate_runs_before_inherited_model_loader(self):
+    def test_safetensors_only_gate_runs_before_real_core_model_loader(self):
         _assert_safetensors_only_checkpoint({"model.safetensors": "a" * 64})
         with self.assertRaisesRegex(CaptureContractError, "requires Safetensors"):
             _assert_safetensors_only_checkpoint({"pytorch_model.bin": "a" * 64})
@@ -164,14 +165,15 @@ class CaptureRound37RegressionTests(unittest.TestCase):
                 {"model.safetensors": "a" * 64, "pytorch_model.bin": "b" * 64}
             )
 
-        # Python invokes __new__ before the inherited production __init__. Keep the
-        # pre-load gate there so the established production constructor remains intact.
-        source = inspect.getsource(FinalBackend.__new__)
+        source = inspect.getsource(_hardened_core_init)
         self.assertLess(
             source.index("_assert_safetensors_only_checkpoint"),
-            source.index("_remember_final_construction_preflight"),
+            source.index("_ORIGINAL_CORE_INIT(instance, validated)"),
         )
+        # Preserve the established production constructor and its exclusive-thread
+        # boundary tests; the hardening is attached only to the unmocked core loader.
         self.assertNotIn("__init__", FinalBackend.__dict__)
+        self.assertNotIn("__new__", FinalBackend.__dict__)
 
     def test_external_torch_build_baseline_rejects_instance_map_rewrite(self):
         backend = make_final_fixture()
