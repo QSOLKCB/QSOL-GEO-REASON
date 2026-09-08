@@ -25,6 +25,13 @@ jobs:
         run: python -m pip install -e .
       - name: Apply guarded Round 52 patch
         run: python tools/apply_round52.py
+      - name: Normalize generated regression source
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("tests/test_capture_codex_round52.py")
+          path.write_text(path.read_text(encoding="utf-8").replace("\\n", "\n"), encoding="utf-8")
+          PY
       - name: Compile changed Python
         run: python -m py_compile src/qsol_geo_reason/capture_cuda_runtime.py src/qsol_geo_reason/capture_backend_round46.py src/qsol_geo_reason/capture_backend_isolated.py tests/test_capture_codex_round52.py
       - name: Focused regressions
