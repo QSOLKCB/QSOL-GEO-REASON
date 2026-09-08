@@ -68,7 +68,7 @@ _PRODUCTION_BACKEND_KEYS = {
     "cpu_aten_capability", "aten_cpu_capability_env", "aten_cpu_capability_env_known",
     "cpu_math_dispatch_env_known", "onednn_max_cpu_isa", "dnnl_max_cpu_isa", "mkl_cbwr",
     "torch_num_interop_threads", "omp_num_threads", "mkl_num_threads",
-    "cpu_mkldnn_enabled", "cpu_mkldnn_matmul_fp32_precision", "cpu_flush_denormal", "cuda_device_name",
+    "cpu_mkldnn_enabled", "cpu_mkldnn_matmul_fp32_precision", "cuda_device_name",
     "cuda_device_capability", "cuda_resolved_device_index", "cuda_device_uuid",
     "cuda_visible_devices", "cuda_build_version", "cudnn_version", "nvidia_driver_version",
     "float32_matmul_precision", "cuda_matmul_allow_tf32", "cudnn_allow_tf32",
