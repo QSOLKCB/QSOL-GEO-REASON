@@ -23,6 +23,24 @@ def fixture_request() -> dict:
 
 def valid_production_shape(request: dict) -> dict:
     device = request["backend"]["device"]
+    build_config = TEST_BUILD_CONFIG
+    if device.startswith("cuda:"):
+        extension = json.dumps(
+            {
+                "loaded_cuda_runtime_libraries": {
+                    "cuda_runtime_library_file_count": 1,
+                    "cuda_runtime_library_receipt_sha256": "c" * 64,
+                }
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        build_config = (
+            build_config.rstrip("\n")
+            + "\nQSOL_GEO_CUDA_RUNTIME="
+            + extension
+            + "\n"
+        )
     return {
         "python_version": "3.13.0",
         "platform": "Linux",
@@ -38,8 +56,8 @@ def valid_production_shape(request: dict) -> dict:
         "safetensors_deserializer_active": False,
         "safetensors_package_file_count": None,
         "safetensors_package_receipt_sha256": None,
-        "torch_build_config": TEST_BUILD_CONFIG,
-        "torch_build_config_sha256": hashlib.sha256(TEST_BUILD_CONFIG.encode("utf-8")).hexdigest(),
+        "torch_build_config": build_config,
+        "torch_build_config_sha256": hashlib.sha256(build_config.encode("utf-8")).hexdigest(),
         "model_class": "Model",
         "tokenizer_class": "Tokenizer",
         "device": device,
@@ -131,7 +149,7 @@ class CaptureRound6RegressionTests(unittest.TestCase):
             ("python_version", 313),
             ("tokenizers_version", 1),
             ("torch_num_threads", True),
-            ("cuda_matmul_allow_tf32", "false"),
+            ("cuda_matmul_allow_tf16", "false"),
             ("mps_available", 1),
             ("observed_hidden_state_dtypes", []),
         ):
