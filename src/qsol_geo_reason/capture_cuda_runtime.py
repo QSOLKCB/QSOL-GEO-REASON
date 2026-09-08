@@ -31,7 +31,7 @@ _LibraryPredicate = Callable[[str], bool]
 
 
 class _MappedLibrary:
-    """A loaded library plus the stable object used to read its mapped bytes."""
+    """A loaded library plus its kernel-recorded mapped-file identity."""
 
     __slots__ = ("path", "content_path", "device", "inode")
 
@@ -93,13 +93,16 @@ def _linux_loaded_library_mappings(
             raise CaptureContractError(
                 f"loaded runtime library has no persistent mapped inode: {candidate}"
             )
-        map_file = Path("/proc/self/map_files") / mapping_range
         key = (device, inode, candidate)
         result.setdefault(
             key,
             _MappedLibrary(
                 path=Path(candidate),
-                content_path=map_file,
+                # Do not require /proc/self/map_files: opening those entries needs
+                # elevated capabilities on many ordinary Linux/container hosts.
+                # The ordinary pathname is opened once and its descriptor is
+                # authenticated against this mapped device/inode before hashing.
+                content_path=Path(candidate),
                 device=device,
                 inode=inode,
             ),
@@ -266,6 +269,11 @@ def _runtime_library_digest(
             )
         flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
         try:
+            # Production Linux mappings use the ordinary pathname from
+            # /proc/self/maps. fstat() below proves that this descriptor still
+            # names the exact mapped device/inode before any bytes are hashed.
+            # Replacement before open fails authentication; replacement after
+            # open cannot change the inode pinned by this descriptor.
             fd = os.open(raw_path.content_path, flags)
         except OSError as exc:
             raise CaptureContractError(

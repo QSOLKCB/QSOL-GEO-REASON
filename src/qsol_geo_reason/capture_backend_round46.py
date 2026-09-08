@@ -206,14 +206,14 @@ class _LoaderPatch:
 
     def restore(self) -> None:
         if self.had_own:
+            # Reassigning the original descriptor is idempotent if an interrupt
+            # arrives immediately after setattr succeeds.
             setattr(self.owner, "from_pretrained", self.original_descriptor)
         else:
-            try:
-                delattr(self.owner, "from_pretrained")
-            except AttributeError as exc:
-                raise CaptureContractError(
-                    "authenticated Transformers loader redirect disappeared before restoration"
-                ) from exc
+            # Likewise, retry after an interrupt that landed just after delattr.
+            if "from_pretrained" not in vars(self.owner):
+                return
+            delattr(self.owner, "from_pretrained")
 
 
 class _AuthenticatedLoadStage:
@@ -225,24 +225,50 @@ class _AuthenticatedLoadStage:
         self.tempdir = tempdir
         self.patches = patches
 
-    def cleanup(self) -> None:
+    def cleanup(self) -> BaseException | None:
+        """Restore all global loaders before releasing stage ownership.
+
+        KeyboardInterrupt/SystemExit are deferred until restoration completes.
+        Ordinary restoration failures leave the patch receipt intact so cleanup can
+        be retried instead of losing ownership of a partially restored boundary.
+        """
+        interrupted: BaseException | None = None
         error: Exception | None = None
-        for patch in reversed(self.patches):
-            try:
-                patch.restore()
-            except Exception as exc:  # pragma: no cover - defensive aggregation
-                error = error or exc
-        self.patches.clear()
-        try:
-            self.tempdir.cleanup()
-        except Exception as exc:  # pragma: no cover - platform cleanup failure
-            error = error or exc
+
+        for patch in reversed(tuple(self.patches)):
+            while True:
+                try:
+                    patch.restore()
+                except (KeyboardInterrupt, SystemExit) as exc:
+                    if interrupted is None:
+                        interrupted = exc
+                    continue
+                except Exception as exc:  # pragma: no cover - defensive aggregation
+                    error = error or exc
+                break
+
         if error is not None:
             if isinstance(error, CaptureContractError):
                 raise error
             raise CaptureContractError(
                 "unable to restore authenticated Transformers loader boundary"
             ) from error
+
+        # Only discard the loader receipts after every redirect has been restored.
+        self.patches.clear()
+        while True:
+            try:
+                self.tempdir.cleanup()
+            except (KeyboardInterrupt, SystemExit) as exc:
+                if interrupted is None:
+                    interrupted = exc
+                continue
+            except Exception as exc:  # pragma: no cover - platform cleanup failure
+                raise CaptureContractError(
+                    "unable to remove authenticated Transformers temporary snapshot"
+                ) from exc
+            break
+        return interrupted
 
 
 def _make_round46_stage_vault():
@@ -260,13 +286,16 @@ def _make_round46_stage_vault():
         active[instance] = stage
 
     def finish(instance: Any) -> None:
-        stage = active.pop(instance, None)
+        # Retain ownership in the active vault until every redirect is restored and
+        # the private staged snapshot has been cleaned up successfully.
+        stage = active.get(instance)
         if stage is None:
             return
-        try:
-            stage.cleanup()
-        finally:
-            completed.add(instance)
+        interrupted = stage.cleanup()
+        active.pop(instance, None)
+        completed.add(instance)
+        if interrupted is not None:
+            raise interrupted
 
     return is_completed, remember, finish
 

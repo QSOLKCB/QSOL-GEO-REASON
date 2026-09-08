@@ -404,11 +404,27 @@ class HuggingFacePyTorchBackend(_PolicyHuggingFacePyTorchBackend):
         if not getattr(self, "_observation_active", False):
             return
         ambient = self._observation_ambient_process_state
-        self._observation_active = False
-        self._observation_ambient_process_state = None
         if ambient is None:
             raise CaptureContractError("canonical OBSERVATION ambient process-state snapshot is missing")
-        self._restore_torch_process_state(self._torch, ambient)
+
+        interrupted: BaseException | None = None
+        while True:
+            try:
+                self._restore_torch_process_state(self._torch, ambient)
+            except (KeyboardInterrupt, SystemExit) as exc:
+                if interrupted is None:
+                    interrupted = exc
+                # Restoration is idempotent: finish it before propagating the
+                # asynchronous interruption so the caller is never left half-reset.
+                continue
+            break
+
+        # Keep the only ambient-state receipt live until restoration fully succeeds.
+        # Ordinary restore failures therefore leave this session retryable.
+        self._observation_active = False
+        self._observation_ambient_process_state = None
+        if interrupted is not None:
+            raise interrupted
 
     def _assert_tokenizer_state_authentication(self) -> None:
         if not getattr(self, "_live_state_seal_initialized", False):
