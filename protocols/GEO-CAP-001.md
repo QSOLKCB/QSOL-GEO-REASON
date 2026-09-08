@@ -332,6 +332,7 @@ The capture is invalid if, among other cases:
 - the loaded model/tokenizer reports a different commit from the frozen request;
 - the model does not expose exactly one recognized decoder-block sequence matching the configured hidden-layer count;
 - a step tokenizes to no changed token span;
+- a tokenized context exceeds the loaded model's configured position limit when one is exposed;
 - a requested canonical hidden-state index does not exist;
 - a selective hook fires unexpectedly more than once or fails to capture a requested state;
 - the backend returns layers other than exactly the requested set;

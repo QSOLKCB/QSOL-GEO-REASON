@@ -444,7 +444,14 @@ def execute_capture(
             observed["name"] = _SIMULATION_BACKEND
         _validate_backend_metadata(observed, validated, evidence_class)
     finally:
-        if production_backend and getattr(backend, "_observation_active", False):
+        if production_backend and (
+            getattr(backend, "_observation_active", False)
+            or getattr(backend, "_exclusive_thread_boundary_state", None) is not None
+        ):
+            # Also cover a partially entered production boundary whose thread-start
+            # patches are active even though inherited observation activation has not
+            # completed yet. end_observation() is idempotent for the inactive parent
+            # session and always releases the production thread boundary in finally.
             backend.end_observation()
 
     request_sha = sha256_json(validated)

@@ -645,8 +645,11 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
         self._assert_model_runtime_attributes()
 
     def begin_observation(self) -> None:
-        self._enter_exclusive_python_thread_boundary()
         try:
+            # Boundary entry itself is cleanup-protected. An asynchronous interrupt
+            # after thread-start patching but before inherited observation activation
+            # must still restore the caller's thread-start surface.
+            self._enter_exclusive_python_thread_boundary()
             # Recheck runtime ownership inside exclusion, before even the mode/policy
             # probes can be delegated to a substituted runtime object.
             self._assert_torch_runtime_identity()

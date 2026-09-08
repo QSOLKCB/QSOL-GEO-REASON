@@ -542,13 +542,32 @@ class HuggingFacePyTorchBackend:
             raise CaptureContractError(f"layer {layer_index} pooled representation contains non-finite values")
         return {"vector": pooled.tolist(), "vector_dimension": dimension, "observed_dtype": observed_dtype}
 
+    def _model_position_limit(self) -> int | None:
+        """Return the loaded model's configured context limit when it exposes one."""
+        model = getattr(self, "_model", None)
+        config = getattr(model, "config", None)
+        limit = getattr(config, "max_position_embeddings", None)
+        if limit is None:
+            return None
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise CaptureContractError(
+                "model config max_position_embeddings must be a positive integer when present"
+            )
+        return limit
+
     def hidden_states(self, input_ids: Sequence[int], layer_indices: Sequence[int], *, pool_span: tuple[int, int]) -> Mapping[int, Mapping[str, Any]]:
         """Capture requested states from the base model without LM-head logits."""
-        torch = self._torch
         requested = tuple(layer_indices)
         if any(i < 0 or i >= self._hidden_state_count for i in requested):
             bad = next(i for i in requested if i < 0 or i >= self._hidden_state_count)
             raise CaptureContractError(f"requested layer {bad} outside backend hidden-state range [0, {self._hidden_state_count - 1}]")
+        token_count = len(input_ids)
+        position_limit = self._model_position_limit()
+        if position_limit is not None and token_count > position_limit:
+            raise CaptureContractError(
+                f"tokenized context length {token_count} exceeds model position limit {position_limit}"
+            )
+        torch = self._torch
         self._assert_mps_backend_available()
         self._assert_mps_execution_policy()
         self._assert_autocast_disabled()
@@ -566,7 +585,6 @@ class HuggingFacePyTorchBackend:
                 self._force_sdpa_math_policy()
         selected: dict[int, Mapping[str, Any]] = {}
         handles: list[Any] = []
-        token_count = len(input_ids)
 
         def capture(layer_index: int, value: Any) -> None:
             if layer_index in selected:
