@@ -143,18 +143,46 @@ class CaptureRound24RegressionTests(unittest.TestCase):
                 self.assertEqual(snapshot(torch, "cpu"), before)
                 self.assertIs(threading.Thread.start, original_start)
 
-    def test_constructor_releases_boundary_when_snapshot_or_restore_fails(self):
-        for method in ("_snapshot_torch_process_state", "_restore_torch_process_state"):
-            with self.subTest(method=method):
-                original = threading.Thread.start
-                with (
-                    patch.dict(sys.modules, {"torch": policy_torch()}),
-                    patch.object(IsolatedBackend, "__init__", return_value=None),
-                    patch.object(HuggingFacePyTorchBackend, method, side_effect=RuntimeError("fixture failure")),
-                ):
-                    with self.assertRaisesRegex(RuntimeError, "fixture failure"):
-                        HuggingFacePyTorchBackend(fixture_request())
-                self.assertIs(threading.Thread.start, original)
+    def test_constructor_cleanup_ownership_for_snapshot_and_restore_failures(self):
+        original = threading.Thread.start
+        with (
+            patch.dict(sys.modules, {"torch": policy_torch()}),
+            patch.object(IsolatedBackend, "__init__", return_value=None),
+            patch.object(
+                HuggingFacePyTorchBackend,
+                "_snapshot_torch_process_state",
+                side_effect=RuntimeError("fixture snapshot failure"),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "fixture snapshot failure"):
+                HuggingFacePyTorchBackend(fixture_request())
+        self.assertIs(threading.Thread.start, original)
+        self.assertIsNone(HuggingFacePyTorchBackend._construction_recovery_owner)
+
+        torch = policy_torch()
+        try:
+            with (
+                patch.dict(sys.modules, {"torch": torch}),
+                patch.object(IsolatedBackend, "__init__", return_value=None),
+                patch.object(
+                    HuggingFacePyTorchBackend,
+                    "_restore_torch_process_state",
+                    side_effect=RuntimeError("fixture restore failure"),
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "fixture restore failure"):
+                    HuggingFacePyTorchBackend(fixture_request())
+                owner = HuggingFacePyTorchBackend._construction_recovery_owner
+                self.assertIsNotNone(owner)
+                self.assertIsNot(threading.Thread.start, original)
+                self.assertIsNotNone(owner._construction_ambient_process_state)
+                self.assertIsNotNone(owner._exclusive_thread_boundary_state)
+        finally:
+            if HuggingFacePyTorchBackend._construction_recovery_owner is not None:
+                HuggingFacePyTorchBackend._retry_failed_construction_restoration()
+
+        self.assertIsNone(HuggingFacePyTorchBackend._construction_recovery_owner)
+        self.assertIs(threading.Thread.start, original)
 
     def test_raw_thread_absent_from_threading_registry_blocks_both_boundaries(self):
         started, release = threading.Event(), threading.Event()
