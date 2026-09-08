@@ -164,11 +164,14 @@ class CaptureRound37RegressionTests(unittest.TestCase):
                 {"model.safetensors": "a" * 64, "pytorch_model.bin": "b" * 64}
             )
 
-        source = inspect.getsource(FinalBackend.__init__)
+        # Python invokes __new__ before the inherited production __init__. Keep the
+        # pre-load gate there so the established production constructor remains intact.
+        source = inspect.getsource(FinalBackend.__new__)
         self.assertLess(
             source.index("_assert_safetensors_only_checkpoint"),
-            source.index("super().__init__(validated)"),
+            source.index("_remember_final_construction_preflight"),
         )
+        self.assertNotIn("__init__", FinalBackend.__dict__)
 
     def test_external_torch_build_baseline_rejects_instance_map_rewrite(self):
         backend = make_final_fixture()
