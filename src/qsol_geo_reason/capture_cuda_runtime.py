@@ -7,7 +7,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Callable, Iterable
 
 from .canonical import sha256_json
 from .capture_common import CaptureContractError
@@ -22,19 +22,27 @@ _WINDOWS_CUDA_LIBRARY = re.compile(
     re.IGNORECASE,
 )
 
+_WIN_HANDLE = ctypes.c_void_p
+_WIN_HMODULE = ctypes.c_void_p
+_WIN_DWORD = ctypes.c_uint32
+_WIN_BOOL = ctypes.c_int
+_LibraryPredicate = Callable[[str], bool]
+
 
 def _is_cuda_runtime_library(path: str) -> bool:
     name = Path(path).name
     return bool(_LINUX_CUDA_LIBRARY.fullmatch(name) or _WINDOWS_CUDA_LIBRARY.fullmatch(name))
 
 
-def _linux_loaded_library_paths() -> list[Path]:
+def _linux_loaded_library_paths(
+    predicate: _LibraryPredicate = _is_cuda_runtime_library,
+) -> list[Path]:
     maps = Path("/proc/self/maps")
     try:
         lines = maps.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError as exc:
         raise CaptureContractError(
-            "canonical CUDA observation cannot enumerate loaded shared objects from /proc/self/maps"
+            "canonical observation cannot enumerate loaded shared objects from /proc/self/maps"
         ) from exc
     result: set[Path] = set()
     for line in lines:
@@ -44,36 +52,59 @@ def _linux_loaded_library_paths() -> list[Path]:
         raw = fields[5]
         deleted = raw.endswith(" (deleted)")
         candidate = raw[:-10] if deleted else raw
-        if not candidate.startswith("/") or not _is_cuda_runtime_library(candidate):
+        if not candidate.startswith("/") or not predicate(candidate):
             continue
         if deleted:
             raise CaptureContractError(
-                f"loaded CUDA runtime library was deleted after mapping: {candidate}"
+                f"loaded runtime library was deleted after mapping: {candidate}"
             )
         result.add(Path(candidate))
     return sorted(result, key=lambda item: str(item))
 
 
-def _windows_loaded_library_paths() -> list[Path]:
+def _configure_windows_module_api(kernel32: Any, psapi: Any) -> None:
+    """Declare pointer-sized Win32 module-enumeration signatures explicitly."""
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.GetCurrentProcess.restype = _WIN_HANDLE
+    psapi.EnumProcessModules.argtypes = [
+        _WIN_HANDLE,
+        ctypes.POINTER(_WIN_HMODULE),
+        _WIN_DWORD,
+        ctypes.POINTER(_WIN_DWORD),
+    ]
+    psapi.EnumProcessModules.restype = _WIN_BOOL
+    psapi.GetModuleFileNameExW.argtypes = [
+        _WIN_HANDLE,
+        _WIN_HMODULE,
+        ctypes.POINTER(ctypes.c_wchar),
+        _WIN_DWORD,
+    ]
+    psapi.GetModuleFileNameExW.restype = _WIN_DWORD
+
+
+def _windows_loaded_library_paths(
+    predicate: _LibraryPredicate = _is_cuda_runtime_library,
+) -> list[Path]:
     try:
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        _configure_windows_module_api(kernel32, psapi)
     except Exception as exc:
         raise CaptureContractError("unable to access Windows module enumeration APIs") from exc
 
     hprocess = kernel32.GetCurrentProcess()
-    needed = ctypes.c_ulong()
+    needed = _WIN_DWORD()
     count = 1024
     while True:
-        modules = (ctypes.c_void_p * count)()
+        modules = (_WIN_HMODULE * count)()
         if not psapi.EnumProcessModules(
             hprocess,
-            ctypes.byref(modules),
+            modules,
             ctypes.sizeof(modules),
             ctypes.byref(needed),
         ):
-            raise CaptureContractError("unable to enumerate loaded Windows CUDA modules")
-        required = needed.value // ctypes.sizeof(ctypes.c_void_p)
+            raise CaptureContractError("unable to enumerate loaded Windows runtime modules")
+        required = needed.value // ctypes.sizeof(_WIN_HMODULE)
         if required <= count:
             break
         count = required + 64
@@ -92,7 +123,33 @@ def _windows_loaded_library_paths() -> list[Path]:
         if not length:
             continue
         candidate = buffer.value
-        if _is_cuda_runtime_library(candidate):
+        if predicate(candidate):
+            result.add(Path(candidate))
+    return sorted(result, key=lambda item: str(item))
+
+
+def _darwin_loaded_library_paths(predicate: _LibraryPredicate) -> list[Path]:
+    try:
+        process = ctypes.CDLL(None)
+        image_count = getattr(process, "_dyld_image_count")
+        image_name = getattr(process, "_dyld_get_image_name")
+        image_count.argtypes = []
+        image_count.restype = ctypes.c_uint32
+        image_name.argtypes = [ctypes.c_uint32]
+        image_name.restype = ctypes.c_char_p
+    except Exception as exc:
+        raise CaptureContractError("unable to access Darwin dyld image enumeration APIs") from exc
+
+    result: set[Path] = set()
+    count = int(image_count())
+    if count > 65536:
+        raise CaptureContractError("loaded Darwin image count exceeds canonical bound")
+    for index in range(count):
+        raw = image_name(index)
+        if not raw:
+            continue
+        candidate = os.fsdecode(raw)
+        if predicate(candidate):
             result.add(Path(candidate))
     return sorted(result, key=lambda item: str(item))
 
@@ -114,7 +171,7 @@ def _sha256_file(path: Path) -> str:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
     except OSError as exc:
-        raise CaptureContractError(f"unable to hash loaded CUDA runtime library {path}") from exc
+        raise CaptureContractError(f"unable to hash loaded runtime library {path}") from exc
     return digest.hexdigest()
 
 
