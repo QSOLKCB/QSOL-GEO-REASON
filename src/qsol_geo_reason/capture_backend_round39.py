@@ -45,25 +45,28 @@ class HuggingFacePyTorchBackend(_FinalHuggingFacePyTorchBackend):
     def metadata(self) -> Mapping[str, Any]:
         observed = dict(super().metadata())
         device = observed.get("device")
-        if isinstance(device, str) and device.startswith("cuda:"):
-            # Extend the authenticated build receipt with the actual mapped
-            # CUDA/NVIDIA shared-object set observed after capture.
-            _append_runtime_record(
-                observed,
-                prefix="QSOL_GEO_CUDA_RUNTIME=",
-                key="loaded_cuda_runtime_libraries",
-                libraries=loaded_cuda_runtime_library_provenance(),
-            )
-        elif device == "cpu":
-            # Conda/system PyTorch builds can dispatch through MKL, oneDNN,
-            # OpenMP, OpenBLAS, Accelerate, or related libraries outside the torch
-            # package tree. Bind the mapped external CPU runtime set as part of the
-            # same authenticated build-config receipt.
+        cuda_active = isinstance(device, str) and device.startswith("cuda:")
+        production_device = device in {"cpu", "mps"} or cuda_active
+
+        if production_device:
+            # Every canonical lane performs the selected-span conversion/pooling on
+            # CPU in float64, including CUDA and MPS source devices. External MKL,
+            # oneDNN, OpenMP, OpenBLAS, Accelerate, or related mapped libraries are
+            # therefore part of the serving instrument for every production device.
             _append_runtime_record(
                 observed,
                 prefix="QSOL_GEO_CPU_RUNTIME=",
                 key="loaded_cpu_runtime_libraries",
                 libraries=loaded_cpu_runtime_library_provenance(),
+            )
+        if cuda_active:
+            # Keep the CUDA/NVIDIA record last. The canonical suffix for a CUDA
+            # observation is CPU-pooling runtime followed by CUDA runtime.
+            _append_runtime_record(
+                observed,
+                prefix="QSOL_GEO_CUDA_RUNTIME=",
+                key="loaded_cuda_runtime_libraries",
+                libraries=loaded_cuda_runtime_library_provenance(),
             )
         return observed
 

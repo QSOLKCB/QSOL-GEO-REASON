@@ -240,7 +240,7 @@ def _cuda_runtime_library_provenance_from_build_config(
 def _cpu_runtime_library_provenance_from_build_config(
     config: str,
 ) -> dict[str, int | str] | None:
-    """Parse and validate the canonical external CPU runtime-library receipt."""
+    """Parse and validate the canonical external CPU pooling-runtime receipt."""
     record_lines = [
         line
         for line in config.splitlines()
@@ -253,10 +253,18 @@ def _cpu_runtime_library_provenance_from_build_config(
             "torch_build_config must contain exactly one CPU runtime provenance record"
         )
     record_line = record_lines[0]
-    if config.rstrip("\n").split("\n")[-1] != record_line:
-        raise CaptureContractError(
-            "CPU runtime provenance record must be the final torch_build_config line"
+    terminal_lines = config.rstrip("\n").split("\n")
+    record_index = terminal_lines.index(record_line)
+    if record_index != len(terminal_lines) - 1:
+        immediately_before_cuda = (
+            record_index == len(terminal_lines) - 2
+            and terminal_lines[-1].startswith(_CUDA_RUNTIME_CONFIG_PREFIX)
         )
+        if not immediately_before_cuda:
+            raise CaptureContractError(
+                "CPU runtime provenance record must terminate torch_build_config or "
+                "immediately precede the final CUDA runtime provenance record"
+            )
     try:
         payload = json.loads(record_line[len(_CPU_RUNTIME_CONFIG_PREFIX) :])
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
@@ -323,6 +331,8 @@ def _validate_torch_build_metadata(observed: Mapping[str, Any]) -> None:
     if isinstance(device, str):
         cuda_active = re.fullmatch(r"cuda:[0-9]+", device) is not None
         cpu_active = device == "cpu"
+        production_device = cpu_active or device == "mps" or cuda_active
+        cpu_pooling_active = observed.get("pool_accumulation_device") == "cpu"
         if cuda_active and cuda_runtime is None:
             raise CaptureContractError(
                 "CUDA torch_build_config is missing the authenticated CUDA runtime library receipt"
@@ -331,13 +341,13 @@ def _validate_torch_build_metadata(observed: Mapping[str, Any]) -> None:
             raise CaptureContractError(
                 "CUDA runtime library provenance must be absent outside CUDA"
             )
-        if cpu_active and cpu_runtime is None:
+        if (cpu_active or (production_device and cpu_pooling_active)) and cpu_runtime is None:
             raise CaptureContractError(
-                "CPU torch_build_config is missing the authenticated CPU runtime library receipt"
+                "CPU pooling torch_build_config is missing the authenticated CPU runtime library receipt"
             )
-        if not cpu_active and cpu_runtime is not None:
+        if cpu_runtime is not None and not (cpu_active or cpu_pooling_active):
             raise CaptureContractError(
-                "CPU runtime library provenance must be absent outside CPU"
+                "CPU runtime library provenance must be absent outside CPU pooling"
             )
 
     # Standalone build-receipt tests may intentionally exercise only __config__.

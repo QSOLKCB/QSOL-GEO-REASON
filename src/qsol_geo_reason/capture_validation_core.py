@@ -16,9 +16,42 @@ def _require_sha256(value: Any, where: str) -> str:
     return value
 
 
+def _require_utf8_request_strings(value: Any) -> None:
+    """Reject JSON strings that Python cannot encode as canonical UTF-8 bytes."""
+    seen: set[int] = set()
+
+    def visit(item: Any) -> None:
+        if isinstance(item, str):
+            try:
+                item.encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise CaptureContractError(
+                    "capture request contains a string that is not valid UTF-8 text"
+                ) from exc
+            return
+        if isinstance(item, Mapping):
+            if id(item) in seen:
+                return
+            seen.add(id(item))
+            for key, child in item.items():
+                if isinstance(key, str):
+                    visit(key)
+                visit(child)
+            return
+        if isinstance(item, (list, tuple)):
+            if id(item) in seen:
+                return
+            seen.add(id(item))
+            for child in item:
+                visit(child)
+
+    visit(value)
+
+
 def validate_capture_request(request: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(request, dict):
         raise CaptureContractError("capture request must be an object")
+    _require_utf8_request_strings(request)
     root = copy.deepcopy(request)
     _require_exact_keys(
         root,

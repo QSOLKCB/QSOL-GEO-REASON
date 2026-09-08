@@ -111,6 +111,7 @@
       "backend_observed.determinism_mode must equal determinism.mode exactly.",
       "backend_observed observed model/tokenizer commits must equal the corresponding frozen model revisions.",
       "CUDA device identity fields must be null on CPU and MPS manifests.",
+      "Every production torch_build_config must contain exactly one canonical QSOL_GEO_CPU_RUNTIME record for the CPU float64 pooling instrument; on CUDA it immediately precedes the final CUDA runtime record.",
       "CUDA torch_build_config must contain exactly one canonical QSOL_GEO_CUDA_RUNTIME record as its final line; non-CUDA manifests must not contain that record."
     ]
   },
@@ -312,8 +313,9 @@
           "description": "Content receipt for the active Safetensors checkpoint deserializer, or null when the snapshot is not Safetensors-backed."
         },
         "torch_build_config": {
-          "type": "string", "minLength": 1, "pattern": "\\S",
-          "description": "torch.__config__.show() captured at backend construction; on CUDA observations the producer appends a QSOL_GEO_CUDA_RUNTIME line containing the count and SHA-256 receipt of the actual mapped CUDA/NVIDIA shared objects."
+          "type": "string", "minLength": 1,
+          "pattern": "(?:^|\\n)QSOL_GEO_CPU_RUNTIME=\\{\"loaded_cpu_runtime_libraries\":\\{\"cpu_runtime_library_file_count\":[0-9]+,\"cpu_runtime_library_receipt_sha256\":\"[0-9a-f]{64}\"\\}\\}\\n(?:QSOL_GEO_CUDA_RUNTIME=\\{\"loaded_cuda_runtime_libraries\":\\{\"cuda_runtime_library_file_count\":[1-9][0-9]*,\"cuda_runtime_library_receipt_sha256\":\"[0-9a-f]{64}\"\\}\\}\\n?)?$",
+          "description": "torch.__config__.show() captured at backend construction, followed by exactly one QSOL_GEO_CPU_RUNTIME receipt for the CPU float64 pooling instrument on every production device; CUDA observations append the QSOL_GEO_CUDA_RUNTIME receipt after it as the final line."
         },
         "torch_build_config_sha256": {
           "$ref": "#/$defs/sha256",

@@ -6,6 +6,7 @@ import importlib.util
 import marshal
 import os
 import subprocess
+import sys
 import types
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -255,6 +256,162 @@ def _stable_code_identity(code: types.CodeType) -> tuple[object, ...]:
     )
 
 
+def _module_source_path(root: Path, module_name: str) -> Path:
+    if module_name == "qsol_geo_reason":
+        candidate = root / "src" / "qsol_geo_reason" / "__init__.py"
+    elif module_name.startswith("qsol_geo_reason."):
+        parts = module_name.split(".")
+        base = root / "src"
+        module_path = base.joinpath(*parts)
+        file_candidate = module_path.with_suffix(".py")
+        package_candidate = module_path / "__init__.py"
+        candidate = file_candidate if file_candidate.is_file() else package_candidate
+    else:
+        raise SourceIdentityError(
+            f"loaded callable is outside the canonical package: {module_name}"
+        )
+    if not candidate.is_file():
+        raise SourceIdentityError(
+            f"loaded canonical module has no tracked source file: {module_name}"
+        )
+    return candidate.resolve()
+
+
+def _compiled_source_code_index(source_path: Path) -> dict[tuple[str, int], types.CodeType]:
+    try:
+        module_code = compile(
+            source_path.read_bytes(),
+            str(source_path),
+            "exec",
+            dont_inherit=True,
+        )
+    except (OSError, SyntaxError, ValueError, TypeError) as exc:
+        raise SourceIdentityError(
+            f"unable to compile clean tracked source for loaded-callable authentication: {source_path}"
+        ) from exc
+
+    index: dict[tuple[str, int], types.CodeType] = {}
+
+    def visit(code: types.CodeType) -> None:
+        key = (code.co_qualname, code.co_firstlineno)
+        if key in index:
+            raise SourceIdentityError(
+                f"clean tracked source has an ambiguous executable identity: {source_path}:{code.co_qualname}"
+            )
+        index[key] = code
+        for constant in code.co_consts:
+            if isinstance(constant, types.CodeType):
+                visit(constant)
+
+    visit(module_code)
+    return index
+
+
+def _loaded_qsol_python_functions() -> tuple[types.FunctionType, ...]:
+    """Collect loaded QSOL Python functions without invoking mutable descriptors."""
+    seen: set[int] = set()
+    functions: list[types.FunctionType] = []
+    references = 0
+    max_references = 32768
+
+    def visit(value: object) -> None:
+        nonlocal references
+        references += 1
+        if references > max_references:
+            raise SourceIdentityError(
+                "loaded canonical callable inspection exceeded its reference limit"
+            )
+        if id(value) in seen:
+            return
+        seen.add(id(value))
+        if isinstance(value, (staticmethod, classmethod)):
+            visit(value.__func__)
+            return
+        if isinstance(value, types.FunctionType):
+            if value.__module__.startswith("qsol_geo_reason"):
+                functions.append(value)
+                for cell in value.__closure__ or ():
+                    try:
+                        child = cell.cell_contents
+                    except ValueError:
+                        continue
+                    if isinstance(child, (types.FunctionType, dict, list, tuple, set, frozenset)):
+                        visit(child)
+            return
+        if isinstance(value, type):
+            if getattr(value, "__module__", "").startswith("qsol_geo_reason"):
+                for child in vars(value).values():
+                    if isinstance(child, (types.FunctionType, staticmethod, classmethod)):
+                        visit(child)
+            return
+        if isinstance(value, dict):
+            for child in value.values():
+                if isinstance(child, (types.FunctionType, dict, list, tuple, set, frozenset)):
+                    visit(child)
+            return
+        if isinstance(value, (list, tuple, set, frozenset)):
+            for child in value:
+                if isinstance(child, (types.FunctionType, dict, list, tuple, set, frozenset)):
+                    visit(child)
+
+    for module_name, module in tuple(sys.modules.items()):
+        if not module_name.startswith("qsol_geo_reason") or not isinstance(module, types.ModuleType):
+            continue
+        for value in vars(module).values():
+            if isinstance(value, (types.FunctionType, type)):
+                visit(value)
+    return tuple(functions)
+
+
+def _assert_loaded_importable_callables_match_source(root: Path) -> None:
+    """Bind already-imported QSOL callables to the clean tracked source bytes.
+
+    Import-time adapter receipts prove that code did not change *after* import. This
+    separate checkout-bound check closes the earlier-import gap: if a tracked module
+    was modified when Python imported it and the file was restored before capture,
+    the loaded code object must still match a fresh compilation of the now-verified
+    clean HEAD source before canonical OBSERVATION provenance is accepted.
+    """
+    source_cache: dict[str, tuple[Path, dict[tuple[str, int], types.CodeType]]] = {}
+    authenticated = 0
+    for function in _loaded_qsol_python_functions():
+        module_name = function.__module__
+        if module_name not in source_cache:
+            source_path = _module_source_path(root, module_name)
+            source_cache[module_name] = (
+                source_path,
+                _compiled_source_code_index(source_path),
+            )
+        source_path, index = source_cache[module_name]
+        code = function.__code__
+        filename = code.co_filename
+        if not filename or filename.startswith("<"):
+            # Generated/decorator functions are authenticated by their owning runtime
+            # surfaces. Only code objects compiled from canonical package source are
+            # candidates for source-byte equivalence here.
+            continue
+        try:
+            observed_path = Path(filename).resolve()
+        except OSError as exc:
+            raise SourceIdentityError(
+                f"unable to resolve loaded callable source path: {module_name}.{function.__qualname__}"
+            ) from exc
+        if observed_path != source_path:
+            continue
+        expected = index.get((code.co_qualname, code.co_firstlineno))
+        if expected is None or _stable_code_identity(code) != _stable_code_identity(expected):
+            raise SourceIdentityError(
+                "loaded canonical callable does not match the clean tracked source: "
+                f"{module_name}.{function.__qualname__}"
+            )
+        authenticated += 1
+
+    if authenticated == 0:
+        raise SourceIdentityError(
+            "unable to authenticate any loaded qsol_geo_reason callables against tracked source"
+        )
+
+
 def _authenticate_importable_bytecode(root: Path, paths: tuple[str, ...]) -> None:
     """Accept only caches whose executable code exactly matches tracked source.
 
@@ -340,9 +497,11 @@ def git_source_revision(
 
     Ordinary provenance tolerates disposable interpreter caches. Canonical
     OBSERVATION callers additionally authenticate tracked package files directly
-    against the HEAD tree and authenticate Git-ignored package bytecode against
-    that source. The direct file hashes do not trust index ``assume-unchanged`` or
-    ``skip-worktree`` hints, and all Git object lookups ignore local replacement refs.
+    against the HEAD tree, authenticate Git-ignored package bytecode against that
+    source, and bind already-loaded package callables to a fresh compilation of the
+    same clean tracked bytes. The direct file hashes do not trust index
+    ``assume-unchanged`` or ``skip-worktree`` hints, and all Git object lookups ignore
+    local replacement refs.
     """
     root = source_repo_root()
     try:
@@ -390,6 +549,7 @@ def git_source_revision(
     if require_clean and reject_importable_bytecode:
         _assert_tracked_importable_source_matches_head(root, head)
         _authenticate_importable_bytecode(root, _ignored_importable_bytecode(root))
+        _assert_loaded_importable_callables_match_source(root)
 
     return head
 
