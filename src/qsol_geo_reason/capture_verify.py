@@ -49,6 +49,16 @@ def _require_span(value: Any, *, token_count: int, where: str) -> tuple[int, int
     return start, end
 
 
+def _is_finite_vector_number(value: Any) -> bool:
+    """Return whether a JSON numeric value is representable and finite in binary64."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (OverflowError, ValueError):
+        return False
+
+
 def _validate_observed_dtype_map(
     observed_backend: Mapping[str, Any], recorded_dtypes: Mapping[int, set[str]]
 ) -> None:
@@ -176,7 +186,11 @@ def verify_capture_bundle(request: Mapping[str, Any], manifest: Mapping[str, Any
             if _require_span(record["pool_span"], token_count=len(input_ids), where=f"trajectory step {index} layer {requested_layer}.pool_span") != expected_pool:
                 raise CaptureContractError(f"pool span mismatch at step {index} layer {requested_layer}")
             vector = record["vector"]
-            if not isinstance(vector, list) or len(vector) != dim or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(float(v)) for v in vector):
+            if (
+                not isinstance(vector, list)
+                or len(vector) != dim
+                or any(not _is_finite_vector_number(value) for value in vector)
+            ):
                 raise CaptureContractError(f"vector content/dimension mismatch at step {index} layer {requested_layer}")
             if record["vector_sha256"] != sha256_json(vector):
                 raise CaptureContractError(f"vector SHA-256 mismatch at step {index} layer {requested_layer}")
