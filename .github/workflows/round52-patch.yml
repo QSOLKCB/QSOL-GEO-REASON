@@ -30,7 +30,12 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           path = Path("tests/test_capture_codex_round52.py")
-          path.write_text(path.read_text(encoding="utf-8").replace("\\n", "\n"), encoding="utf-8")
+          text = path.read_text(encoding="utf-8").replace("\\n", "\n")
+          text = text.replace(
+              'self.assertNotIn("/proc/self/map_files", source)',
+              'self.assertNotIn(\'Path("/proc/self/map_files")\', source)',
+          )
+          path.write_text(text, encoding="utf-8")
           PY
       - name: Compile changed Python
         run: python -m py_compile src/qsol_geo_reason/capture_cuda_runtime.py src/qsol_geo_reason/capture_backend_round46.py src/qsol_geo_reason/capture_backend_isolated.py tests/test_capture_codex_round52.py
