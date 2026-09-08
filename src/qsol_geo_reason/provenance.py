@@ -364,14 +364,22 @@ def _loaded_qsol_python_functions() -> tuple[types.FunctionType, ...]:
 
 
 def _assert_loaded_importable_callables_match_source(root: Path) -> None:
-    """Bind already-imported source-backed QSOL callables to clean tracked bytes."""
+    """Bind already-imported QSOL callables to clean tracked bytes."""
     source_cache: dict[str, tuple[Path, dict[tuple[str, int], types.CodeType]]] = {}
     authenticated = 0
     package_root = (root / "src" / "qsol_geo_reason").resolve()
+    executing_package_root = (
+        Path(__file__).resolve().parents[2] / "src" / "qsol_geo_reason"
+    ).resolve()
     for function in _loaded_qsol_python_functions():
         code = function.__code__
         filename = code.co_filename
         if not filename or filename.startswith("<"):
+            if package_root == executing_package_root:
+                raise SourceIdentityError(
+                    "loaded canonical callable has no checkout-backed source filename: "
+                    f"{function.__module__}.{function.__qualname__}"
+                )
             continue
         try:
             observed_path = Path(filename).resolve()
@@ -409,7 +417,7 @@ def _assert_loaded_importable_callables_match_source(root: Path) -> None:
     # A synthetic repository used only for source-provenance tests may have no
     # callables loaded from its package root. A real canonical checkout does: the
     # capture API is already imported before OBSERVATION reaches this boundary.
-    if authenticated == 0 and package_root == (Path(__file__).resolve().parents[2] / "src" / "qsol_geo_reason").resolve():
+    if authenticated == 0 and package_root == executing_package_root:
         raise SourceIdentityError(
             "unable to authenticate any loaded qsol_geo_reason callables against tracked source"
         )
