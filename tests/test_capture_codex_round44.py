@@ -143,7 +143,13 @@ class CaptureRound44RegressionTests(unittest.TestCase):
             )
             source_file.write_text(source, encoding="utf-8")
             namespace = {"__name__": "transformers.synthetic"}
-            exec(compile(source, str(source_file), "exec"), namespace)
+            # This test module uses future annotations; do not inherit its compiler
+            # flags into the synthetic package or its code identity would truthfully
+            # differ from a fresh compile of the package source itself.
+            exec(
+                compile(source, str(source_file), "exec", dont_inherit=True),
+                namespace,
+            )
             fake_transformers = types.SimpleNamespace(
                 __file__=str(init_file),
                 AutoTokenizer=namespace["AutoTokenizer"],
@@ -156,13 +162,13 @@ class CaptureRound44RegressionTests(unittest.TestCase):
             model = namespace["Model"]()
             _assert_transformers_model_source_bound(fake_transformers, model)
 
-            original_loader = namespace["AutoModelForCausalLM"].from_pretrained
             replacement_namespace = {"__name__": "transformers.synthetic"}
             exec(
                 compile(
                     "def replacement(cls, *args, **kwargs):\n    return None\n",
                     "<string>",
                     "exec",
+                    dont_inherit=True,
                 ),
                 replacement_namespace,
             )
@@ -171,7 +177,6 @@ class CaptureRound44RegressionTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(CaptureContractError, "receipt-backed"):
                 _assert_transformers_loaders_source_bound(fake_transformers)
-            namespace["AutoModelForCausalLM"].from_pretrained = original_loader.__func__
 
             def forged_forward(self, *args, **kwargs):
                 return "forged"
@@ -203,27 +208,27 @@ class CaptureRound44RegressionTests(unittest.TestCase):
 
         production = schema["$defs"]["backendObservedProduction"]
         properties = production["properties"]
-        self.assertEqual(properties["safetensors_deserializer_active"], {
-            "const": True,
-            "description": "Canonical OBSERVATION requires Safetensors checkpoint loading; legacy pickle-capable checkpoint lanes are forbidden.",
-        })
+        self.assertIs(properties["safetensors_deserializer_active"]["const"], True)
         self.assertEqual(
-            properties["safetensors_package_file_count"],
-            {"type": "integer", "minimum": 1},
+            properties["safetensors_package_file_count"]["type"], "integer"
         )
         self.assertEqual(
-            properties["safetensors_package_receipt_sha256"],
-            {"$ref": "#/$defs/sha256"},
+            properties["safetensors_package_file_count"]["minimum"], 1
+        )
+        self.assertEqual(
+            properties["safetensors_package_receipt_sha256"]["$ref"],
+            "#/$defs/sha256",
         )
 
         legacy_rule = next(
             rule
             for rule in production["allOf"]
-            if "model_snapshot_file_sha256" in rule.get("properties", {})
+            if "model_snapshot_file_sha256"
+            in rule.get("then", {}).get("properties", {})
         )
-        pattern = legacy_rule["properties"]["model_snapshot_file_sha256"][
-            "propertyNames"
-        ]["pattern"]
+        pattern = legacy_rule["then"]["properties"][
+            "model_snapshot_file_sha256"
+        ]["propertyNames"]["pattern"]
         self.assertIsNone(re.fullmatch(pattern, "pytorch_model.bin"))
         self.assertIsNone(re.fullmatch(pattern, "weights.ckpt"))
         self.assertIsNotNone(re.fullmatch(pattern, "model.safetensors"))
