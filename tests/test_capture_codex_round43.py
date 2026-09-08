@@ -65,7 +65,7 @@ class CaptureRound43RegressionTests(unittest.TestCase):
     def test_cuda_device_index_is_bounded_before_production_parsing(self):
         request = fixture_request()
         request["backend"]["device"] = "cuda:" + ("9" * 4301)
-        with self.assertRaisesRegex(CaptureContractError, "1-10 digit"):
+        with self.assertRaisesRegex(CaptureContractError, "at most 10 decimal digits"):
             validate_capture_request(request)
 
         schema = json.loads(
@@ -73,11 +73,14 @@ class CaptureRound43RegressionTests(unittest.TestCase):
                 encoding="utf-8"
             )
         )
-        pattern = schema["$defs"]["backend"]["properties"]["device"]["oneOf"][1]["pattern"]
+        device = schema["$defs"]["backend"]["properties"]["device"]
+        pattern = device["oneOf"][1]["pattern"]
+        self.assertEqual(pattern, "^cuda:[0-9]+$")
+        self.assertEqual(device["maxLength"], 15)
         self.assertIsNotNone(re.fullmatch(pattern, "cuda:0"))
         self.assertIsNotNone(re.fullmatch(pattern, "cuda:" + ("9" * 10)))
-        self.assertIsNone(re.fullmatch(pattern, "cuda:" + ("9" * 11)))
-        self.assertIsNone(re.fullmatch(pattern, request["backend"]["device"]))
+        self.assertGreater(len("cuda:" + ("9" * 11)), device["maxLength"])
+        self.assertGreater(len(request["backend"]["device"]), device["maxLength"])
 
 
 if __name__ == "__main__":
