@@ -37,6 +37,46 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _ensure_parent_directory_durable(path: Path) -> None:
+    """Create missing parent directories and durably publish every new entry.
+
+    ``mkdir(parents=True)`` can create several directory entries but syncing only
+    the leaf parent does not make its newly created ancestors crash-durable. Build
+    the chain one component at a time and fsync each directory that receives a new
+    child entry before continuing.
+    """
+
+    path = Path(path)
+    missing: list[Path] = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        parent = current.parent
+        if parent == current:
+            raise CaptureContractError(
+                "unable to locate an existing ancestor for capture publication"
+            )
+        current = parent
+    if not current.is_dir():
+        raise CaptureContractError(
+            "capture publication parent ancestry must contain only directories"
+        )
+
+    for directory in reversed(missing):
+        try:
+            directory.mkdir()
+        except FileExistsError:
+            if not directory.is_dir():
+                raise CaptureContractError(
+                    "capture publication parent path was replaced by a non-directory"
+                )
+        else:
+            # The new child name lives in directory.parent; sync that directory
+            # immediately so a crash cannot discard an ancestor needed to reach the
+            # subsequently published bundle.
+            _fsync_directory(directory.parent)
+
+
 def _raise_publish_error(error_number: int) -> None:
     if error_number in {errno.EEXIST, errno.ENOTEMPTY}:
         raise CaptureContractError(
@@ -120,7 +160,7 @@ def write_capture_bundle(output_dir: Path, request: Mapping[str, Any], manifest:
 
     output_dir = Path(output_dir)
     parent = output_dir.parent
-    parent.mkdir(parents=True, exist_ok=True)
+    _ensure_parent_directory_durable(parent)
     payloads = {
         "capture-request.json": canonical_json_bytes(validated) + b"\n",
         "run-manifest.json": canonical_json_bytes(manifest_snapshot) + b"\n",
