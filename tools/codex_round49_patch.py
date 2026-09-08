@@ -31,8 +31,8 @@ replace_once(
 
 replace_once(
     "src/qsol_geo_reason/capture_backend_core.py",
-    '''        self._assert_mps_backend_available()\n        self._assert_mps_execution_policy()\n''',
-    '''        token_count = len(input_ids)\n        position_limit = self._model_position_limit()\n        if position_limit is not None and token_count > position_limit:\n            raise CaptureContractError(\n                f"tokenized context length {token_count} exceeds model position limit {position_limit}"\n            )\n        self._assert_mps_backend_available()\n        self._assert_mps_execution_policy()\n''',
+    '''        requested = tuple(layer_indices)\n        if any(i < 0 or i >= self._hidden_state_count for i in requested):\n            bad = next(i for i in requested if i < 0 or i >= self._hidden_state_count)\n            raise CaptureContractError(f"requested layer {bad} outside backend hidden-state range [0, {self._hidden_state_count - 1}]")\n        self._assert_mps_backend_available()\n        self._assert_mps_execution_policy()\n''',
+    '''        requested = tuple(layer_indices)\n        if any(i < 0 or i >= self._hidden_state_count for i in requested):\n            bad = next(i for i in requested if i < 0 or i >= self._hidden_state_count)\n            raise CaptureContractError(f"requested layer {bad} outside backend hidden-state range [0, {self._hidden_state_count - 1}]")\n        token_count = len(input_ids)\n        position_limit = self._model_position_limit()\n        if position_limit is not None and token_count > position_limit:\n            raise CaptureContractError(\n                f"tokenized context length {token_count} exceeds model position limit {position_limit}"\n            )\n        self._assert_mps_backend_available()\n        self._assert_mps_execution_policy()\n''',
 )
 
 replace_once(
