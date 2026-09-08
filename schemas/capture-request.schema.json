@@ -61,9 +61,11 @@
         "local_files_only": {"const": true},
         "trust_remote_code": {"const": false},
         "device": {
+          "type": "string",
+          "maxLength": 15,
           "oneOf": [
             {"enum": ["cpu", "mps"]},
-            {"type": "string", "pattern": "^cuda:[0-9]+$", "maxLength": 15}
+            {"type": "string", "pattern": "^cuda:[0-9]+$"}
           ]
         },
         "dtype": {"enum": ["float32", "float16", "bfloat16"]},
