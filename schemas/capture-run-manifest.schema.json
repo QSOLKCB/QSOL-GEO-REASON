@@ -428,10 +428,10 @@
         "quantization": {"const": "none"},
         "offloading": {"const": "none"},
         "local_files_only": {"const": true},
-        "trust_remote_code": false,
-        "use_cache": false,
+        "trust_remote_code": {"const": false},
+        "use_cache": {"const": false},
         "capture_phase": {"const": "replayed_prefix"},
-        "kv_cache_reuse": false,
+        "kv_cache_reuse": {"const": false},
         "deterministic_algorithms_enabled": {"type": "boolean"},
         "determinism_mode": {"enum": ["required", "best_effort"]}
       },
