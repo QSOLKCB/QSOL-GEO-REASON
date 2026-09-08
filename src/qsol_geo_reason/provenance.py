@@ -96,11 +96,12 @@ def _assert_tracked_importable_source_matches_head(root: Path, head: str) -> Non
     Those index hints are useful for normal development but cannot participate in a
     canonical OBSERVATION trust decision. Enumerate the committed package tree from
     HEAD itself, then hash each corresponding working-tree path directly. ``hash-object``
-    reads the file rather than the index, so a modified tracked source file cannot be
-    hidden by either index flag. Tracked symlinks or other non-regular package entries
-    fail closed because their execution target is not represented by the ordinary file
-    receipt used here. Replacement objects are disabled by ``_git_run`` for both the
-    committed-tree lookup and working-tree hashing path.
+    reads the raw file bytes rather than the index or any clean/smudge filter, so a
+    modified tracked source file cannot be hidden by index flags or Git attributes.
+    Tracked symlinks or other non-regular package entries fail closed because their
+    execution target is not represented by the ordinary file receipt used here.
+    Replacement objects are disabled by ``_git_run`` for both the committed-tree
+    lookup and working-tree hashing path.
     """
     package_root = "/".join(_IMPORTABLE_PACKAGE_ROOT)
     try:
@@ -150,7 +151,7 @@ def _assert_tracked_importable_source_matches_head(root: Path, head: str) -> Non
             observed_oid = _git_run(
                 root,
                 "hash-object",
-                f"--path={normalized}",
+                "--no-filters",
                 "--",
                 normalized,
                 check=True,
