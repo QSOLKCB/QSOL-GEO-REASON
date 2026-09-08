@@ -34,6 +34,7 @@ from .capture_package import _python_package_provenance
 class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
     """Exact concrete backend permitted to emit canonical ``OBSERVATION`` evidence."""
 
+    _construction_recovery_owner: HuggingFacePyTorchBackend | None = None
     _EXECUTION_HOOK_REGISTRIES = (
         "_forward_pre_hooks",
         "_forward_hooks",
@@ -72,6 +73,71 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
             "_load_state_dict_post_hooks",
         }
     )
+
+    @classmethod
+    def _retry_failed_construction_restoration(cls) -> None:
+        """Finish a prior failed constructor cleanup before another capture can start."""
+        owner = cls._construction_recovery_owner
+        if owner is None:
+            return
+        if type(owner) is not cls:
+            raise CaptureContractError(
+                "canonical construction recovery owner has an invalid backend identity"
+            )
+
+        interrupted: BaseException | None = None
+        try:
+            owner._restore_construction_process_state()
+        except (KeyboardInterrupt, SystemExit) as exc:
+            interrupted = exc
+
+        # The process-state receipt is cleared only after exact restoration. Until
+        # then the previous constructor retains the patched thread-start boundary.
+        if getattr(owner, "_construction_ambient_process_state", None) is not None:
+            if interrupted is not None:
+                raise interrupted
+            return
+
+        try:
+            owner._leave_exclusive_python_thread_boundary()
+        except (KeyboardInterrupt, SystemExit) as exc:
+            if interrupted is None:
+                interrupted = exc
+
+        if getattr(owner, "_exclusive_thread_boundary_state", None) is None:
+            cls._construction_recovery_owner = None
+        if interrupted is not None:
+            raise interrupted
+
+    def _restore_construction_process_state(self) -> None:
+        """Restore and relinquish the construction ambient-state receipt exactly once."""
+        ambient = getattr(self, "_construction_ambient_process_state", None)
+        if ambient is None:
+            return
+        process_torch = getattr(self, "_construction_process_torch", None)
+        if process_torch is None:
+            raise CaptureContractError(
+                "canonical construction ambient-state receipt lacks its PyTorch runtime"
+            )
+
+        interrupted: BaseException | None = None
+        while True:
+            try:
+                self._restore_torch_process_state(process_torch, ambient)
+            except (KeyboardInterrupt, SystemExit) as exc:
+                if interrupted is None:
+                    interrupted = exc
+                # Restoration is idempotent. Finish it before any caller thread can
+                # resume against partially restored process-global PyTorch state.
+                continue
+            break
+
+        # Ordinary restoration failures escape above with both fields intact. They
+        # remain reachable through _construction_recovery_owner for a later retry.
+        self._construction_ambient_process_state = None
+        self._construction_process_torch = None
+        if interrupted is not None:
+            raise interrupted
 
     @classmethod
     def _assert_pristine_cuda_runtime(cls, torch: Any, device: str) -> None:
@@ -137,9 +203,15 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
             )
 
     def __init__(self, request: Mapping[str, Any]):
+        # If a previous construction failed while restoring ambient process state or
+        # thread-start policy, complete that cleanup before validating or mutating a
+        # new capture backend. The retained owner is the retry handle for that failure.
+        type(self)._retry_failed_construction_restoration()
         validated = validate_capture_request(request)
         device = validated["backend"]["device"]
         self._exclusive_thread_boundary_state: dict[str, Any] | None = None
+        self._construction_ambient_process_state: dict[str, Any] | None = None
+        self._construction_process_torch: Any | None = None
         self._canonical_cudnn_algorithm_policy: dict[str, bool] | None = None
         self._last_cudnn_algorithm_policy: dict[str, bool] | None = None
         self._canonical_cpu_dispatch: dict[str, Any] | None = None
@@ -201,13 +273,17 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
                 self._canonical_cudnn_algorithm_policy = _cudnn_algorithm_policy_state(process_torch)
                 self._canonical_fp16_accumulation_supported = _fp16_accumulation_state(process_torch) is not None
             ambient = self._snapshot_torch_process_state(process_torch, device)
+            self._construction_process_torch = process_torch
+            self._construction_ambient_process_state = ambient
+            type(self)._construction_recovery_owner = self
             try:
                 super().__init__(validated)
                 self._assert_torch_runtime_identity()
             finally:
-                # Keep exclusion active through both inherited and final restoration,
-                # including constructor failures and interrupted initialization.
-                self._restore_torch_process_state(process_torch, ambient)
+                # Keep the ambient receipt and thread exclusion live until exact
+                # restoration succeeds. Ordinary failures remain retryable by the
+                # retained construction owner; interrupts are retried immediately.
+                self._restore_construction_process_state()
 
             loaded_transformers = getattr(self, "_transformers", None)
             if loaded_transformers is not None:
@@ -236,7 +312,21 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
             self._canonical_model_runtime_attributes = self._model_runtime_attributes_seal()
             self._assert_no_registered_module_hooks()
         finally:
-            self._leave_exclusive_python_thread_boundary()
+            # Never expose partially restored process-global state to caller threads.
+            # If restoration failed, the retained owner keeps both receipts live.
+            if getattr(self, "_construction_ambient_process_state", None) is None:
+                try:
+                    self._leave_exclusive_python_thread_boundary()
+                except BaseException:
+                    if getattr(self, "_exclusive_thread_boundary_state", None) is not None:
+                        type(self)._construction_recovery_owner = self
+                    raise
+                else:
+                    if (
+                        getattr(self, "_exclusive_thread_boundary_state", None) is None
+                        and type(self)._construction_recovery_owner is self
+                    ):
+                        type(self)._construction_recovery_owner = None
 
     def _assert_torch_runtime_identity(self) -> None:
         """Reject replacement of the construction-bound PyTorch execution object."""
