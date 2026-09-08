@@ -82,9 +82,10 @@ def valid_production_shape(request: dict) -> dict:
         "huggingface_hub_version": None,
         "attention_implementation": "eager",
         "cpu_machine": None,
-        "cpu_processor": "SYNTHETIC CPU MODEL" if device == "cpu" else None,
+        # CPU float64 pooling is part of every production device lane, including
+        # CUDA/MPS source execution, so the pooling processor is always concrete.
+        "cpu_processor": "SYNTHETIC CPU MODEL",
         "cpu_instruction_flags": None,
-        # CPU float64 pooling is part of every production device lane.
         "cpu_aten_capability": "DEFAULT",
         "aten_cpu_capability_env": None,
         "aten_cpu_capability_env_known": False,
@@ -97,6 +98,7 @@ def valid_production_shape(request: dict) -> dict:
         "mkl_num_threads": None,
         "cpu_mkldnn_enabled": None,
         "cpu_mkldnn_matmul_fp32_precision": None,
+        "cpu_flush_denormal": False,
         "cuda_device_name": None,
         "cuda_device_capability": None,
         "cuda_resolved_device_index": None,
