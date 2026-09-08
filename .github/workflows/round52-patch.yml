@@ -1,0 +1,50 @@
+name: round52-patch
+
+on:
+  push:
+    branches: [phase2a-canonical-hidden-state-capture]
+    paths:
+      - tools/apply_round52.py
+      - .github/workflows/round52-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: phase2a-canonical-hidden-state-capture
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package
+        run: python -m pip install -e .
+      - name: Apply guarded Round 52 patch
+        run: python tools/apply_round52.py
+      - name: Compile changed Python
+        run: python -m py_compile src/qsol_geo_reason/capture_cuda_runtime.py src/qsol_geo_reason/capture_backend_round46.py src/qsol_geo_reason/capture_backend_isolated.py tests/test_capture_codex_round52.py
+      - name: Focused regressions
+        run: python -m unittest -v tests.test_capture_codex_round51 tests.test_capture_codex_round52
+      - name: Full Python suite
+        run: python -m unittest discover -s tests -v
+      - name: Frozen reference verification
+        run: python tools/verify_reference.py
+      - name: Diff check
+        run: git diff --check
+      - name: Commit validated patch
+        run: |
+          rm tools/apply_round52.py .github/workflows/round52-patch.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/qsol_geo_reason/capture_cuda_runtime.py \
+                  src/qsol_geo_reason/capture_backend_round46.py \
+                  src/qsol_geo_reason/capture_backend_isolated.py \
+                  tests/test_capture_codex_round52.py \
+                  tools/apply_round52.py \
+                  .github/workflows/round52-patch.yml
+          git commit -m "fix: make runtime and cleanup receipts retryable"
+          git push origin HEAD:phase2a-canonical-hidden-state-capture
