@@ -7,6 +7,13 @@ from .capture_common import (CAPTURE_SCHEMA_VERSION, CAPTURE_PROTOCOL_ID, _ALLOW
 
 _MAX_TORCH_SEED = (1 << 64) - 1
 _CUDA_DEVICE = re.compile(r"^cuda:[0-9]+$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _require_sha256(value: Any, where: str) -> str:
+    if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
+        raise CaptureContractError(f"{where} must be a lowercase 64-hex SHA-256")
+    return value
 
 
 def validate_capture_request(request: Mapping[str, Any]) -> dict[str, Any]:
@@ -29,6 +36,7 @@ def validate_capture_request(request: Mapping[str, Any]) -> dict[str, Any]:
     _require_exact_keys(
         model,
         required={"identifier", "revision", "revision_kind", "tokenizer_identifier", "tokenizer_revision", "tokenizer_revision_kind"},
+        optional={"revision_tree_sha256", "tokenizer_revision_tree_sha256"},
         where="model",
     )
     model["identifier"] = _require_hf_repo_id(model["identifier"], "model.identifier")
@@ -39,6 +47,14 @@ def validate_capture_request(request: Mapping[str, Any]) -> dict[str, Any]:
         raise CaptureContractError("model.tokenizer_revision_kind must be 'hf_commit'")
     model["revision"] = _require_git_sha(model["revision"], "model.revision")
     model["tokenizer_revision"] = _require_git_sha(model["tokenizer_revision"], "model.tokenizer_revision")
+    if "revision_tree_sha256" in model:
+        model["revision_tree_sha256"] = _require_sha256(
+            model["revision_tree_sha256"], "model.revision_tree_sha256"
+        )
+    if "tokenizer_revision_tree_sha256" in model:
+        model["tokenizer_revision_tree_sha256"] = _require_sha256(
+            model["tokenizer_revision_tree_sha256"], "model.tokenizer_revision_tree_sha256"
+        )
 
     backend = _require_object(root["backend"], "backend")
     _require_exact_keys(
