@@ -212,9 +212,7 @@ class HuggingFacePyTorchBackend(_Round44Backend):
         if self._real_torch_runtime():
             self._force_round45_cpu_flush_denormal_policy()
             data["cpu_processor"] = self._assert_round45_cpu_pooling_identity()
-        # Exact-type production metadata records the canonical policy explicitly; test
-        # doubles can exercise metadata shape without pretending to implement the API.
-        data["cpu_flush_denormal"] = False
+            data["cpu_flush_denormal"] = False
         return data
 
 
