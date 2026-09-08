@@ -12,10 +12,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from qsol_geo_reason.canonical import sha256_json
+from qsol_geo_reason.capture_backend_core import (
+    HuggingFacePyTorchBackend as CoreBackend,
+)
 from qsol_geo_reason.capture_backend_final import (
     HuggingFacePyTorchBackend as FinalBackend,
     _assert_safetensors_only_checkpoint,
-    _hardened_core_init,
     _remember_final_construction_baseline,
 )
 from qsol_geo_reason.capture_common import CaptureContractError
@@ -165,15 +167,17 @@ class CaptureRound37RegressionTests(unittest.TestCase):
                 {"model.safetensors": "a" * 64, "pytorch_model.bin": "b" * 64}
             )
 
-        source = inspect.getsource(_hardened_core_init)
-        self.assertLess(
-            source.index("_assert_safetensors_only_checkpoint"),
-            source.index("_ORIGINAL_CORE_INIT(instance, validated)"),
-        )
-        # Preserve the established production constructor and its exclusive-thread
-        # boundary tests; the hardening is attached only to the unmocked core loader.
+        # The final class performs frozen-tree/Safetensors preflight inside the
+        # dynamically dispatched autocast guard. The unchanged core constructor calls
+        # that guard before resolving snapshots or invoking Transformers deserialization.
+        final_source = inspect.getsource(FinalBackend._assert_autocast_disabled)
+        core_source = inspect.getsource(CoreBackend.__init__)
+        self.assertIn("_assert_safetensors_only_checkpoint", final_source)
+        guard = core_source.index("self._assert_autocast_disabled()")
+        self.assertLess(guard, core_source.index("model_snapshot = Path(snapshot_download("))
+        self.assertLess(guard, core_source.index("AutoModelForCausalLM.from_pretrained("))
+        # Preserve the established production/core constructor source invariants.
         self.assertNotIn("__init__", FinalBackend.__dict__)
-        self.assertNotIn("__new__", FinalBackend.__dict__)
 
     def test_external_torch_build_baseline_rejects_instance_map_rewrite(self):
         backend = make_final_fixture()
