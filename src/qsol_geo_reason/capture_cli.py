@@ -16,24 +16,36 @@ from .capture import (
     validate_capture_request,
     write_capture_bundle,
 )
+from .capture_hub_tree import prepare_tree_receipts
 from .provenance import SourceIdentityError, resolve_implementation_revision
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Validate or capture local-model hidden states under the GEO-CAP-001 "
+            "Validate, prepare, or capture local-model hidden states under the GEO-CAP-001 "
             "canonical Hugging Face/PyTorch replay protocol"
         )
     )
     parser.add_argument("request", type=Path, help="GEO-CAP-001 request JSON")
     parser.add_argument("--output-dir", type=Path)
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--validate-only",
         action="store_true",
         help=(
             "Run the complete canonical request validator, including semantic "
             "constraints such as unique step IDs, without loading a model."
+        ),
+    )
+    mode.add_argument(
+        "--prepare-tree-receipts",
+        action="store_true",
+        help=(
+            "ONLINE WARM-UP: query the Hugging Face Hub for each exact immutable "
+            "model/tokenizer commit, warm its snapshot, create QSOL's authenticated "
+            "trees/<commit>.json cache artifact, and print the two SHA-256 receipt "
+            "fields that must be frozen into the request before offline capture."
         ),
     )
     parser.add_argument(
@@ -49,11 +61,15 @@ def main() -> int:
     try:
         request = json.loads(args.request.read_text(encoding="utf-8"))
         validated = validate_capture_request(request)
+        if args.prepare_tree_receipts:
+            receipts = prepare_tree_receipts(validated)
+            print(json.dumps(receipts, sort_keys=True, separators=(",", ":")))
+            return 0
         if args.validate_only:
             print(sha256_json(validated))
             return 0
         if args.output_dir is None:
-            raise CaptureContractError("--output-dir is required unless --validate-only is used")
+            raise CaptureContractError("--output-dir is required unless a validation/warm-up mode is used")
         implementation_revision = resolve_implementation_revision(
             args.implementation_revision
         )
