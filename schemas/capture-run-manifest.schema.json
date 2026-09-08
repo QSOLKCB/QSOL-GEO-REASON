@@ -109,7 +109,8 @@
       "backend_observed.device must equal backend_request.device exactly; JSON Schema enforces cpu/mps equality and CUDA-family agreement, while the canonical semantic verifier enforces the exact cuda:N index.",
       "backend_observed.dtype must equal backend_request.dtype exactly.",
       "backend_observed.determinism_mode must equal determinism.mode exactly.",
-      "backend_observed observed model/tokenizer commits must equal the corresponding frozen model revisions."
+      "backend_observed observed model/tokenizer commits must equal the corresponding frozen model revisions.",
+      "CUDA device identity fields must be null on CPU and MPS manifests."
     ]
   },
   "$defs": {
@@ -149,9 +150,11 @@
         "identifier": {"$ref": "#/$defs/hubRepoId"},
         "revision": {"$ref": "#/$defs/gitSha"},
         "revision_kind": {"const": "hf_commit"},
+        "revision_tree_sha256": {"$ref": "#/$defs/sha256"},
         "tokenizer_identifier": {"$ref": "#/$defs/hubRepoId"},
         "tokenizer_revision": {"$ref": "#/$defs/gitSha"},
-        "tokenizer_revision_kind": {"const": "hf_commit"}
+        "tokenizer_revision_kind": {"const": "hf_commit"},
+        "tokenizer_revision_tree_sha256": {"$ref": "#/$defs/sha256"}
       }
     },
     "backendRequest": {
@@ -469,6 +472,13 @@
             "properties": {
               "cuda_device_name": {"type": "string", "minLength": 1, "pattern": "\\S"},
               "cuda_device_capability": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"}
+            }
+          },
+          "else": {
+            "properties": {
+              "cuda_device_name": {"type": "null"},
+              "cuda_device_capability": {"type": "null"},
+              "cuda_device_uuid": {"type": "null"}
             }
           }
         },
