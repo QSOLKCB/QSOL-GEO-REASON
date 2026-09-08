@@ -135,6 +135,11 @@ def write_capture_bundle(output_dir: Path, request: Mapping[str, Any], manifest:
                 handle.flush()
                 os.fsync(handle.fileno())
         _fsync_directory(staging)
+        # Parent-directory durability is a required capability of canonical
+        # publication. Probe it before the irreversible no-replace rename so a
+        # filesystem that rejects directory fsync cannot leave a published bundle
+        # behind while the caller is told that publication failed.
+        _fsync_directory(parent)
         _rename_directory_noreplace(staging, output_dir)
         published = True
         _fsync_directory(parent)
