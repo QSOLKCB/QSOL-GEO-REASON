@@ -20,6 +20,13 @@ _CUDA_RUNTIME_PROVENANCE_KEYS = frozenset(
         "cuda_runtime_library_receipt_sha256",
     }
 )
+_CPU_RUNTIME_CONFIG_PREFIX = "QSOL_GEO_CPU_RUNTIME="
+_CPU_RUNTIME_PROVENANCE_KEYS = frozenset(
+    {
+        "cpu_runtime_library_file_count",
+        "cpu_runtime_library_receipt_sha256",
+    }
+)
 
 
 def _capture_device_type(device: str) -> str:
@@ -230,6 +237,59 @@ def _cuda_runtime_library_provenance_from_build_config(
     }
 
 
+def _cpu_runtime_library_provenance_from_build_config(
+    config: str,
+) -> dict[str, int | str] | None:
+    """Parse and validate the canonical external CPU runtime-library receipt."""
+    record_lines = [
+        line
+        for line in config.splitlines()
+        if line.startswith(_CPU_RUNTIME_CONFIG_PREFIX)
+    ]
+    if not record_lines:
+        return None
+    if len(record_lines) != 1:
+        raise CaptureContractError(
+            "torch_build_config must contain exactly one CPU runtime provenance record"
+        )
+    record_line = record_lines[0]
+    if config.rstrip("\n").split("\n")[-1] != record_line:
+        raise CaptureContractError(
+            "CPU runtime provenance record must be the final torch_build_config line"
+        )
+    try:
+        payload = json.loads(record_line[len(_CPU_RUNTIME_CONFIG_PREFIX) :])
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise CaptureContractError("CPU runtime provenance record is malformed") from exc
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"loaded_cpu_runtime_libraries"}
+        or not isinstance(payload["loaded_cpu_runtime_libraries"], dict)
+    ):
+        raise CaptureContractError("CPU runtime provenance record is malformed")
+    provenance = payload["loaded_cpu_runtime_libraries"]
+    if set(provenance) != _CPU_RUNTIME_PROVENANCE_KEYS:
+        raise CaptureContractError("CPU runtime provenance record is malformed")
+    count = provenance["cpu_runtime_library_file_count"]
+    receipt = provenance["cpu_runtime_library_receipt_sha256"]
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise CaptureContractError(
+            "CPU runtime library file count must be a non-negative integer"
+        )
+    if (
+        not isinstance(receipt, str)
+        or len(receipt) != 64
+        or any(character not in "0123456789abcdef" for character in receipt)
+    ):
+        raise CaptureContractError(
+            "CPU runtime library receipt must be a lowercase SHA-256 digest"
+        )
+    return {
+        "cpu_runtime_library_file_count": count,
+        "cpu_runtime_library_receipt_sha256": receipt,
+    }
+
+
 def _torch_build_metadata(torch: Any) -> dict[str, Any]:
     show = getattr(getattr(torch, "__config__", None), "show", None)
     if not callable(show):
@@ -258,9 +318,11 @@ def _validate_torch_build_metadata(observed: Mapping[str, Any]) -> None:
         raise CaptureContractError("torch_build_config_sha256 does not authenticate the recorded build")
 
     cuda_runtime = _cuda_runtime_library_provenance_from_build_config(config)
+    cpu_runtime = _cpu_runtime_library_provenance_from_build_config(config)
     device = observed.get("device")
     if isinstance(device, str):
         cuda_active = re.fullmatch(r"cuda:[0-9]+", device) is not None
+        cpu_active = device == "cpu"
         if cuda_active and cuda_runtime is None:
             raise CaptureContractError(
                 "CUDA torch_build_config is missing the authenticated CUDA runtime library receipt"
@@ -268,6 +330,14 @@ def _validate_torch_build_metadata(observed: Mapping[str, Any]) -> None:
         if not cuda_active and cuda_runtime is not None:
             raise CaptureContractError(
                 "CUDA runtime library provenance must be absent outside CUDA"
+            )
+        if cpu_active and cpu_runtime is None:
+            raise CaptureContractError(
+                "CPU torch_build_config is missing the authenticated CPU runtime library receipt"
+            )
+        if not cpu_active and cpu_runtime is not None:
+            raise CaptureContractError(
+                "CPU runtime library provenance must be absent outside CPU"
             )
 
     # Standalone build-receipt tests may intentionally exercise only __config__.
