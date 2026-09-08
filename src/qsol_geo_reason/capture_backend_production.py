@@ -581,16 +581,16 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
             )
 
         patches: list[tuple[Any, str, Any]] = []
-        with lock:
-            targets = [
-                (threading.Thread, "start"),
-                (threading, "_start_new_thread"),
-                (threading, "_start_joinable_thread"),
-                (_thread, "start_new_thread"),
-                (_thread, "start_new"),
-                (_thread, "start_joinable_thread"),
-            ]
-            try:
+        try:
+            with lock:
+                targets = [
+                    (threading.Thread, "start"),
+                    (threading, "_start_new_thread"),
+                    (threading, "_start_joinable_thread"),
+                    (_thread, "start_new_thread"),
+                    (_thread, "start_new"),
+                    (_thread, "start_joinable_thread"),
+                ]
                 for owner, name in targets:
                     original = getattr(owner, name, None)
                     if not callable(original):
@@ -608,11 +608,15 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
                         "canonical OBSERVATION requires exclusive Python-thread execution; "
                         f"other_active_threads={len(other_active)} starting_threads={len(limbo)}"
                     )
-            except BaseException:
-                for owner, name, original in reversed(patches):
-                    setattr(owner, name, original)
-                raise
-        self._exclusive_thread_boundary_state = {"lock": lock, "patches": patches}
+                # Publish the restoration receipt while the thread registry lock is
+                # still held. There is no post-with interrupt window in which starts
+                # are patched but cleanup state is absent.
+                self._exclusive_thread_boundary_state = {"lock": lock, "patches": patches}
+        except BaseException:
+            self._exclusive_thread_boundary_state = None
+            for owner, name, original in reversed(patches):
+                setattr(owner, name, original)
+            raise
 
     def _leave_exclusive_python_thread_boundary(self) -> None:
         state = getattr(self, "_exclusive_thread_boundary_state", None)
