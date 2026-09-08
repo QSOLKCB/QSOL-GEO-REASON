@@ -343,7 +343,7 @@ def _install_authenticated_loader_redirects(
 
             patches.append(_LoaderPatch(owner, redirected))
         return patches
-    except Exception:
+    except BaseException:
         for patch in reversed(patches):
             patch.restore()
         raise
