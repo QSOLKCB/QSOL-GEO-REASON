@@ -12,9 +12,18 @@ from qsol_geo_reason.capture_backend_round45 import (
     HuggingFacePyTorchBackend as Round45Backend,
     _assert_transformers_instance_loader_source_bound,
     _is_canonical_snapshot_path_round45,
+    _record_cpu_flush_denormal_receipt,
     _validate_backend_metadata_round45,
+    _validate_cpu_flush_denormal_receipt,
 )
-from qsol_geo_reason.capture_common import CaptureContractError, _PRODUCTION_BACKEND_KEYS
+from qsol_geo_reason.capture_common import CaptureContractError
+
+
+_CPU_RUNTIME = (
+    'QSOL_GEO_CPU_RUNTIME={"loaded_cpu_runtime_libraries":'
+    '{"cpu_runtime_library_file_count":0,'
+    '"cpu_runtime_library_receipt_sha256":"' + ('a' * 64) + '"}}'
+)
 
 
 class CaptureRound45RegressionTests(unittest.TestCase):
@@ -91,9 +100,10 @@ class CaptureRound45RegressionTests(unittest.TestCase):
                 )
 
     def test_cpu_processor_identity_is_required_for_accelerator_pooling_too(self):
+        config = _record_cpu_flush_denormal_receipt("build\n" + _CPU_RUNTIME + "\n")
         observed = {
             "cpu_processor": "AMD Ryzen 9 5950X 16-Core Processor",
-            "cpu_flush_denormal": False,
+            "torch_build_config": config,
         }
         with patch.object(round45, "_ORIGINAL_VALIDATE_BACKEND_METADATA", return_value=None):
             _validate_backend_metadata_round45(observed, {}, "OBSERVATION")
@@ -130,22 +140,24 @@ class CaptureRound45RegressionTests(unittest.TestCase):
         with self.assertRaisesRegex(CaptureContractError, "gradual-underflow"):
             backend._force_round45_cpu_flush_denormal_policy()
 
-    def test_cpu_flush_denormal_policy_is_required_and_content_bound(self):
-        self.assertIn("cpu_flush_denormal", _PRODUCTION_BACKEND_KEYS)
-        observed = {
-            "cpu_processor": "AMD Ryzen 9 5950X 16-Core Processor",
-            "cpu_flush_denormal": False,
-        }
-        with patch.object(round45, "_ORIGINAL_VALIDATE_BACKEND_METADATA", return_value=None):
-            _validate_backend_metadata_round45(observed, {}, "OBSERVATION")
-            with self.assertRaisesRegex(CaptureContractError, "cpu_flush_denormal=false"):
-                _validate_backend_metadata_round45(
-                    dict(observed, cpu_flush_denormal=True), {}, "OBSERVATION"
+    def test_cpu_flush_denormal_policy_is_content_bound_in_build_receipt(self):
+        original = "PyTorch synthetic build\n" + _CPU_RUNTIME + "\n"
+        recorded = _record_cpu_flush_denormal_receipt(original)
+        self.assertIn(
+            "QSOL_GEO_CPU_FLUSH_DENORMAL=false\n" + _CPU_RUNTIME,
+            recorded,
+        )
+        _validate_cpu_flush_denormal_receipt(recorded)
+
+        with self.assertRaisesRegex(CaptureContractError, "cpu_flush_denormal=false"):
+            _validate_cpu_flush_denormal_receipt(
+                recorded.replace(
+                    "QSOL_GEO_CPU_FLUSH_DENORMAL=false",
+                    "QSOL_GEO_CPU_FLUSH_DENORMAL=true",
                 )
-            with self.assertRaisesRegex(CaptureContractError, "cpu_flush_denormal=false"):
-                _validate_backend_metadata_round45(
-                    {"cpu_processor": observed["cpu_processor"]}, {}, "OBSERVATION"
-                )
+            )
+        with self.assertRaisesRegex(CaptureContractError, "cpu_flush_denormal=false"):
+            _validate_cpu_flush_denormal_receipt(original)
 
 
 if __name__ == "__main__":
