@@ -297,9 +297,15 @@ def _install_authenticated_loader_redirects(
     tokenizer_source: Path,
     model_stage: Path,
     tokenizer_stage: Path,
+    patches: list[_LoaderPatch] | None = None,
 ) -> list[_LoaderPatch]:
-    """Redirect exactly the two authenticated core loads to private staged bytes."""
-    patches: list[_LoaderPatch] = []
+    """Redirect exactly the two authenticated core loads to private staged bytes.
+
+    When ``patches`` is supplied, ownership exists in the caller before the first
+    process-global loader mutation. This removes the post-return handoff window in
+    which an interrupt could otherwise strand installed redirects outside the vault.
+    """
+    installed = patches if patches is not None else []
     specifications = (
         ("AutoTokenizer", "tokenizer", tokenizer_source.resolve(), tokenizer_stage),
         ("AutoModelForCausalLM", "model", model_source.resolve(), model_stage),
@@ -341,11 +347,42 @@ def _install_authenticated_loader_redirects(
                     )
                 return _original(str(_stage), *args, **kwargs)
 
-            patches.append(_LoaderPatch(owner, redirected))
-        return patches
+            installed.append(_LoaderPatch(owner, redirected))
+        return installed
     except BaseException:
-        for patch in reversed(patches):
+        for patch in reversed(installed):
             patch.restore()
+        installed.clear()
+        raise
+
+
+def _install_round46_stage(
+    instance: Any,
+    module: Any,
+    *,
+    tempdir: tempfile.TemporaryDirectory[str],
+    model_source: Path,
+    tokenizer_source: Path,
+    model_stage: Path,
+    tokenizer_stage: Path,
+) -> None:
+    """Install redirects with local ownership until the stage vault takes over."""
+    stage = _AuthenticatedLoadStage(tempdir, [])
+    try:
+        _install_authenticated_loader_redirects(
+            module,
+            model_source=model_source,
+            tokenizer_source=tokenizer_source,
+            model_stage=model_stage,
+            tokenizer_stage=tokenizer_stage,
+            patches=stage.patches,
+        )
+        _remember_round46_stage(instance, stage)
+    except BaseException:
+        # The stage object existed before the first loader mutation, so it can
+        # restore every installed redirect even if interruption occurs immediately
+        # after installation returns or during the vault handoff itself.
+        stage.cleanup()
         raise
 
 
@@ -448,17 +485,19 @@ class HuggingFacePyTorchBackend(_Round45Backend):
                 raise CaptureContractError(
                     "canonical authenticated load stage requires Transformers"
                 )
-            patches = _install_authenticated_loader_redirects(
+            _install_round46_stage(
+                self,
                 module,
+                tempdir=tempdir,
                 model_source=model_snapshot,
                 tokenizer_source=tokenizer_snapshot,
                 model_stage=model_stage,
                 tokenizer_stage=tokenizer_stage,
             )
-            _remember_round46_stage(
-                self, _AuthenticatedLoadStage(tempdir, patches)
-            )
-        except Exception:
+        except BaseException:
+            # Failures before stage installation still own only the temporary tree;
+            # stage-install failures have already restored redirects and cleanup is
+            # intentionally idempotent.
             tempdir.cleanup()
             raise
 

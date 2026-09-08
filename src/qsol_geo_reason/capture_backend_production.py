@@ -622,17 +622,33 @@ class HuggingFacePyTorchBackend(_IsolatedHuggingFacePyTorchBackend):
         state = getattr(self, "_exclusive_thread_boundary_state", None)
         if state is None:
             return
-        self._exclusive_thread_boundary_state = None
         lock = state["lock"]
         patches = state["patches"]
-        try:
-            with lock:
-                for owner, name, original in reversed(patches):
-                    setattr(owner, name, original)
-        except Exception as exc:
-            raise CaptureContractError(
-                "unable to restore ambient Python thread-start policy after canonical observation"
-            ) from exc
+        interrupted: BaseException | None = None
+        while True:
+            try:
+                with lock:
+                    for owner, name, original in reversed(patches):
+                        setattr(owner, name, original)
+                    # Clear the receipt only after all originals are restored, while
+                    # still inside the protected registry region. If an interrupt
+                    # lands earlier, the same local/state receipt remains retryable.
+                    self._exclusive_thread_boundary_state = None
+                break
+            except (KeyboardInterrupt, SystemExit) as exc:
+                if interrupted is None:
+                    interrupted = exc
+                # Retry the complete idempotent restoration before propagating the
+                # asynchronous interruption to the caller.
+                continue
+            except BaseException as exc:
+                # Deterministic restoration failure leaves the state installed so a
+                # later cleanup attempt can retry rather than losing ownership.
+                raise CaptureContractError(
+                    "unable to restore ambient Python thread-start policy after canonical observation"
+                ) from exc
+        if interrupted is not None:
+            raise interrupted
 
     def _assert_live_state_authentication(self) -> None:
         # Cheap dispatch checks precede the inherited content-bound authentication.

@@ -10,9 +10,10 @@ from typing import Iterable
 from .canonical import sha256_json
 from .capture_common import CaptureContractError
 from .capture_cuda_runtime import (
+    _MappedLibrary,
     _darwin_loaded_library_paths,
-    _linux_loaded_library_paths,
-    _sha256_file,
+    _linux_loaded_library_mappings,
+    _runtime_library_digest,
     _windows_loaded_library_paths,
 )
 
@@ -40,32 +41,38 @@ def _is_cpu_runtime_library(path: str) -> bool:
     )
 
 
-def _loaded_cpu_library_paths() -> list[Path]:
+def _loaded_cpu_library_entries() -> list[Path | _MappedLibrary]:
     if sys.platform.startswith("linux"):
-        return _linux_loaded_library_paths(_is_cpu_runtime_library)
+        return list(_linux_loaded_library_mappings(_is_cpu_runtime_library))
     if os.name == "nt":
-        return _windows_loaded_library_paths(_is_cpu_runtime_library)
+        return list(_windows_loaded_library_paths(_is_cpu_runtime_library))
     if sys.platform == "darwin":
-        return _darwin_loaded_library_paths(_is_cpu_runtime_library)
+        return list(_darwin_loaded_library_paths(_is_cpu_runtime_library))
     raise CaptureContractError(
         "canonical CPU observation cannot enumerate loaded CPU math/runtime shared objects on this platform"
     )
 
 
-def _cpu_runtime_library_receipt(paths: Iterable[Path]) -> tuple[int, str]:
+def _loaded_cpu_library_paths() -> list[Path]:
+    """Compatibility view for callers that only need display pathnames."""
+    entries = _loaded_cpu_library_entries()
+    return [entry.path if isinstance(entry, _MappedLibrary) else Path(entry) for entry in entries]
+
+
+def _cpu_runtime_library_receipt(
+    paths: Iterable[Path | _MappedLibrary],
+) -> tuple[int, str]:
     """Hash mapped external CPU math/runtime libraries by basename and content."""
     by_name: dict[str, str] = {}
     for raw_path in paths:
-        try:
-            path = raw_path.resolve(strict=True)
-        except OSError as exc:
-            raise CaptureContractError(
-                f"loaded CPU runtime library path is unavailable: {raw_path}"
-            ) from exc
-        if not path.is_file() or not _is_cpu_runtime_library(str(path)):
+        item = _runtime_library_digest(
+            raw_path,
+            predicate=_is_cpu_runtime_library,
+            label="CPU",
+        )
+        if item is None:
             continue
-        name = path.name
-        digest = _sha256_file(path)
+        name, digest = item
         prior = by_name.get(name)
         if prior is not None and prior != digest:
             raise CaptureContractError(
@@ -79,7 +86,7 @@ def _cpu_runtime_library_receipt(paths: Iterable[Path]) -> tuple[int, str]:
 
 
 def loaded_cpu_runtime_library_provenance() -> dict[str, int | str]:
-    count, receipt = _cpu_runtime_library_receipt(_loaded_cpu_library_paths())
+    count, receipt = _cpu_runtime_library_receipt(_loaded_cpu_library_entries())
     return {
         "cpu_runtime_library_file_count": count,
         "cpu_runtime_library_receipt_sha256": receipt,

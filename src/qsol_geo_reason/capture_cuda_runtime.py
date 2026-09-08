@@ -5,6 +5,7 @@ import ctypes
 import hashlib
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -29,14 +30,35 @@ _WIN_BOOL = ctypes.c_int
 _LibraryPredicate = Callable[[str], bool]
 
 
+class _MappedLibrary:
+    """A loaded library plus the stable object used to read its mapped bytes."""
+
+    __slots__ = ("path", "content_path", "device", "inode")
+
+    def __init__(
+        self,
+        path: Path,
+        content_path: Path,
+        device: int | None = None,
+        inode: int | None = None,
+    ) -> None:
+        # Keep this constructor source-backed. Canonical checkout provenance rejects
+        # exec-generated callables, including dataclass-generated __init__ methods.
+        self.path = Path(path)
+        self.content_path = Path(content_path)
+        self.device = device
+        self.inode = inode
+
+
 def _is_cuda_runtime_library(path: str) -> bool:
     name = Path(path).name
     return bool(_LINUX_CUDA_LIBRARY.fullmatch(name) or _WINDOWS_CUDA_LIBRARY.fullmatch(name))
 
 
-def _linux_loaded_library_paths(
+def _linux_loaded_library_mappings(
     predicate: _LibraryPredicate = _is_cuda_runtime_library,
-) -> list[Path]:
+) -> list[_MappedLibrary]:
+    """Enumerate mapped libraries with their kernel-recorded device/inode identity."""
     maps = Path("/proc/self/maps")
     try:
         lines = maps.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -44,11 +66,12 @@ def _linux_loaded_library_paths(
         raise CaptureContractError(
             "canonical observation cannot enumerate loaded shared objects from /proc/self/maps"
         ) from exc
-    result: set[Path] = set()
+    result: dict[tuple[int, int, str], _MappedLibrary] = {}
     for line in lines:
         fields = line.split(maxsplit=5)
         if len(fields) < 6:
             continue
+        mapping_range, device_text, inode_text = fields[0], fields[3], fields[4]
         raw = fields[5]
         deleted = raw.endswith(" (deleted)")
         candidate = raw[:-10] if deleted else raw
@@ -58,8 +81,40 @@ def _linux_loaded_library_paths(
             raise CaptureContractError(
                 f"loaded runtime library was deleted after mapping: {candidate}"
             )
-        result.add(Path(candidate))
-    return sorted(result, key=lambda item: str(item))
+        try:
+            major_text, minor_text = device_text.split(":", 1)
+            device = os.makedev(int(major_text, 16), int(minor_text, 16))
+            inode = int(inode_text, 10)
+        except (ValueError, OSError) as exc:
+            raise CaptureContractError(
+                f"loaded runtime library has malformed mapped file identity: {candidate}"
+            ) from exc
+        if inode <= 0:
+            raise CaptureContractError(
+                f"loaded runtime library has no persistent mapped inode: {candidate}"
+            )
+        map_file = Path("/proc/self/map_files") / mapping_range
+        key = (device, inode, candidate)
+        result.setdefault(
+            key,
+            _MappedLibrary(
+                path=Path(candidate),
+                content_path=map_file,
+                device=device,
+                inode=inode,
+            ),
+        )
+    return sorted(
+        result.values(),
+        key=lambda item: (str(item.path), str(item.content_path)),
+    )
+
+
+def _linux_loaded_library_paths(
+    predicate: _LibraryPredicate = _is_cuda_runtime_library,
+) -> list[Path]:
+    """Compatibility view of mapped Linux libraries by their display path."""
+    return [item.path for item in _linux_loaded_library_mappings(predicate)]
 
 
 def _configure_windows_module_api(kernel32: Any, psapi: Any) -> None:
@@ -154,14 +209,20 @@ def _darwin_loaded_library_paths(predicate: _LibraryPredicate) -> list[Path]:
     return sorted(result, key=lambda item: str(item))
 
 
-def _loaded_cuda_library_paths() -> list[Path]:
+def _loaded_cuda_library_entries() -> list[Path | _MappedLibrary]:
     if sys.platform.startswith("linux"):
-        return _linux_loaded_library_paths()
+        return list(_linux_loaded_library_mappings())
     if os.name == "nt":
-        return _windows_loaded_library_paths()
+        return list(_windows_loaded_library_paths())
     raise CaptureContractError(
         "canonical CUDA observation cannot enumerate loaded CUDA shared objects on this platform"
     )
+
+
+def _loaded_cuda_library_paths() -> list[Path]:
+    """Compatibility view for callers that only need display pathnames."""
+    entries = _loaded_cuda_library_entries()
+    return [entry.path if isinstance(entry, _MappedLibrary) else Path(entry) for entry in entries]
 
 
 def _sha256_file(path: Path) -> str:
@@ -175,18 +236,81 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _cuda_runtime_library_receipt(paths: Iterable[Path]) -> tuple[int, str]:
+def _sha256_fd(fd: int, where: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    except OSError as exc:
+        raise CaptureContractError(f"unable to hash mapped runtime library {where}") from exc
+    return digest.hexdigest()
+
+
+def _runtime_library_digest(
+    raw_path: Path | _MappedLibrary,
+    *,
+    predicate: _LibraryPredicate,
+    label: str,
+) -> tuple[str, str] | None:
+    if isinstance(raw_path, _MappedLibrary):
+        display_path = raw_path.path
+        if not predicate(str(display_path)):
+            return None
+        if raw_path.device is None or raw_path.inode is None:
+            raise CaptureContractError(
+                f"mapped {label} runtime library is missing device/inode identity: {display_path}"
+            )
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
+        try:
+            fd = os.open(raw_path.content_path, flags)
+        except OSError as exc:
+            raise CaptureContractError(
+                f"unable to open mapped {label} runtime library {display_path}"
+            ) from exc
+        try:
+            observed = os.fstat(fd)
+            if not stat.S_ISREG(observed.st_mode):
+                raise CaptureContractError(
+                    f"mapped {label} runtime object is not a regular file: {display_path}"
+                )
+            if observed.st_dev != raw_path.device or observed.st_ino != raw_path.inode:
+                raise CaptureContractError(
+                    f"mapped {label} runtime library identity changed before hashing: {display_path}"
+                )
+            digest = _sha256_fd(fd, display_path)
+        finally:
+            os.close(fd)
+        return display_path.name, digest
+
+    try:
+        path = Path(raw_path).resolve(strict=True)
+    except OSError as exc:
+        raise CaptureContractError(
+            f"loaded {label} runtime library path is unavailable: {raw_path}"
+        ) from exc
+    if not path.is_file() or not predicate(str(path)):
+        return None
+    return path.name, _sha256_file(path)
+
+
+def _cuda_runtime_library_receipt(
+    paths: Iterable[Path | _MappedLibrary],
+) -> tuple[int, str]:
     """Hash actual mapped library bytes; relocation does not change the receipt."""
     by_name: dict[str, str] = {}
     for raw_path in paths:
-        try:
-            path = raw_path.resolve(strict=True)
-        except OSError as exc:
-            raise CaptureContractError(f"loaded CUDA runtime library path is unavailable: {raw_path}") from exc
-        if not path.is_file() or not _is_cuda_runtime_library(str(path)):
+        item = _runtime_library_digest(
+            raw_path,
+            predicate=_is_cuda_runtime_library,
+            label="CUDA",
+        )
+        if item is None:
             continue
-        name = path.name
-        digest = _sha256_file(path)
+        name, digest = item
         prior = by_name.get(name)
         if prior is not None and prior != digest:
             raise CaptureContractError(
@@ -201,7 +325,7 @@ def _cuda_runtime_library_receipt(paths: Iterable[Path]) -> tuple[int, str]:
 
 
 def loaded_cuda_runtime_library_provenance() -> dict[str, int | str]:
-    count, receipt = _cuda_runtime_library_receipt(_loaded_cuda_library_paths())
+    count, receipt = _cuda_runtime_library_receipt(_loaded_cuda_library_entries())
     return {
         "cuda_runtime_library_file_count": count,
         "cuda_runtime_library_receipt_sha256": receipt,
