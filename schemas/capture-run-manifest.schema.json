@@ -110,7 +110,8 @@
       "backend_observed.dtype must equal backend_request.dtype exactly.",
       "backend_observed.determinism_mode must equal determinism.mode exactly.",
       "backend_observed observed model/tokenizer commits must equal the corresponding frozen model revisions.",
-      "CUDA device identity fields must be null on CPU and MPS manifests."
+      "CUDA device identity fields must be null on CPU and MPS manifests.",
+      "CUDA torch_build_config must contain exactly one canonical QSOL_GEO_CUDA_RUNTIME record as its final line; non-CUDA manifests must not contain that record."
     ]
   },
   "$defs": {
@@ -472,7 +473,11 @@
             "properties": {
               "cuda_device_name": {"type": "string", "minLength": 1, "pattern": "\\S"},
               "cuda_device_capability": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
-              "cuda_resolved_device_index": {"type": "integer", "minimum": 0}
+              "cuda_resolved_device_index": {"type": "integer", "minimum": 0},
+              "torch_build_config": {
+                "type": "string",
+                "pattern": "(?:^|\\n)QSOL_GEO_CUDA_RUNTIME=\\{\"loaded_cuda_runtime_libraries\":\\{\"cuda_runtime_library_file_count\":[1-9][0-9]*,\"cuda_runtime_library_receipt_sha256\":\"[0-9a-f]{64}\"\\}\\}\\n?$"
+              }
             }
           },
           "else": {
@@ -480,7 +485,10 @@
               "cuda_device_name": {"type": "null"},
               "cuda_device_capability": {"type": "null"},
               "cuda_resolved_device_index": {"type": "null"},
-              "cuda_device_uuid": {"type": "null"}
+              "cuda_device_uuid": {"type": "null"},
+              "torch_build_config": {
+                "not": {"pattern": "(?:^|\\n)QSOL_GEO_CUDA_RUNTIME="}
+              }
             }
           }
         },
