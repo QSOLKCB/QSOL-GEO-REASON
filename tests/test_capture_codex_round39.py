@@ -28,24 +28,24 @@ class CaptureRound39RegressionTests(unittest.TestCase):
         request = fixture_request()
         request["model"].pop("revision_tree_sha256", None)
         request["model"].pop("tokenizer_revision_tree_sha256", None)
-        commit = request["model"]["revision"]
+        model_commit = request["model"]["revision"]
+        tokenizer_commit = request["model"]["tokenizer_revision"]
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             snapshots = root / "models--fixture" / "snapshots"
-            snapshot = snapshots / commit
-            snapshot.mkdir(parents=True)
+            for commit in {model_commit, tokenizer_commit}:
+                (snapshots / commit).mkdir(parents=True)
 
             class Info:
-                sha = commit
+                def __init__(self, sha):
+                    self.sha = sha
 
             class Api:
                 def model_info(self, *, repo_id, revision):
-                    self.asserted = (repo_id, revision)
-                    return Info()
+                    return Info(revision)
 
                 def list_repo_tree(self, *, repo_id, revision, recursive):
-                    self.asserted = (repo_id, revision, recursive)
                     return [
                         {"path": "config.json", "size": 2, "blob_id": "1" * 40},
                         {"path": "model.safetensors", "size": 3, "blob_id": "2" * 40},
@@ -53,20 +53,20 @@ class CaptureRound39RegressionTests(unittest.TestCase):
 
             fake_hub = types.ModuleType("huggingface_hub")
             fake_hub.HfApi = Api
-            fake_hub.snapshot_download = lambda **kwargs: str(snapshot)
+            fake_hub.snapshot_download = lambda **kwargs: str(snapshots / kwargs["revision"])
             with mock.patch.dict("sys.modules", {"huggingface_hub": fake_hub}):
                 receipts = prepare_tree_receipts(request)
 
-            self.assertEqual(receipts["revision_tree_sha256"], receipts["tokenizer_revision_tree_sha256"])
-            tree_path = snapshot.parent.parent / "trees" / f"{commit}.json"
-            self.assertTrue(tree_path.is_file())
-            self.assertEqual(
-                hashlib.sha256(tree_path.read_bytes()).hexdigest(),
-                receipts["revision_tree_sha256"],
-            )
-            payload = json.loads(tree_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["format_version"], 1)
-            self.assertIn("model.safetensors", payload["files"])
+            for field, commit in (
+                ("revision_tree_sha256", model_commit),
+                ("tokenizer_revision_tree_sha256", tokenizer_commit),
+            ):
+                tree_path = snapshots.parent / "trees" / f"{commit}.json"
+                self.assertTrue(tree_path.is_file())
+                self.assertEqual(hashlib.sha256(tree_path.read_bytes()).hexdigest(), receipts[field])
+                payload = json.loads(tree_path.read_text(encoding="utf-8"))
+                self.assertEqual(payload["format_version"], 1)
+                self.assertIn("model.safetensors", payload["files"])
 
     def test_cli_and_example_document_generated_tree_receipt_workflow(self):
         from qsol_geo_reason.capture_cli import main as cli_main
