@@ -149,7 +149,7 @@ class CaptureRound6RegressionTests(unittest.TestCase):
             ("python_version", 313),
             ("tokenizers_version", 1),
             ("torch_num_threads", True),
-            ("cuda_matmul_allow_tf16", "false"),
+            ("cuda_matmul_allow_tf32", "false"),
             ("mps_available", 1),
             ("observed_hidden_state_dtypes", []),
         ):
