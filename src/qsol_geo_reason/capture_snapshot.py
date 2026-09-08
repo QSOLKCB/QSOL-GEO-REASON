@@ -40,15 +40,22 @@ def _lower_hex(value: Any, length: int) -> bool:
     )
 
 
-def _cached_hub_commit_tree(snapshot: Path, expected_commit: str, where: str) -> dict[str, Mapping[str, Any]]:
-    """Load the Hub-derived immutable commit tree cached by ``snapshot_download``.
+def _cached_hub_commit_tree(
+    snapshot: Path,
+    expected_commit: str,
+    where: str,
+    *,
+    expected_tree_receipt_sha256: str | None = None,
+) -> dict[str, Mapping[str, Any]]:
+    """Load Hub commit-tree metadata and optionally bind it to a frozen receipt.
 
-    Modern ``huggingface_hub`` stores ``trees/<commit>.json`` beside ``snapshots``.
-    The tree is populated from the Hub repository tree endpoint and records each
-    path's Git blob identity plus LFS content identity where applicable. Canonical
-    OBSERVATION refuses basename-only snapshot attribution: the cached commit tree
-    must exist and be structurally valid before local bytes can be associated with
-    the requested Hub commit.
+    ``huggingface_hub`` stores ``trees/<commit>.json`` beside ``snapshots``. The
+    tree records each path's Git blob identity plus LFS content identity where
+    applicable. Local cache metadata alone is only a consistency check because the
+    cache and snapshot can be rewritten together. Canonical OBSERVATION therefore
+    supplies ``expected_tree_receipt_sha256`` from the frozen capture request; when
+    present, the exact tree JSON bytes must match that preregistered SHA-256 before
+    any local file is attributed to the requested Hub commit.
     """
     if snapshot.parent.name != "snapshots":
         raise CaptureContractError(
@@ -56,13 +63,31 @@ def _cached_hub_commit_tree(snapshot: Path, expected_commit: str, where: str) ->
         )
     tree_path = snapshot.parent.parent / "trees" / f"{expected_commit.lower()}.json"
     try:
-        payload = json.loads(tree_path.read_text(encoding="utf-8"))
+        tree_bytes = tree_path.read_bytes()
     except FileNotFoundError as exc:
         raise CaptureContractError(
             f"{where} snapshot lacks cached Hub commit-tree metadata for {expected_commit}; "
             "refresh the immutable revision with a current huggingface_hub snapshot_download before offline capture"
         ) from exc
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    except OSError as exc:
+        raise CaptureContractError(
+            f"unable to read cached Hub commit-tree metadata for {where} snapshot"
+        ) from exc
+
+    if expected_tree_receipt_sha256 is not None:
+        if not _lower_hex(expected_tree_receipt_sha256, 64):
+            raise CaptureContractError(
+                f"{where} frozen Hub commit-tree receipt must be lowercase SHA-256"
+            )
+        observed_tree_receipt = hashlib.sha256(tree_bytes).hexdigest()
+        if observed_tree_receipt != expected_tree_receipt_sha256:
+            raise CaptureContractError(
+                f"{where} cached Hub commit tree does not match the frozen request receipt"
+            )
+
+    try:
+        payload = json.loads(tree_bytes.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
         raise CaptureContractError(
             f"unable to read cached Hub commit-tree metadata for {where} snapshot"
         ) from exc
@@ -101,15 +126,22 @@ def _cached_hub_commit_tree(snapshot: Path, expected_commit: str, where: str) ->
     return normalized
 
 
-def _snapshot_file_hashes(snapshot: Path, expected_commit: str, where: str) -> dict[str, str]:
-    """Authenticate local snapshot bytes against cached Hub commit-tree metadata.
+def _snapshot_file_hashes(
+    snapshot: Path,
+    expected_commit: str,
+    where: str,
+    *,
+    expected_tree_receipt_sha256: str | None = None,
+) -> dict[str, str]:
+    """Authenticate local snapshot bytes against Hub commit-tree metadata.
 
-    Pre/post SHA-256 receipts still bind the exact bytes consumed by Transformers,
-    but a snapshot directory name alone is never accepted as proof of the declared
-    Hub revision. Every local file must also match the Hub-derived cached commit tree:
-    regular Git files are checked against their Git blob SHA-1 and LFS/Xet-backed
-    files against their LFS SHA-256. Standard cache symlinks are additionally required
-    to resolve into the repository's content-addressed ``blobs`` directory.
+    Pre/post SHA-256 receipts bind the exact bytes consumed by Transformers. When a
+    frozen tree receipt is supplied, the Hub-derived tree itself is authenticated
+    before it is trusted, preventing a locally rewritten snapshot and adjacent tree
+    JSON from being reassigned to the requested commit. Every local file must then
+    match the authenticated tree: regular Git files are checked against their Git
+    blob SHA-1 and LFS/Xet-backed files against their LFS SHA-256. Standard cache
+    symlinks must resolve into the repository's content-addressed ``blobs`` directory.
     """
     snapshot = snapshot.resolve()
     if snapshot.name.lower() != expected_commit.lower():
@@ -117,7 +149,12 @@ def _snapshot_file_hashes(snapshot: Path, expected_commit: str, where: str) -> d
             f"{where} snapshot path is not bound to requested commit {expected_commit}"
         )
 
-    expected = _cached_hub_commit_tree(snapshot, expected_commit, where)
+    expected = _cached_hub_commit_tree(
+        snapshot,
+        expected_commit,
+        where,
+        expected_tree_receipt_sha256=expected_tree_receipt_sha256,
+    )
     storage = snapshot.parent.parent.resolve()
     blob_root = (storage / "blobs").resolve()
     observed_paths: set[str] = set()
