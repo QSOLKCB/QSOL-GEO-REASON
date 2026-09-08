@@ -6,7 +6,7 @@ from typing import Any, Mapping
 from .capture_common import (CAPTURE_SCHEMA_VERSION, CAPTURE_PROTOCOL_ID, _ALLOWED_CONTEXT_MODES, _ALLOWED_DETERMINISM, _ALLOWED_DTYPES, _ALLOWED_POOLING_MODES, _CAPTURE_PHASE, _PRODUCTION_BACKEND, _LOADING_INFO_KEYS, CaptureContractError, _require_bool, _require_exact_keys, _require_git_sha, _require_hf_repo_id, _require_nonempty_string, _require_nonnegative_int, _require_object)
 
 _MAX_TORCH_SEED = (1 << 64) - 1
-_CUDA_DEVICE = re.compile(r"^cuda:[0-9]+$")
+_CUDA_DEVICE = re.compile(r"^cuda:[0-9]{1,10}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -103,7 +103,9 @@ def validate_capture_request(request: Mapping[str, Any]) -> dict[str, Any]:
         raise CaptureContractError("backend.trust_remote_code must be false")
     device = _require_nonempty_string(backend["device"], "backend.device")
     if device not in {"cpu", "mps"} and not _CUDA_DEVICE.fullmatch(device):
-        raise CaptureContractError("backend.device must be one of 'cpu', 'mps', or 'cuda:N' with an explicit non-negative CUDA index")
+        raise CaptureContractError(
+            "backend.device must be one of 'cpu', 'mps', or 'cuda:N' with an explicit 1-10 digit non-negative CUDA index"
+        )
     if not isinstance(backend["dtype"], str) or backend["dtype"] not in _ALLOWED_DTYPES:
         raise CaptureContractError(f"backend.dtype must be one of {sorted(_ALLOWED_DTYPES)}")
     if backend["quantization"] != "none":
