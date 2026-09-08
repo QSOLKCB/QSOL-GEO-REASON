@@ -3,6 +3,7 @@ from __future__ import annotations
 import functools
 import inspect
 import types
+import weakref
 from collections import deque
 from typing import Any, Mapping
 from .canonical import sha256_json
@@ -122,6 +123,16 @@ def _trusted_execution_dependencies_sha256(roots: list[Any]) -> str:
             }
         if callable(value):
             return {"callable": _trusted_callable_receipt(value)}
+        if isinstance(value, weakref.WeakKeyDictionary):
+            # Closure-owned live trust vaults intentionally change as production
+            # backends are constructed and collected. Their accessor functions are
+            # authenticated above, but the mutable vault entries themselves are not
+            # executable dependencies and must not poison the import-time receipt.
+            return {
+                "opaque_trust_anchor": (
+                    f"{type(value).__module__}.{type(value).__qualname__}"
+                )
+            }
         if isinstance(value, (Mapping, list, tuple)):
             if id(value) in containers:
                 return {"cycle": True}
