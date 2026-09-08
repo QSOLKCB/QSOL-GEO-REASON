@@ -23,7 +23,23 @@ def fixture_request() -> dict:
 
 def valid_production_shape(request: dict) -> dict:
     device = request["backend"]["device"]
-    build_config = TEST_BUILD_CONFIG
+    cpu_extension = json.dumps(
+        {
+            "loaded_cpu_runtime_libraries": {
+                "cpu_runtime_library_file_count": 0,
+                "cpu_runtime_library_receipt_sha256": "d" * 64,
+            }
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    build_config = (
+        TEST_BUILD_CONFIG.rstrip("\n")
+        + "\nQSOL_GEO_CPU_FLUSH_DENORMAL=false"
+        + "\nQSOL_GEO_CPU_RUNTIME="
+        + cpu_extension
+        + "\n"
+    )
     if device.startswith("cuda:"):
         extension = json.dumps(
             {
@@ -38,23 +54,6 @@ def valid_production_shape(request: dict) -> dict:
         build_config = (
             build_config.rstrip("\n")
             + "\nQSOL_GEO_CUDA_RUNTIME="
-            + extension
-            + "\n"
-        )
-    elif device == "cpu":
-        extension = json.dumps(
-            {
-                "loaded_cpu_runtime_libraries": {
-                    "cpu_runtime_library_file_count": 0,
-                    "cpu_runtime_library_receipt_sha256": "d" * 64,
-                }
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        build_config = (
-            build_config.rstrip("\n")
-            + "\nQSOL_GEO_CPU_RUNTIME="
             + extension
             + "\n"
         )
@@ -98,7 +97,6 @@ def valid_production_shape(request: dict) -> dict:
         "mkl_num_threads": None,
         "cpu_mkldnn_enabled": None,
         "cpu_mkldnn_matmul_fp32_precision": None,
-        "cpu_flush_denormal": False,
         "cuda_device_name": None,
         "cuda_device_capability": None,
         "cuda_resolved_device_index": None,
