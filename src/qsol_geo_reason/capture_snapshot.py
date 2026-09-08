@@ -47,15 +47,15 @@ def _cached_hub_commit_tree(
     *,
     expected_tree_receipt_sha256: str | None = None,
 ) -> dict[str, Mapping[str, Any]]:
-    """Load Hub commit-tree metadata and optionally bind it to a frozen receipt.
+    """Load QSOL-exported Hub commit-tree metadata and bind it to a frozen receipt.
 
-    ``huggingface_hub`` stores ``trees/<commit>.json`` beside ``snapshots``. The
-    tree records each path's Git blob identity plus LFS content identity where
-    applicable. Local cache metadata alone is only a consistency check because the
-    cache and snapshot can be rewritten together. Canonical OBSERVATION therefore
-    supplies ``expected_tree_receipt_sha256`` from the frozen capture request; when
-    present, the exact tree JSON bytes must match that preregistered SHA-256 before
-    any local file is attributed to the requested Hub commit.
+    ``trees/<commit>.json`` is a QSOL cache artifact, not a file created by ordinary
+    ``huggingface_hub.snapshot_download``. It is generated during the explicit online
+    ``--prepare-tree-receipts`` warm-up from the Hub API and records each path's Git
+    blob identity plus LFS content identity where applicable. Canonical OBSERVATION
+    supplies ``expected_tree_receipt_sha256`` from the frozen capture request; the
+    exact exported tree JSON bytes must match that preregistered SHA-256 before any
+    local file is attributed to the requested Hub commit.
     """
     if snapshot.parent.name != "snapshots":
         raise CaptureContractError(
@@ -66,8 +66,9 @@ def _cached_hub_commit_tree(
         tree_bytes = tree_path.read_bytes()
     except FileNotFoundError as exc:
         raise CaptureContractError(
-            f"{where} snapshot lacks cached Hub commit-tree metadata for {expected_commit}; "
-            "refresh the immutable revision with a current huggingface_hub snapshot_download before offline capture"
+            f"{where} snapshot lacks QSOL Hub commit-tree metadata for {expected_commit}; "
+            "run qsol-geo-capture REQUEST.json --prepare-tree-receipts while online, "
+            "freeze the printed receipt into the request, then perform the capture offline"
         ) from exc
     except OSError as exc:
         raise CaptureContractError(
