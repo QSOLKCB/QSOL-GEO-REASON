@@ -86,6 +86,7 @@ def main() -> int:
         CaptureContractError,
         CaptureBackendUnavailable,
         json.JSONDecodeError,
+        UnicodeError,
         OSError,
     ) as exc:
         parser.error(str(exc))
