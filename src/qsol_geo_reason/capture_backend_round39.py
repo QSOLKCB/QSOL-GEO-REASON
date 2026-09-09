@@ -23,6 +23,9 @@ from .capture_signals import _assert_no_async_signal_instrumentation
 from . import capture_backend_production as _production
 
 
+_CPU_FLUSH_DENORMAL_RECORD = "QSOL_GEO_CPU_FLUSH_DENORMAL=false"
+
+
 def _make_runtime_library_baseline_vault():
     baselines: weakref.WeakKeyDictionary[Any, tuple[Any, ...]] = weakref.WeakKeyDictionary()
 
@@ -48,22 +51,61 @@ def _make_runtime_library_baseline_vault():
 del _make_runtime_library_baseline_vault
 
 
-def _append_runtime_record(
-    observed: dict[str, Any], *, prefix: str, key: str, libraries: Mapping[str, Any]
-) -> None:
+def _runtime_record(*, prefix: str, key: str, libraries: Mapping[str, Any]) -> str:
     extension = json.dumps(
         {key: dict(libraries)},
         sort_keys=True,
         separators=(",", ":"),
     )
-    config = observed.get("torch_build_config")
-    if not isinstance(config, str) or not config.strip():
-        raise CaptureContractError("canonical PyTorch build configuration is missing")
-    config = config.rstrip("\n") + "\n" + prefix + extension + "\n"
+    return prefix + extension
+
+
+def _set_build_config(observed: dict[str, Any], config: str) -> None:
     observed["torch_build_config"] = config
     observed["torch_build_config_sha256"] = hashlib.sha256(
         config.encode("utf-8")
     ).hexdigest()
+
+
+def _append_runtime_record(
+    observed: dict[str, Any], *, prefix: str, key: str, libraries: Mapping[str, Any]
+) -> None:
+    config = observed.get("torch_build_config")
+    if not isinstance(config, str) or not config.strip():
+        raise CaptureContractError("canonical PyTorch build configuration is missing")
+    config = config.rstrip("\n") + "\n" + _runtime_record(
+        prefix=prefix, key=key, libraries=libraries
+    ) + "\n"
+    _set_build_config(observed, config)
+
+
+def _insert_mps_runtime_record(observed: dict[str, Any], libraries: Mapping[str, Any]) -> None:
+    """Insert mapped-MPS provenance before the established CPU canonical suffix.
+
+    The published schema already binds the terminal denormal/CPU/CUDA suffix. Keeping
+    that suffix intact preserves schema compatibility while the semantic verifier
+    independently requires and authenticates this MPS line for device=mps.
+    """
+    config = observed.get("torch_build_config")
+    if not isinstance(config, str) or not config.strip():
+        raise CaptureContractError("canonical PyTorch build configuration is missing")
+    lines = config.rstrip("\n").split("\n")
+    indices = [index for index, line in enumerate(lines) if line == _CPU_FLUSH_DENORMAL_RECORD]
+    if len(indices) != 1:
+        raise CaptureContractError(
+            "canonical MPS runtime receipt requires exactly one CPU denormal policy record"
+        )
+    if any(line.startswith("QSOL_GEO_MPS_RUNTIME=") for line in lines):
+        raise CaptureContractError("torch_build_config already contains an MPS runtime receipt")
+    lines.insert(
+        indices[0],
+        _runtime_record(
+            prefix="QSOL_GEO_MPS_RUNTIME=",
+            key="loaded_mps_runtime_libraries",
+            libraries=libraries,
+        ),
+    )
+    _set_build_config(observed, "\n".join(lines) + ("\n" if config.endswith("\n") else ""))
 
 
 class HuggingFacePyTorchBackend(_FinalHuggingFacePyTorchBackend):
@@ -81,7 +123,6 @@ class HuggingFacePyTorchBackend(_FinalHuggingFacePyTorchBackend):
         if cuda_active:
             _cuda_provenance, cuda_state = loaded_cuda_runtime_library_snapshot()
         if mps_active:
-            # Metal/MPS frameworks may be loaded lazily by the first model forward.
             _mps_provenance, mps_state = loaded_mps_runtime_library_snapshot(
                 require_nonempty=False
             )
@@ -152,20 +193,12 @@ class HuggingFacePyTorchBackend(_FinalHuggingFacePyTorchBackend):
                     require_nonempty=True
                 )
 
-            # MPS records precede the CPU-pooling record so the existing canonical
-            # CPU receipt remains terminal on non-CUDA lanes. The semantic MPS
-            # validator requires this exact adjacency.
             if mps_active:
                 if mps_libraries is None:
                     mps_libraries, _mps_state = loaded_mps_runtime_library_snapshot(
                         require_nonempty=True
                     )
-                _append_runtime_record(
-                    observed,
-                    prefix="QSOL_GEO_MPS_RUNTIME=",
-                    key="loaded_mps_runtime_libraries",
-                    libraries=mps_libraries,
-                )
+                _insert_mps_runtime_record(observed, mps_libraries)
 
             # Every canonical lane performs selected-span pooling on CPU in float64.
             _append_runtime_record(
