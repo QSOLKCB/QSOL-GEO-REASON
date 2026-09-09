@@ -11,9 +11,20 @@ from qsol_geo_reason.capture_runtime import _validate_torch_build_metadata
 
 ROOT = Path(__file__).resolve().parents[1]
 _PREFIX = "QSOL_GEO_CUDA_RUNTIME="
+_CPU_PREFIX = "QSOL_GEO_CPU_RUNTIME="
 
 
 def _config(*, count: int = 2, receipt: str = "a" * 64) -> str:
+    cpu_payload = json.dumps(
+        {
+            "loaded_cpu_runtime_libraries": {
+                "cpu_runtime_library_file_count": 0,
+                "cpu_runtime_library_receipt_sha256": "d" * 64,
+            }
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     payload = json.dumps(
         {
             "loaded_cuda_runtime_libraries": {
@@ -24,7 +35,7 @@ def _config(*, count: int = 2, receipt: str = "a" * 64) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
-    return "SYNTHETIC\n" + _PREFIX + payload + "\n"
+    return "SYNTHETIC\n" + _CPU_PREFIX + cpu_payload + "\n" + _PREFIX + payload + "\n"
 
 
 def _observed(config: str, device: str) -> dict[str, str]:
