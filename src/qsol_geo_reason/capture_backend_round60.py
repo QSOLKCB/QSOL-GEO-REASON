@@ -1,7 +1,9 @@
 """Round-60 correction for the sealed provenance wrapper call graph."""
 from __future__ import annotations
 
+import hashlib
 import os
+import stat
 import subprocess
 import types
 from pathlib import Path, PurePosixPath
@@ -9,7 +11,6 @@ from typing import Any
 
 from .capture_backend_round59 import HuggingFacePyTorchBackend
 from . import capture_backend_round44 as _round44
-from . import capture_backend_round56 as _round56
 from . import capture_execute as _capture_execute
 from . import provenance as _provenance
 
@@ -38,14 +39,125 @@ def _clone_provenance_function_round60(
     return clone
 
 
+def _private_provenance_value_round60(value: Any) -> Any:
+    """Detach mutable module values before cloning the provenance call graph."""
+    if isinstance(value, set):
+        return frozenset(value)
+    if isinstance(value, list):
+        return tuple(value)
+    if isinstance(value, dict):
+        return dict(value)
+    return value
+
+
+def _private_value_fingerprint_round60(value: Any) -> Any:
+    """Return an immutable content fingerprint for mutable private graph values."""
+    if isinstance(value, dict):
+        return (
+            "dict",
+            tuple(
+                sorted(
+                    ((repr(key), id(item)) for key, item in value.items()),
+                    key=lambda item: item[0],
+                )
+            ),
+        )
+    if isinstance(value, (tuple, frozenset)):
+        items = tuple(
+            sorted(
+                (
+                    _private_value_fingerprint_round60(item)
+                    if isinstance(item, (dict, tuple, frozenset))
+                    else (type(item).__qualname__, repr(item))
+                    for item in value
+                ),
+                key=repr,
+            )
+        )
+        return (type(value).__qualname__, items)
+    return (type(value).__qualname__, id(value))
+
+
 def _make_sealed_git_runner_round60():
-    """Bind Git execution and environment sanitization without module-global lookups."""
-    trusted_git = _round56._trusted_git_executable
+    """Bind the complete trusted-Git resolver and execution graph in closures.
+
+    Round 56's resolver was itself a closure but still looked up candidate enumeration
+    and executable hashing through writable Round-56 globals. Canonical provenance
+    must not inherit those lookups. This factory therefore owns candidate selection,
+    executable hashing, baseline authentication, child-environment sanitization and
+    subprocess execution without consulting any Round module after construction.
+    """
+    path_type = Path
+    source_identity_error = _provenance.SourceIdentityError
+    sha256 = hashlib.sha256
+    is_regular = stat.S_ISREG
+    access = os.access
+    x_ok = os.X_OK
+    process_name = os.name
     trusted_run = subprocess.run
     source_environment = os.environ
     devnull = os.devnull
     loader_prefixes = _DYNAMIC_LOADER_ENV_PREFIXES
     loader_names = _DYNAMIC_LOADER_ENV_NAMES
+
+    if process_name == "nt":
+        candidates = (
+            path_type(r"C:\Program Files\Git\cmd\git.exe"),
+            path_type(r"C:\Program Files\Git\bin\git.exe"),
+        )
+    else:
+        candidates = (
+            path_type("/usr/bin/git"),
+            path_type("/bin/git"),
+            path_type("/run/current-system/sw/bin/git"),
+        )
+
+    def hash_executable(path: Path) -> tuple[Path, str]:
+        try:
+            resolved = path.resolve(strict=True)
+            info = resolved.stat()
+        except OSError as exc:
+            raise source_identity_error(
+                f"unable to resolve trusted Git executable {path}"
+            ) from exc
+        if not is_regular(info.st_mode) or not access(resolved, x_ok):
+            raise source_identity_error(
+                f"trusted Git executable is not an executable regular file: {resolved}"
+            )
+        digest = sha256()
+        try:
+            with resolved.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        except OSError as exc:
+            raise source_identity_error(
+                f"unable to hash trusted Git executable {resolved}"
+            ) from exc
+        return resolved, digest.hexdigest()
+
+    baseline: tuple[Path, str] | None = None
+
+    def trusted_git() -> Path:
+        nonlocal baseline
+        if baseline is None:
+            last_error: BaseException | None = None
+            for candidate in candidates:
+                try:
+                    baseline = hash_executable(candidate)
+                    break
+                except source_identity_error as exc:
+                    last_error = exc
+            if baseline is None:
+                raise source_identity_error(
+                    "canonical source identity requires a trusted system Git executable"
+                ) from last_error
+        path, expected_digest = baseline
+        observed_path, observed_digest = hash_executable(path)
+        if observed_path != path or observed_digest != expected_digest:
+            raise source_identity_error(
+                "trusted Git executable changed after source-identity initialization"
+            )
+        return path
 
     def child_environment() -> dict[str, str]:
         environment: dict[str, str] = {}
@@ -136,15 +248,7 @@ def _make_ignored_native_guard_round60(sealed_git_run: Any):
 
 
 def _make_sealed_provenance_entrypoints_round60():
-    """Build authenticated canonical provenance entrypoints from a private graph.
-
-    The resolver returned to ``capture_execute`` is a closure-bound wrapper, not a
-    cloned provenance function whose writable ``__globals__`` exposes the private
-    graph.  Every invocation also authenticates the private graph before and after
-    source resolution.  Git execution uses a Round-60 runner whose sanitizer and
-    subprocess dependencies are closure-bound, so rebinding Round-58 module globals
-    cannot reintroduce Git or dynamic-loader environment controls.
-    """
+    """Build authenticated canonical provenance entrypoints from a private graph."""
     original_git_source_revision = _round44._ORIGINAL_GIT_SOURCE_REVISION
     if not (
         isinstance(original_git_source_revision, types.FunctionType)
@@ -153,14 +257,20 @@ def _make_sealed_provenance_entrypoints_round60():
     ):
         raise RuntimeError("unable to identify the original provenance revision function")
 
-    private_globals = dict(vars(_provenance))
+    private_globals = {
+        name: _private_provenance_value_round60(value)
+        for name, value in vars(_provenance).items()
+    }
     clones: dict[str, types.FunctionType] = {}
     for name, value in tuple(private_globals.items()):
+        original_value = vars(_provenance).get(name)
         if (
-            isinstance(value, types.FunctionType)
-            and value.__globals__ is _provenance.__dict__
+            isinstance(original_value, types.FunctionType)
+            and original_value.__globals__ is _provenance.__dict__
         ):
-            clones[name] = _clone_provenance_function_round60(value, private_globals)
+            clones[name] = _clone_provenance_function_round60(
+                original_value, private_globals
+            )
 
     private_globals.update(clones)
     sealed_git_run = _make_sealed_git_runner_round60()
@@ -174,6 +284,11 @@ def _make_sealed_provenance_entrypoints_round60():
         raise RuntimeError("unable to seal canonical provenance source-root entrypoint")
 
     expected_bindings = tuple(private_globals.items())
+    expected_value_fingerprints = tuple(
+        (name, _private_value_fingerprint_round60(value))
+        for name, value in expected_bindings
+        if isinstance(value, (dict, tuple, frozenset))
+    )
     expected_function_code = tuple(
         (value, value.__code__)
         for value in private_globals.values()
@@ -182,6 +297,7 @@ def _make_sealed_provenance_entrypoints_round60():
     missing = object()
     source_identity_error = _provenance.SourceIdentityError
     native_guard = _make_ignored_native_guard_round60(sealed_git_run)
+    fingerprint = _private_value_fingerprint_round60
 
     def assert_private_graph_intact() -> None:
         if len(private_globals) != len(expected_bindings):
@@ -190,6 +306,11 @@ def _make_sealed_provenance_entrypoints_round60():
             if private_globals.get(name, missing) is not expected:
                 raise source_identity_error(
                     f"sealed canonical provenance binding was modified: {name}"
+                )
+        for name, expected in expected_value_fingerprints:
+            if fingerprint(private_globals[name]) != expected:
+                raise source_identity_error(
+                    f"sealed canonical provenance value was modified: {name}"
                 )
         for function, expected_code in expected_function_code:
             if function.__code__ is not expected_code:
@@ -247,9 +368,6 @@ def _make_sealed_provenance_entrypoints_round60():
 del _make_sealed_provenance_entrypoints_round60
 
 
-# Ordinary provenance remains patchable for its public/test compatibility surface.
-# Canonical capture resolves source identity only through the authenticated private
-# graph above and therefore does not consult Round-58's mutable compatibility slots.
 _capture_execute.resolve_implementation_revision = _resolve_implementation_revision_round60
 
 
