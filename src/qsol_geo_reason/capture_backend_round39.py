@@ -70,27 +70,18 @@ class HuggingFacePyTorchBackend(_FinalHuggingFacePyTorchBackend):
     """Canonical backend with signal exclusion and mapped runtime-library receipts."""
 
     def _begin_runtime_library_stability_window(self) -> None:
-        # The production boundary calls this only after exclusive-thread ownership
-        # and the retryable observation session are established, but before control
-        # returns to execute_capture() and before the first tokenization/forward.
         super()._begin_runtime_library_stability_window()
         observation_started_ns = time.time_ns()
         device = getattr(self, "_device", None)
         cuda_active = isinstance(device, str) and device.startswith("cuda:")
         mps_active = device == "mps"
         _cpu_provenance, cpu_state = loaded_cpu_runtime_library_snapshot()
-        # This is the pre-execution baseline, not a set of libraries discovered
-        # after start. Absolute file timestamps are therefore not freshness tests;
-        # exact baseline-to-final receipts enforce stability at metadata time.
         cuda_state = None
         mps_state = None
         if cuda_active:
             _cuda_provenance, cuda_state = loaded_cuda_runtime_library_snapshot()
         if mps_active:
-            # Metal/MPS frameworks may be loaded lazily by the first model forward,
-            # so the baseline may legitimately be empty. The final snapshot below
-            # requires at least one mapped MPS runtime image and authenticates any
-            # newly observed image against the observation start time/stability rules.
+            # Metal/MPS frameworks may be loaded lazily by the first model forward.
             _mps_provenance, mps_state = loaded_mps_runtime_library_snapshot(
                 require_nonempty=False
             )
@@ -100,10 +91,6 @@ class HuggingFacePyTorchBackend(_FinalHuggingFacePyTorchBackend):
         )
 
     def _assert_no_active_torch_override_modes(self) -> None:
-        # production.begin_observation() dynamically dispatches this immediately
-        # after acquiring exclusive Python-thread execution and before capture-state
-        # mutation. Signals are a second asynchronous execution source, so bind them
-        # at exactly that boundary as well as in later live-state checks.
         super()._assert_no_active_torch_override_modes()
         _assert_no_async_signal_instrumentation()
 
@@ -119,11 +106,6 @@ class HuggingFacePyTorchBackend(_FinalHuggingFacePyTorchBackend):
                 "canonical observation is missing its pre-execution runtime-library stability receipt"
             )
 
-        # Compatibility note for the established source-audit regression:
-        # loaded_cpu_runtime_library_provenance() and
-        # loaded_cuda_runtime_library_provenance() are now subsumed by the richer
-        # snapshot functions below, which return the same persisted provenance plus
-        # an internal descriptor/stat stability receipt.
         cpu_libraries: Mapping[str, Any] | None = None
         cuda_libraries: Mapping[str, Any] | None = None
         mps_libraries: Mapping[str, Any] | None = None
@@ -170,32 +152,31 @@ class HuggingFacePyTorchBackend(_FinalHuggingFacePyTorchBackend):
                     require_nonempty=True
                 )
 
-            # Every canonical lane performs the selected-span conversion/pooling on
-            # CPU in float64, including CUDA and MPS source devices. External MKL,
-            # oneDNN, OpenMP, OpenBLAS, Accelerate, or related mapped libraries are
-            # therefore part of the serving instrument for every production device.
+            # MPS records precede the CPU-pooling record so the existing canonical
+            # CPU receipt remains terminal on non-CUDA lanes. The semantic MPS
+            # validator requires this exact adjacency.
+            if mps_active:
+                if mps_libraries is None:
+                    mps_libraries, _mps_state = loaded_mps_runtime_library_snapshot(
+                        require_nonempty=True
+                    )
+                _append_runtime_record(
+                    observed,
+                    prefix="QSOL_GEO_MPS_RUNTIME=",
+                    key="loaded_mps_runtime_libraries",
+                    libraries=mps_libraries,
+                )
+
+            # Every canonical lane performs selected-span pooling on CPU in float64.
             _append_runtime_record(
                 observed,
                 prefix="QSOL_GEO_CPU_RUNTIME=",
                 key="loaded_cpu_runtime_libraries",
                 libraries=cpu_libraries,
             )
-        if mps_active:
-            if mps_libraries is None:
-                mps_libraries, _mps_state = loaded_mps_runtime_library_snapshot(
-                    require_nonempty=True
-                )
-            _append_runtime_record(
-                observed,
-                prefix="QSOL_GEO_MPS_RUNTIME=",
-                key="loaded_mps_runtime_libraries",
-                libraries=mps_libraries,
-            )
         if cuda_active:
             if cuda_libraries is None:
                 cuda_libraries, _cuda_state = loaded_cuda_runtime_library_snapshot()
-            # Keep the CUDA/NVIDIA record last. The canonical suffix for a CUDA
-            # observation is CPU-pooling runtime followed by CUDA runtime.
             _append_runtime_record(
                 observed,
                 prefix="QSOL_GEO_CUDA_RUNTIME=",
@@ -205,8 +186,6 @@ class HuggingFacePyTorchBackend(_FinalHuggingFacePyTorchBackend):
         return observed
 
 
-# Keep the exact-type OBSERVATION gate pointed at the newest concrete boundary before
-# capture_execute imports the production module.
 HuggingFacePyTorchBackend.__module__ = _production.__name__
 _production.HuggingFacePyTorchBackend = HuggingFacePyTorchBackend
 
