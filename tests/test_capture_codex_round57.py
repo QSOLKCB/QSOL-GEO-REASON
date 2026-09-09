@@ -40,15 +40,38 @@ class Round58TrustBoundaryTests(unittest.TestCase):
                 sealed_resolve,
                 round60._resolve_implementation_revision_round60,
             )
-            self.assertIs(
-                sealed_resolve.__globals__["_git_run"],
-                round58._git_run_round58,
-            )
-            self.assertIs(
-                sealed_resolve.__globals__["git_source_revision"],
-                round60._git_source_revision_round60,
-            )
+            # Round 60 intentionally stopped exposing the private provenance graph
+            # through the exported resolver's writable module globals.  The resolver
+            # is closure-bound and authenticates its private dependency graph before
+            # and after source resolution instead.
+            self.assertNotIn("_git_run", sealed_resolve.__globals__)
+            self.assertNotIn("git_source_revision", sealed_resolve.__globals__)
             self.assertIsNot(sealed_resolve.__globals__, provenance.__dict__)
+
+            # Even if an embedded caller plants the historical names in the public
+            # module globals, they are not execution dependencies of the resolver.
+            globals_dict = sealed_resolve.__globals__
+            missing = object()
+            old_runner = globals_dict.get("_git_run", missing)
+            old_source = globals_dict.get("git_source_revision", missing)
+            globals_dict["_git_run"] = forged_git
+            globals_dict["git_source_revision"] = lambda **_kwargs: "f" * 40
+            try:
+                observed = round60._git_source_revision_round60(
+                    require_clean=False,
+                    reject_importable_bytecode=False,
+                )
+                self.assertRegex(observed or "", r"^[0-9a-f]{40}$")
+                self.assertNotEqual(observed, "f" * 40)
+            finally:
+                if old_runner is missing:
+                    globals_dict.pop("_git_run", None)
+                else:
+                    globals_dict["_git_run"] = old_runner
+                if old_source is missing:
+                    globals_dict.pop("git_source_revision", None)
+                else:
+                    globals_dict["git_source_revision"] = old_source
         finally:
             provenance._git_run = original
 
