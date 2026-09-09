@@ -10,7 +10,7 @@ from . import capture_provenance as _provenance
 
 
 _MPS_RUNTIME_CONFIG_PREFIX = "QSOL_GEO_MPS_RUNTIME="
-_CPU_RUNTIME_CONFIG_PREFIX = "QSOL_GEO_CPU_RUNTIME="
+_CPU_FLUSH_DENORMAL_RECORD = "QSOL_GEO_CPU_FLUSH_DENORMAL=false"
 _MPS_RUNTIME_PROVENANCE_KEYS = frozenset(
     {
         "mps_runtime_library_file_count",
@@ -34,11 +34,11 @@ def _mps_runtime_library_provenance_from_build_config_round62(
     record = records[0]
     index = lines.index(record)
     if (
-        index != len(lines) - 2
-        or not lines[-1].startswith(_CPU_RUNTIME_CONFIG_PREFIX)
+        index + 1 >= len(lines)
+        or lines[index + 1] != _CPU_FLUSH_DENORMAL_RECORD
     ):
         raise CaptureContractError(
-            "MPS runtime provenance record must immediately precede the final CPU pooling runtime record"
+            "MPS runtime provenance record must immediately precede the canonical CPU denormal/runtime suffix"
         )
     try:
         payload = json.loads(record[len(_MPS_RUNTIME_CONFIG_PREFIX) :])
@@ -77,7 +77,6 @@ def _validate_torch_build_metadata_round62(observed: Mapping[str, Any]) -> None:
     _ORIGINAL_VALIDATE_TORCH_BUILD_METADATA(observed)
     config = observed.get("torch_build_config")
     if not isinstance(config, str):
-        # The original validator provides the canonical diagnostic.
         return
     mps_runtime = _mps_runtime_library_provenance_from_build_config_round62(config)
     device = observed.get("device")
@@ -92,8 +91,6 @@ def _validate_torch_build_metadata_round62(observed: Mapping[str, Any]) -> None:
         )
 
 
-# capture_provenance imported the validator by value, so harden both bindings before
-# capture_execute freezes the canonical verifier surface.
 _runtime._validate_torch_build_metadata = _validate_torch_build_metadata_round62
 _provenance._validate_torch_build_metadata = _validate_torch_build_metadata_round62
 
