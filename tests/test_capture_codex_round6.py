@@ -36,9 +36,20 @@ def valid_production_shape(request: dict) -> dict:
             separators=(",", ":"),
         )
         build_config += "\nQSOL_GEO_MPS_RUNTIME=" + mps_extension
-    build_config += "\nQSOL_GEO_CPU_FLUSH_DENORMAL=false\n"
+    build_config += "\nQSOL_GEO_CPU_FLUSH_DENORMAL=false"
+    cpu_extension = json.dumps(
+        {
+            "loaded_cpu_runtime_libraries": {
+                "cpu_runtime_library_file_count": 0,
+                "cpu_runtime_library_receipt_sha256": "d" * 64,
+            }
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    build_config += "\nQSOL_GEO_CPU_RUNTIME=" + cpu_extension
     if device.startswith("cuda:"):
-        extension = json.dumps(
+        cuda_extension = json.dumps(
             {
                 "loaded_cuda_runtime_libraries": {
                     "cuda_runtime_library_file_count": 1,
@@ -48,29 +59,8 @@ def valid_production_shape(request: dict) -> dict:
             sort_keys=True,
             separators=(",", ":"),
         )
-        build_config = (
-            build_config.rstrip("\n")
-            + "\nQSOL_GEO_CUDA_RUNTIME="
-            + extension
-            + "\n"
-        )
-    elif device == "cpu":
-        extension = json.dumps(
-            {
-                "loaded_cpu_runtime_libraries": {
-                    "cpu_runtime_library_file_count": 0,
-                    "cpu_runtime_library_receipt_sha256": "d" * 64,
-                }
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        build_config = (
-            build_config.rstrip("\n")
-            + "\nQSOL_GEO_CPU_RUNTIME="
-            + extension
-            + "\n"
-        )
+        build_config += "\nQSOL_GEO_CUDA_RUNTIME=" + cuda_extension
+    build_config += "\n"
     return {
         "python_version": "3.13.0",
         "platform": "Linux",
@@ -80,6 +70,8 @@ def valid_production_shape(request: dict) -> dict:
         "torch_package_receipt_sha256": "b" * 64,
         "transformers_package_file_count": 2,
         "transformers_package_receipt_sha256": "a" * 64,
+        "huggingface_hub_package_file_count": 2,
+        "huggingface_hub_package_receipt_sha256": "9" * 64,
         "tokenizers_native_backend_active": True,
         "tokenizers_package_file_count": 1,
         "tokenizers_package_receipt_sha256": "e" * 64,
@@ -181,6 +173,8 @@ class CaptureRound6RegressionTests(unittest.TestCase):
         for field, bad in (
             ("python_version", 313),
             ("tokenizers_version", 1),
+            ("huggingface_hub_package_file_count", True),
+            ("huggingface_hub_package_receipt_sha256", "bad"),
             ("torch_num_threads", True),
             ("cuda_matmul_allow_tf32", "false"),
             ("mps_available", 1),
