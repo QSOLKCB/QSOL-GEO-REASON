@@ -129,9 +129,11 @@
       "backend_observed.determinism_mode must equal determinism.mode exactly.",
       "backend_observed observed model/tokenizer commits must equal the corresponding frozen model revisions.",
       "Production OBSERVATION manifests require model.revision_tree_sha256 and model.tokenizer_revision_tree_sha256 so verified Hub commits retain the same frozen tree binding required by the canonical constructor.",
+      "Production OBSERVATION manifests content-bind the imported Hugging Face Hub package with huggingface_hub_package_file_count and huggingface_hub_package_receipt_sha256 in addition to the package version.",
       "Production OBSERVATION model snapshots must contain Safetensors weights and must not contain .bin, .pt, .pth, or .ckpt checkpoint artifacts.",
       "CUDA device identity fields must be null on CPU and MPS manifests.",
       "Every production torch_build_config must contain exactly one canonical QSOL_GEO_CPU_FLUSH_DENORMAL=false record immediately before exactly one canonical QSOL_GEO_CPU_RUNTIME record for the CPU float64 pooling instrument; on CUDA the CPU runtime record immediately precedes the final CUDA runtime record.",
+      "MPS torch_build_config must contain exactly one canonical QSOL_GEO_MPS_RUNTIME mapped-native runtime receipt immediately before QSOL_GEO_CPU_FLUSH_DENORMAL=false; non-MPS manifests must not contain that record.",
       "CUDA torch_build_config must contain exactly one canonical QSOL_GEO_CUDA_RUNTIME record as its final line; non-CUDA manifests must not contain that record."
     ]
   },
@@ -258,6 +260,7 @@
         "name", "python_version", "platform", "torch_version", "transformers_version",
         "torch_package_file_count", "torch_package_receipt_sha256",
         "transformers_package_file_count", "transformers_package_receipt_sha256",
+        "huggingface_hub_package_file_count", "huggingface_hub_package_receipt_sha256",
         "tokenizers_native_backend_active", "tokenizers_package_file_count", "tokenizers_package_receipt_sha256",
         "safetensors_deserializer_active", "safetensors_package_file_count", "safetensors_package_receipt_sha256",
         "torch_build_config", "torch_build_config_sha256",
@@ -311,6 +314,14 @@
           "$ref": "#/$defs/sha256",
           "description": "SHA-256 canonical receipt over package-relative file paths and content digests for the actually imported Transformers implementation."
         },
+        "huggingface_hub_package_file_count": {
+          "type": "integer", "minimum": 1,
+          "description": "Count of receipt-bound files in the Hugging Face Hub package authenticated before its first import."
+        },
+        "huggingface_hub_package_receipt_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Content receipt for the Hugging Face Hub implementation that resolves the frozen local snapshots."
+        },
         "tokenizers_native_backend_active": {"const": true},
         "tokenizers_package_file_count": {
           "type": "integer", "minimum": 1,
@@ -335,7 +346,7 @@
         "torch_build_config": {
           "type": "string", "minLength": 1,
           "pattern": "(?:^|\\n)QSOL_GEO_CPU_FLUSH_DENORMAL=false\\nQSOL_GEO_CPU_RUNTIME=\\{\"loaded_cpu_runtime_libraries\":\\{\"cpu_runtime_library_file_count\":[0-9]+,\"cpu_runtime_library_receipt_sha256\":\"[0-9a-f]{64}\"\\}\\}\\n(?:QSOL_GEO_CUDA_RUNTIME=\\{\"loaded_cuda_runtime_libraries\":\\{\"cuda_runtime_library_file_count\":[1-9][0-9]*,\"cuda_runtime_library_receipt_sha256\":\"[0-9a-f]{64}\"\\}\\}\\n?)?$",
-          "description": "torch.__config__.show() captured at backend construction, followed by exactly one QSOL_GEO_CPU_FLUSH_DENORMAL=false receipt and exactly one QSOL_GEO_CPU_RUNTIME receipt for the CPU float64 pooling instrument on every production device; CUDA observations append the QSOL_GEO_CUDA_RUNTIME receipt after it as the final line."
+          "description": "torch.__config__.show() captured at backend construction. MPS observations place exactly one QSOL_GEO_MPS_RUNTIME receipt immediately before the CPU denormal/runtime suffix; every production device then records QSOL_GEO_CPU_FLUSH_DENORMAL=false and QSOL_GEO_CPU_RUNTIME, while CUDA appends QSOL_GEO_CUDA_RUNTIME as the final line."
         },
         "torch_build_config_sha256": {
           "$ref": "#/$defs/sha256",
@@ -459,6 +470,10 @@
               "mps_device_active": {"const": true},
               "mps_built": {"const": true},
               "mps_available": {"const": true},
+              "torch_build_config": {
+                "type": "string",
+                "pattern": "(?:^|\\n)QSOL_GEO_MPS_RUNTIME=\\{\"loaded_mps_runtime_libraries\":\\{\"mps_runtime_library_file_count\":[1-9][0-9]*,\"mps_runtime_library_receipt_sha256\":\"[0-9a-f]{64}\"\\}\\}\\nQSOL_GEO_CPU_FLUSH_DENORMAL=false\\nQSOL_GEO_CPU_RUNTIME=\\{\"loaded_cpu_runtime_libraries\":\\{\"cpu_runtime_library_file_count\":[0-9]+,\"cpu_runtime_library_receipt_sha256\":\"[0-9a-f]{64}\"\\}\\}\\n?$"
+              },
               "mps_fallback_env": {
                 "anyOf": [
                   {"type": "null"},
@@ -484,7 +499,10 @@
             ]
           },
           "else": {
-            "properties": {"mps_device_active": {"const": false}}
+            "properties": {
+              "mps_device_active": {"const": false},
+              "torch_build_config": {"not": {"pattern": "(?:^|\\n)QSOL_GEO_MPS_RUNTIME="}}
+            }
           }
         },
         {
