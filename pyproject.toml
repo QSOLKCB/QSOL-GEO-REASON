@@ -4,15 +4,18 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qsol-geo-reason"
-version = "0.1.0"
+version = "0.3.0.dev0"
 description = "Deterministic geometry instrumentation and canonical local-model capture for geometric-reasoning research."
 requires-python = ">=3.11"
 license = {text = "Apache-2.0"}
 
 [project.optional-dependencies]
 capture = [
-    "torch>=2.2",
-    "transformers>=4.40",
+    "torch>=2.2.2,<2.3",
+    "transformers>=4.40.2,<4.41",
+    "huggingface-hub>=0.23,<0.24",
+    "tokenizers>=0.19.1,<0.20",
+    "safetensors>=0.4.3,<0.5",
 ]
 
 [project.scripts]

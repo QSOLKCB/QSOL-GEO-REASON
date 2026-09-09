@@ -1,0 +1,9 @@
+# Phase 2A canonical CPU integration reference environment (Python 3.11)
+# Direct execution dependencies are pinned so CI/review can reproduce the tested lane.
+torch==2.2.2
+transformers==4.40.2
+huggingface-hub==0.23.5
+tokenizers==0.19.1
+safetensors==0.4.3
+numpy==1.26.4
+jsonschema==4.23.0

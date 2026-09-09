@@ -4,6 +4,20 @@ These implementation notes supplement `protocols/GEO-CAP-001.md`. They do not
 change any scientific invariant, exact-mathematics definition, evidence class,
 frozen Phase 1 fixture, or empirical roadmap gate.
 
+## Security and process boundary
+
+The normative security/reproducibility assumptions are defined in
+`docs/GEO-CAP-001-THREAT-MODEL.md`. The canonical user-facing `OBSERVATION` path is a
+trusted local CLI that launches a fresh CPython isolated worker for each capture.
+Python-level execution-surface checks described below are defense in depth inside that
+worker; they are not presented as a sandbox against an adversary who already has
+arbitrary code execution in the same interpreter.
+
+The public capture facade imports one explicit backend composition point,
+`capture_backend_canonical.py`. Historical `capture_backend_round*` files remain as
+reviewed regression strata during Phase 2A migration but are not separate public
+backends or security boundaries.
+
 ## CUDA FP16 accumulation
 
 Canonical CUDA execution disables `torch.backends.cuda.matmul.allow_fp16_accumulation`
@@ -64,5 +78,8 @@ No model tensor storage is read by this dependency traversal.
 This is an in-process mutation detector for the declared Python execution surface,
 not an OS/native-code sandbox or a proof that arbitrary dynamic Python lookup,
 external native libraries, or the complete software supply chain are immutable.
-Tests use software fixtures unless explicitly identified as local PyTorch API
+The canonical CLI avoids inheriting an application's existing Python dependency state
+by launching the isolated worker described above. Direct in-process library use is a
+trusted embedding/test surface and does not inherit the stronger fresh-process claim.
+Tests use software fixtures unless explicitly identified as real production integration
 checks. They do not constitute an empirical language-model observation.
