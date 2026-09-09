@@ -5,7 +5,6 @@ import unittest
 
 from qsol_geo_reason import capture
 from qsol_geo_reason import capture_backend_round56 as round56
-from qsol_geo_reason import capture_backend_round58 as round58
 from qsol_geo_reason import capture_backend_round60 as round60
 from qsol_geo_reason import capture_execute
 from qsol_geo_reason import provenance
@@ -18,12 +17,10 @@ class Round60ProvenanceWrapperTests(unittest.TestCase):
             capture_execute.resolve_implementation_revision,
             round60._resolve_implementation_revision_round60,
         )
-        private_globals = round60._resolve_implementation_revision_round60.__globals__
-        self.assertIs(private_globals["_git_run"], round58._git_run_round58)
-        self.assertIs(
-            private_globals["git_source_revision"],
-            round60._git_source_revision_round60,
-        )
+        public_globals = round60._resolve_implementation_revision_round60.__globals__
+        self.assertNotIn("_git_run", public_globals)
+        self.assertNotIn("git_source_revision", public_globals)
+        self.assertIsNot(public_globals, provenance.__dict__)
 
     def test_round44_wrapper_semantics_survive_sealed_graph_reconstruction(self):
         observed = round60._git_source_revision_round60(
@@ -50,6 +47,35 @@ class Round60ProvenanceWrapperTests(unittest.TestCase):
             self.assertNotEqual(observed, "f" * 40)
         finally:
             provenance._git_run = original
+
+    def test_planted_public_globals_cannot_rebind_round60_dependencies(self):
+        resolver = round60._resolve_implementation_revision_round60
+        public_globals = resolver.__globals__
+        missing = object()
+        old_runner = public_globals.get("_git_run", missing)
+        old_source = public_globals.get("git_source_revision", missing)
+
+        def forged_git(*_args, **_kwargs):
+            return subprocess.CompletedProcess([], 0, stdout="f" * 40 + "\n", stderr="")
+
+        public_globals["_git_run"] = forged_git
+        public_globals["git_source_revision"] = lambda **_kwargs: "f" * 40
+        try:
+            observed = round60._git_source_revision_round60(
+                require_clean=False,
+                reject_importable_bytecode=False,
+            )
+            self.assertRegex(observed or "", r"^[0-9a-f]{40}$")
+            self.assertNotEqual(observed, "f" * 40)
+        finally:
+            if old_runner is missing:
+                public_globals.pop("_git_run", None)
+            else:
+                public_globals["_git_run"] = old_runner
+            if old_source is missing:
+                public_globals.pop("git_source_revision", None)
+            else:
+                public_globals["git_source_revision"] = old_source
 
 
 if __name__ == "__main__":
