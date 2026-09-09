@@ -23,10 +23,20 @@ def fixture_request() -> dict:
 
 def valid_production_shape(request: dict) -> dict:
     device = request["backend"]["device"]
-    build_config = (
-        TEST_BUILD_CONFIG.rstrip("\n")
-        + "\nQSOL_GEO_CPU_FLUSH_DENORMAL=false\n"
-    )
+    build_config = TEST_BUILD_CONFIG.rstrip("\n")
+    if device == "mps":
+        mps_extension = json.dumps(
+            {
+                "loaded_mps_runtime_libraries": {
+                    "mps_runtime_library_file_count": 3,
+                    "mps_runtime_library_receipt_sha256": "f" * 64,
+                }
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        build_config += "\nQSOL_GEO_MPS_RUNTIME=" + mps_extension
+    build_config += "\nQSOL_GEO_CPU_FLUSH_DENORMAL=false\n"
     if device.startswith("cuda:"):
         extension = json.dumps(
             {
