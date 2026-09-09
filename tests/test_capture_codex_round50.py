@@ -107,10 +107,11 @@ class CaptureRound50RegressionTests(unittest.TestCase):
         for root, loaded_name in (
             ("safetensors", "safetensors.torch"),
             ("tokenizers", "tokenizers.tokenizers"),
+            ("huggingface_hub", "huggingface_hub.file_download"),
         ):
             module = types.ModuleType(loaded_name)
             with self.subTest(root=root):
-                with self.assertRaisesRegex(CaptureContractError, root):
+                with self.assertRaisesRegex(CaptureContractError, root.split("_")[0]):
                     Round45Backend._assert_pristine_mps_import_state(
                         "cpu", modules={loaded_name: module}
                     )
