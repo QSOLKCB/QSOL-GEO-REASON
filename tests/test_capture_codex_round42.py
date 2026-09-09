@@ -23,6 +23,8 @@ from test_capture_codex_round6 import fixture_request
 ROOT = Path(__file__).resolve().parents[1]
 _CPU_PREFIX = "QSOL_GEO_CPU_RUNTIME="
 _CUDA_PREFIX = "QSOL_GEO_CUDA_RUNTIME="
+_MPS_PREFIX = "QSOL_GEO_MPS_RUNTIME="
+_CPU_FLUSH = "QSOL_GEO_CPU_FLUSH_DENORMAL=false"
 
 
 def _runtime_line(prefix: str, key: str, payload: dict[str, object]) -> str:
@@ -47,6 +49,17 @@ def _cuda_line() -> str:
         {
             "cuda_runtime_library_file_count": 2,
             "cuda_runtime_library_receipt_sha256": "b" * 64,
+        },
+    )
+
+
+def _mps_line() -> str:
+    return _runtime_line(
+        _MPS_PREFIX,
+        "loaded_mps_runtime_libraries",
+        {
+            "mps_runtime_library_file_count": 3,
+            "mps_runtime_library_receipt_sha256": "c" * 64,
         },
     )
 
@@ -82,31 +95,37 @@ class CaptureRound42RegressionTests(unittest.TestCase):
                     validate_capture_request(request)
 
     def test_cpu_pooling_runtime_receipt_is_required_for_accelerator_lanes(self):
-        _validate_torch_build_metadata(_observed("mps", [_cpu_line()]))
         _validate_torch_build_metadata(
-            _observed("cuda:0", [_cpu_line(), _cuda_line()])
+            _observed("mps", [_mps_line(), _CPU_FLUSH, _cpu_line()])
+        )
+        _validate_torch_build_metadata(
+            _observed("cuda:0", [_CPU_FLUSH, _cpu_line(), _cuda_line()])
         )
 
         with self.assertRaisesRegex(
             CaptureContractError,
             "missing the authenticated CPU runtime library receipt",
         ):
-            _validate_torch_build_metadata(_observed("mps", []))
+            _validate_torch_build_metadata(
+                _observed("mps", [_mps_line(), _CPU_FLUSH])
+            )
         with self.assertRaisesRegex(
             CaptureContractError,
             "missing the authenticated CPU runtime library receipt",
         ):
-            _validate_torch_build_metadata(_observed("cuda:0", [_cuda_line()]))
+            _validate_torch_build_metadata(
+                _observed("cuda:0", [_CPU_FLUSH, _cuda_line()])
+            )
 
     def test_cpu_runtime_record_precedes_final_cuda_record(self):
-        wrong = _observed("cuda:0", [_cuda_line(), _cpu_line()])
+        wrong = _observed("cuda:0", [_CPU_FLUSH, _cuda_line(), _cpu_line()])
         with self.assertRaisesRegex(CaptureContractError, "final torch_build_config line"):
             _validate_torch_build_metadata(wrong)
 
     def test_round39_emits_cpu_runtime_for_every_production_device(self):
         source = inspect.getsource(Round39Backend.metadata)
         self.assertIn("production_device", source)
-        self.assertIn("loaded_cpu_runtime_library_provenance()", source)
+        self.assertIn("loaded_cpu_runtime_library_snapshot()", source)
         self.assertIn("if production_device:", source)
         self.assertIn("if cuda_active:", source)
         self.assertLess(source.index("QSOL_GEO_CPU_RUNTIME="), source.index("QSOL_GEO_CUDA_RUNTIME="))
