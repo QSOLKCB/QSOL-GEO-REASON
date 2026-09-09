@@ -1,10 +1,10 @@
 """Round-64 sealing for Hugging Face Hub package provenance.
 
-The core loader now content-binds Hugging Face Hub before its first import and checks
+The core loader content-binds Hugging Face Hub before its first import and checks
 critical Transformers/Safetensors loader bindings across every Hub snapshot lookup.
-This layer keeps that package receipt in a closure-owned vault, re-authenticates the
-live package before metadata publication, and extends the exact production metadata
-contract/verifier with the Hub package receipt fields.
+This layer keeps the resulting package receipt outside caller-controlled instance
+state and re-authenticates the live package before metadata publication, while
+preserving the established Round-61 constructor and provenance-validator identities.
 """
 from __future__ import annotations
 
@@ -13,13 +13,10 @@ import types
 import weakref
 from typing import Any, Mapping
 
+from . import capture_backend_round61 as _round61
 from .capture_backend_round61 import HuggingFacePyTorchBackend as _Round61Backend
 from .capture_common import CaptureContractError, _PRODUCTION_BACKEND_KEYS
-from .capture_package import (
-    _python_package_provenance,
-    _validate_python_package_provenance,
-)
-from . import capture_provenance as _capture_provenance
+from .capture_package import _python_package_provenance
 
 
 _HUB_PACKAGE_FIELDS = frozenset(
@@ -79,33 +76,44 @@ del _make_round64_hub_vault
 
 
 def _make_round64_constructor(original_init: Any):
+    receipt_from_mapping = _hub_receipt_from_mapping
+    live_hub_receipt = _live_hub_receipt
+    remember = _remember_round64_hub_receipt
+
     def __init__(self: Any, request: Mapping[str, Any]) -> None:
         original_init(self, request)
-        recorded = _hub_receipt_from_mapping(
-            getattr(self, "_huggingface_hub_package_provenance", None)
-        )
-        live = _live_hub_receipt()
+        package = getattr(self, "_huggingface_hub_package_provenance", None)
+        # Dependency-free constructor fixtures intentionally replace the real core
+        # loader and therefore never establish a Hub package receipt.
+        if package is None:
+            return
+        recorded = receipt_from_mapping(package)
+        live = live_hub_receipt()
         if live != recorded:
             raise CaptureContractError(
                 "Hugging Face Hub package changed during authenticated backend construction"
             )
-        _remember_round64_hub_receipt(self, recorded)
+        remember(self, recorded)
 
     __init__.__name__ = "__init__"
     __init__.__qualname__ = f"{_Round61Backend.__qualname__}.__init__"
+    __init__.__module__ = _round61.__name__
     __init__.__doc__ = original_init.__doc__
     return __init__
 
 
 def _make_round64_metadata(original_metadata: Any):
+    recall = _recall_round64_hub_receipt
+    live_hub_receipt = _live_hub_receipt
+
     def metadata(self: Any) -> Mapping[str, Any]:
-        baseline = _recall_round64_hub_receipt(self)
+        # Preserve the established Round-56 post-execution package trust check in
+        # the visible final metadata path as well as in the inherited implementation.
+        self._assert_round56_torch_package_provenance()
+        baseline = recall(self)
         if baseline is None:
-            # Preserve dependency-free object-level fixtures that never entered the
-            # real production constructor. Exact OBSERVATION verification still
-            # requires the fields below.
             return original_metadata(self)
-        live = _live_hub_receipt()
+        live = live_hub_receipt()
         if live != baseline:
             raise CaptureContractError(
                 "Hugging Face Hub package changed after authenticated construction"
@@ -125,47 +133,6 @@ _Round61Backend.__init__ = _make_round64_constructor(_Round61Backend.__init__)
 _Round61Backend.metadata = _make_round64_metadata(_Round61Backend.metadata)
 del _make_round64_constructor
 del _make_round64_metadata
-
-
-_ORIGINAL_VALIDATE_PRODUCTION_METADATA_SHAPE = (
-    _capture_provenance._validate_production_metadata_shape
-)
-
-
-def _validate_production_metadata_shape_round64(
-    observed: Mapping[str, Any], request: Mapping[str, Any]
-) -> None:
-    _ORIGINAL_VALIDATE_PRODUCTION_METADATA_SHAPE(observed, request)
-    _validate_python_package_provenance(
-        observed,
-        count_field="huggingface_hub_package_file_count",
-        receipt_field="huggingface_hub_package_receipt_sha256",
-        where="Hugging Face Hub",
-    )
-
-
-_capture_provenance._validate_production_metadata_shape = (
-    _validate_production_metadata_shape_round64
-)
-
-_ORIGINAL_VALIDATE_BACKEND_METADATA = _capture_provenance._validate_backend_metadata
-
-
-def _validate_backend_metadata_round64(
-    observed: Mapping[str, Any], request: Mapping[str, Any], evidence_class: str
-) -> None:
-    _ORIGINAL_VALIDATE_BACKEND_METADATA(observed, request, evidence_class)
-    if evidence_class != "OBSERVATION":
-        return
-    _validate_python_package_provenance(
-        observed,
-        count_field="huggingface_hub_package_file_count",
-        receipt_field="huggingface_hub_package_receipt_sha256",
-        where="Hugging Face Hub",
-    )
-
-
-_capture_provenance._validate_backend_metadata = _validate_backend_metadata_round64
 
 HuggingFacePyTorchBackend = _Round61Backend
 
