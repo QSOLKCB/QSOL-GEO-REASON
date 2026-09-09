@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import platform
 import subprocess
 import sys
+import types
 from importlib import metadata
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -13,11 +15,13 @@ from typing import Any, Mapping, Sequence
 from .canonical import sha256_json
 from .capture_common import (
     _ALLOWED_ATTENTION_IMPLEMENTATIONS,
+    _BLOCK_CONTAINER_PATHS,
     _CAPTURE_PHASE,
     _PRODUCTION_BACKEND,
     CaptureBackendUnavailable,
     CaptureContractError,
 )
+from .capture_package import _python_package_provenance
 from .capture_validation import _quantization_reasons, _validate_loading_info, validate_capture_request
 from .capture_provenance import (
     _cpu_hardware_metadata, _extract_hidden_tensor, _resolve_hidden_state_layout,
@@ -27,18 +31,76 @@ from .capture_snapshot import _snapshot_file_hashes
 from .capture_runtime import _cuda_device_identity, _seed_capture_generators, _torch_build_metadata
 
 
+def _preimport_package_provenance(package_name: str, where: str) -> dict[str, Any] | None:
+    """Hash an importable package tree before any package code is executed."""
+    try:
+        spec = importlib.util.find_spec(package_name)
+    except (ImportError, AttributeError, ValueError):
+        return None
+    if spec is None or not isinstance(spec.origin, str) or not spec.origin.strip():
+        return None
+    probe = types.SimpleNamespace(__file__=spec.origin)
+    return _python_package_provenance(probe, where)
+
+
+def _binding_identity(value: Any) -> tuple[str, int, int | None]:
+    if isinstance(value, types.MethodType):
+        return "method", id(value.__func__), id(value.__self__)
+    return "object", id(value), None
+
+
+def _critical_loader_bindings(
+    transformers: Any,
+    modeling_utils: Any,
+    auto_model: Any,
+    auto_tokenizer: Any,
+) -> tuple[tuple[str, tuple[str, int, int | None]], ...]:
+    """Bind loader/deserializer call targets across untrusted Hub helper execution."""
+    bindings = {
+        "AutoModelForCausalLM.from_pretrained": getattr(auto_model, "from_pretrained", None),
+        "AutoTokenizer.from_pretrained": getattr(auto_tokenizer, "from_pretrained", None),
+        "transformers.modeling_utils.safe_open": getattr(modeling_utils, "safe_open", None),
+        "transformers.modeling_utils.load_state_dict": getattr(modeling_utils, "load_state_dict", None),
+    }
+    if any(value is None for value in bindings.values()):
+        missing = sorted(name for name, value in bindings.items() if value is None)
+        raise CaptureContractError(
+            "canonical Transformers loader/deserializer binding is unavailable: "
+            + ", ".join(missing)
+        )
+    return tuple(
+        (name, _binding_identity(value)) for name, value in sorted(bindings.items())
+    )
+
+
 class HuggingFacePyTorchBackend:
     """Direct local-only Hugging Face / PyTorch replay backend."""
 
     def __init__(self, request: Mapping[str, Any]):
         validated = validate_capture_request(request)
+        hub_package_before = _preimport_package_provenance(
+            "huggingface_hub", "Hugging Face Hub"
+        )
         try:
             import torch
             import transformers
+            import huggingface_hub
             from huggingface_hub import snapshot_download
-            from transformers import AutoModelForCausalLM, AutoTokenizer
+            from transformers import AutoModelForCausalLM, AutoTokenizer, modeling_utils
         except ImportError as exc:
             raise CaptureBackendUnavailable("canonical capture requires optional capture dependencies; install qsol-geo-reason[capture]") from exc
+        if hub_package_before is None:
+            raise CaptureContractError(
+                "canonical capture could not content-bind Hugging Face Hub before import"
+            )
+        hub_package_after_import = _python_package_provenance(
+            huggingface_hub, "Hugging Face Hub"
+        )
+        if hub_package_after_import != hub_package_before:
+            raise CaptureContractError(
+                "Hugging Face Hub package changed while establishing the fresh import boundary"
+            )
+        self._huggingface_hub_package_provenance = dict(hub_package_before)
         self._torch = torch
         self._transformers = transformers
         # The loaded build, not only its package version, is part of the instrument.
@@ -89,8 +151,22 @@ class HuggingFacePyTorchBackend:
             torch.use_deterministic_algorithms(True)
         self._last_deterministic_algorithms_enabled = self._assert_required_determinism_policy()
 
+        loader_bindings_before_hub = _critical_loader_bindings(
+            transformers, modeling_utils, AutoModelForCausalLM, AutoTokenizer
+        )
         model_snapshot = Path(snapshot_download(repo_id=model_cfg["identifier"], revision=model_cfg["revision"], local_files_only=True))
         tokenizer_snapshot = Path(snapshot_download(repo_id=model_cfg["tokenizer_identifier"], revision=model_cfg["tokenizer_revision"], local_files_only=True))
+        if _python_package_provenance(huggingface_hub, "Hugging Face Hub") != hub_package_before:
+            raise CaptureContractError(
+                "Hugging Face Hub package changed while resolving authenticated snapshots"
+            )
+        loader_bindings_after_hub = _critical_loader_bindings(
+            transformers, modeling_utils, AutoModelForCausalLM, AutoTokenizer
+        )
+        if loader_bindings_after_hub != loader_bindings_before_hub:
+            raise CaptureContractError(
+                "Hugging Face Hub execution changed a Transformers loader/deserializer binding"
+            )
         model_hashes_before = _snapshot_file_hashes(model_snapshot, model_cfg["revision"], "model")
         tokenizer_hashes_before = _snapshot_file_hashes(tokenizer_snapshot, model_cfg["tokenizer_revision"], "tokenizer")
 
@@ -113,6 +189,10 @@ class HuggingFacePyTorchBackend:
             raise CaptureContractError("model snapshot changed while canonical checkpoint was loading")
         if tokenizer_hashes_before != tokenizer_hashes_after:
             raise CaptureContractError("tokenizer snapshot changed while canonical tokenizer was loading")
+        if _python_package_provenance(huggingface_hub, "Hugging Face Hub") != hub_package_before:
+            raise CaptureContractError(
+                "Hugging Face Hub package changed during authenticated model loading"
+            )
         self._model_snapshot_hashes = model_hashes_after
         self._tokenizer_snapshot_hashes = tokenizer_hashes_after
         self._base_model, self._block_path, self._blocks = _resolve_hidden_state_layout(self._model)
@@ -543,17 +623,36 @@ class HuggingFacePyTorchBackend:
         return {"vector": pooled.tolist(), "vector_dimension": dimension, "observed_dtype": observed_dtype}
 
     def _model_position_limit(self) -> int | None:
-        """Return the loaded model's configured context limit when it exposes one."""
+        """Resolve the model context bound from supported configuration aliases."""
         model = getattr(self, "_model", None)
         config = getattr(model, "config", None)
-        limit = getattr(config, "max_position_embeddings", None)
-        if limit is None:
+        if config is None:
             return None
-        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        aliases = ("max_position_embeddings", "n_positions", "n_ctx")
+        observed: list[tuple[str, int]] = []
+        for name in aliases:
+            value = getattr(config, name, None)
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise CaptureContractError(
+                    f"model config {name} must be a positive integer when present"
+                )
+            observed.append((name, value))
+        if not observed:
+            if getattr(self, "_block_path", None) in _BLOCK_CONTAINER_PATHS:
+                raise CaptureContractError(
+                    "supported decoder config exposes no recognized model position limit "
+                    "(max_position_embeddings, n_positions, or n_ctx)"
+                )
+            return None
+        limits = {value for _name, value in observed}
+        if len(limits) != 1:
+            detail = ", ".join(f"{name}={value}" for name, value in observed)
             raise CaptureContractError(
-                "model config max_position_embeddings must be a positive integer when present"
+                "model config exposes ambiguous position limits: " + detail
             )
-        return limit
+        return observed[0][1]
 
     def hidden_states(self, input_ids: Sequence[int], layer_indices: Sequence[int], *, pool_span: tuple[int, int]) -> Mapping[int, Mapping[str, Any]]:
         """Capture requested states from the base model without LM-head logits."""
@@ -675,6 +774,9 @@ class HuggingFacePyTorchBackend:
         mps_built, mps_available = self._mps_backend_state()
         model_hashes = dict(sorted(self._model_snapshot_hashes.items()))
         tokenizer_hashes = dict(sorted(self._tokenizer_snapshot_hashes.items()))
+        hub_package = getattr(self, "_huggingface_hub_package_provenance", None)
+        if not isinstance(hub_package, Mapping):
+            raise CaptureContractError("Hugging Face Hub package provenance baseline is missing")
         sdpa = self._last_sdpa_policy or {"flash": None, "mem_efficient": None, "math": None, "cudnn": None}
         deterministic_enabled = self._last_deterministic_algorithms_enabled
         if deterministic_enabled is None:
@@ -685,6 +787,8 @@ class HuggingFacePyTorchBackend:
             "python_version": sys.version.split()[0], "platform": platform.platform(),
             "torch_version": torch.__version__, "transformers_version": self._transformers.__version__,
             **self._torch_build_provenance,
+            "huggingface_hub_package_file_count": hub_package.get("file_count"),
+            "huggingface_hub_package_receipt_sha256": hub_package.get("receipt_sha256"),
             "tokenizers_version": self._installed_version("tokenizers"), "huggingface_hub_version": self._installed_version("huggingface-hub"),
             "model_class": type(self._model).__name__, "tokenizer_class": type(self._tokenizer).__name__,
             "observed_model_commit": model_commit, "observed_tokenizer_commit": tokenizer_commit,
