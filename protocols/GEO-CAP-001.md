@@ -196,9 +196,12 @@ The run manifest binds the request to the executing repository revision and obse
 - Python version and platform;
 - PyTorch version;
 - Transformers version;
+- content receipts for the imported PyTorch and Transformers package trees;
 - Tokenizers version;
 - a content receipt for the imported native Tokenizers package whenever a fast tokenizer backend is active;
 - Hugging Face Hub version;
+- a content receipt for the Hugging Face Hub package tree authenticated before its first import and re-authenticated through construction/metadata publication;
+- the critical Transformers/Safetensors loader and deserializer bindings before and after Hub snapshot resolution, with any rebinding treated as invalid;
 - loaded model and tokenizer classes;
 - observed model and tokenizer commits;
 - clean checkpoint-loading status;
@@ -219,10 +222,19 @@ The run manifest binds the request to the executing repository revision and obse
 - PyTorch CUDA build version;
 - cuDNN version;
 - NVIDIA driver version read, on Linux only, from the loaded kernel module via `/sys/module/nvidia/version`, falling back to `/proc/driver/nvidia/version`; the field is null when those trusted interfaces are unavailable and on unsupported platforms, and the canonical probe does not invoke `nvidia-smi`;
+- mapped native accelerator/runtime library identity for the selected device lane;
 - quantization and offloading state;
 - cache policy;
 - capture phase; and
 - deterministic-algorithm state.
+
+The canonical runtime-library receipt ordering is part of the contract, not an implementation detail:
+
+- every production device records exactly one `QSOL_GEO_CPU_FLUSH_DENORMAL=false` receipt immediately followed by exactly one `QSOL_GEO_CPU_RUNTIME=...` receipt, because canonical pooling executes on CPU float64 even when model execution uses CUDA or MPS;
+- an MPS observation additionally records exactly one `QSOL_GEO_MPS_RUNTIME=...` mapped-native Metal/MPS/MPSGraph/AGXMetal receipt immediately before `QSOL_GEO_CPU_FLUSH_DENORMAL=false`; the MPS record is forbidden on non-MPS observations; and
+- a CUDA observation appends exactly one `QSOL_GEO_CUDA_RUNTIME=...` receipt after the CPU runtime receipt as the final `torch_build_config` line; the CUDA record is forbidden on non-CUDA observations.
+
+The MPS and CUDA runtime receipts are measured over the native images actually mapped for execution. The baseline/final stability window rejects runtime-library drift during the observation, including replacement evidence captured by the platform-specific mapped-image identity machinery.
 
 Unavailable hardware/version fields are recorded as unavailable/null rather than guessed. Structural capture fields such as the selective-hook strategy, recognized block path, hidden-state count, pooling dtype, and pooling device are mandatory production provenance rather than optional diagnostics.
 
@@ -330,14 +342,20 @@ The capture is invalid if, among other cases:
 - declared or checkpoint-embedded quantization is present in the canonical lane;
 - checkpoint loading reports missing, unexpected, mismatched, or errored parameters;
 - the loaded model/tokenizer reports a different commit from the frozen request;
+- the authenticated Hugging Face Hub package changes during construction or before metadata publication;
+- Hub snapshot resolution changes any bound Transformers/Safetensors loader or deserializer callable before model loading;
 - the model does not expose exactly one recognized decoder-block sequence matching the configured hidden-layer count;
 - a step tokenizes to no changed token span;
-- a tokenized context exceeds the loaded model's configured position limit when one is exposed;
+- a tokenized context exceeds the loaded model's configured position limit, including supported aliases such as `max_position_embeddings`, `n_positions`, or `n_ctx`;
+- a supported decoder layout exposes no unambiguous recognized position limit;
 - a requested canonical hidden-state index does not exist;
 - a selective hook fires unexpectedly more than once or fails to capture a requested state;
 - the backend returns layers other than exactly the requested set;
 - vector dimensions change unexpectedly;
 - any captured or pooled value is non-finite;
+- a production device omits the authenticated CPU pooling runtime receipt;
+- an MPS observation omits, malforms, reorders, or drifts its mapped MPS runtime receipt, or a non-MPS observation carries one;
+- a CUDA observation omits, malforms, reorders, or drifts its mapped CUDA runtime receipt, or a non-CUDA observation carries one;
 - a material runtime/capture choice is absent from provenance;
 - an artifact contains unknown fields outside its evidence-class-specific schema surface;
 - per-leaf hashes, dimensions, counts, spans, layer identities, bundle hashes, or cross-artifact identities disagree;
