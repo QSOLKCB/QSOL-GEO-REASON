@@ -9,6 +9,7 @@ from .capture_backend_round46 import HuggingFacePyTorchBackend
 from .capture_backend_round56 import HuggingFacePyTorchBackend
 from .capture_backend_round61 import HuggingFacePyTorchBackend
 from . import capture_backend_round62 as _capture_backend_round62
+from . import capture_backend_round63 as _capture_backend_round63
 from . import capture_backend_round60 as _capture_backend_round60
 
 # Round 46 must retain its runtime try/finally so private authenticated loader
@@ -17,8 +18,8 @@ from . import capture_backend_round60 as _capture_backend_round60
 # inherited production constructor, however. Mark the narrow cleanup wrapper as an
 # introspection wrapper without changing which callable Python actually executes.
 # Round 56 subclasses that wrapper; Round 61 adds the pre-load package stability
-# boundary, Round 62 binds MPS runtime receipts, and Rounds 58-60 freeze/harden the
-# canonical source-identity trust path in place.
+# boundary, Round 62 binds MPS runtime receipts, Round 63 closure-seals the exported
+# Round-58 Git runner, and Round 60 freezes the canonical source-identity graph.
 HuggingFacePyTorchBackend.__init__.__wrapped__ = _Round45HuggingFacePyTorchBackend.__init__
 
 from .capture_execute import execute_capture
