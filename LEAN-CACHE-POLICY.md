@@ -1,12 +1,14 @@
 # Lean Dependency Cache and Trust Policy
 
-This document defines the evidence meaning of the Phase 1 Lean workflows. The repository keeps a fast pull-request lane and a separate isolated cold-reconstruction authority. They are intentionally not interchangeable.
+This document defines the evidence meaning of the Phase 1 Lean workflows. The repository keeps a verified-cache regression/cache-maintenance lane and a separate isolated cold-reconstruction authority. They are intentionally not interchangeable.
 
 ## Workflow authority map
 
-### `lean-phase1`: verified-cache pull-request lane
+### `lean-phase1`: verified-cache regression and cache-maintenance lane
 
-`.github/workflows/lean-phase1.yml` runs only for pull requests. It is a performance and regression lane, not a release-grade trust authority.
+`.github/workflows/lean-phase1.yml` runs for relevant pull requests, relevant pushes to `main`, and explicit manual maintenance dispatches. It is a performance and regression lane, not a release-grade trust authority.
+
+Pull-request runs validate the current candidate. Main-branch and manual maintenance runs may populate the same authenticated source/build cache identities so future pull requests can consume a cache created in the default-branch scope rather than depending on a branch-local first-build race. A cache-maintenance run does not license a cold-reconstruction claim.
 
 It may reuse pinned dependency source state and dependency build artifacts only when all of the following hold:
 
@@ -24,7 +26,7 @@ The canonical digest is stored in reviewed workflow source rather than learned f
 
 On a verified hit, dependencies may be reused, but the current GeoReason source is rebuilt and audited again. On a cache miss, this workflow may perform a reconstruction to seed performance artifacts, but that run still does not acquire release-grade authority.
 
-The former manually dispatched `lean-phase1 / cold-trust` job has been removed. `lean-phase1` is no longer manually dispatchable, eliminating the duplicate unisolated authority path.
+The former manually dispatched `lean-phase1 / cold-trust` job remains removed. A manual `lean-phase1` dispatch now invokes only this verified-cache maintenance lane; it does not create a second cold-trust authority. The sole release-grade cold statement remains reserved to `lean-isolated-audit / isolated-cold-trust`.
 
 ### `lean-isolated-audit / isolated-audit`: protected pull-request gate
 
@@ -42,6 +44,8 @@ The miss boundary:
 Permission changes do not revoke inherited descriptors. Terminating the resolver identity before verification is therefore part of the source-integrity boundary, not a cleanup convenience.
 
 Whether source was restored or resolved, authenticated dependency source and Git metadata are transferred to `root:root` and made read-only before dependency build artifacts are restored. The pinned cache action receives writable slots only beneath generated package `.lake` directories. It cannot rewrite the source tree being paired with those artifacts.
+
+The protected PR lane intentionally requires an externally anchored dependency-artifact cache hit. The default-branch cache-maintenance path exists to make that prerequisite operationally available without weakening the protected job into a second dependency compiler. If the artifact cache is unavailable or evicted, the protected PR job fails closed until an authenticated cache is repopulated.
 
 The job then freezes reviewed inputs, builds through the unprivileged `qsolbuild` identity, and independently recompiles every reviewed GeoReason module from the frozen source using the hash-pinned Lean binary under `qsolcompile`.
 
@@ -142,10 +146,10 @@ Recorded values:
 - path-bound XOR-fold regression value: `5140247acee0acb36de98fa8192602e09815d27207c38d62a83b818861a0a5a3`; and
 - generated `lake-manifest.json` SHA-256: `646d5b171d7b7200f4f85d887ff655c45ee7796019ada4aab7e4ca759f41602b`.
 
-These values are reviewed anchors for routine reuse. They do not turn the fast lane into a claim that dependencies were rebuilt on each run.
+These values are reviewed anchors for routine reuse. They do not turn the fast/cache-maintenance lane into a claim that dependencies were rebuilt under the release-grade protected cold boundary on each run.
 
 ## Scientific boundary
 
-The cache and isolation machinery changes build latency, artifact transport, and trust evidence. The Menger bridge now proves that the formal `4A/(abc)` quantity equals reciprocal circumradius on the nondegenerate branch, aligning the formal definition with frozen `GEO-MATH-006` without changing the immutable release.
+The cache and isolation machinery changes build latency, artifact transport, and trust evidence. The Menger bridge proves that the formal `4A/(abc)` quantity equals reciprocal circumradius on the nondegenerate branch, aligning the formal definition with frozen `GEO-MATH-006` without changing the immutable release.
 
 A green formal workflow proves only the exact Lean statements under its documented trust boundary. It does not by itself prove CPython or IEEE-754 execution, JSON canonicalization, SHA-256 implementations, GitHub infrastructure, serving equivalence, hidden-state extraction, or semantic and mechanistic claims about reasoning.

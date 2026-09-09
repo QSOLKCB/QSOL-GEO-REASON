@@ -2,7 +2,7 @@
 
 **Experimental research framework for measuring, perturbing, simulating, and eventually training geometric reasoning flows in local language-model representation spaces.**
 
-> Status: **immutable Phase 1 numerical release complete; separate Lean 4 proof layer implemented in PR #3 and pending final exact-head acceptance/merge**. The repository still makes **no empirical claim about any language model**.
+> Status: **Phase 1 is frozen in two immutable evidence layers: numerical kernel `v0.1.0` and Lean 4 formal layer `v0.2.0`. PR #4 begins Phase 2A canonical local hidden-state capture. The repository still makes no empirical geometric-reasoning claim about any language model.**
 
 ## Research question
 
@@ -35,7 +35,7 @@ The project therefore treats the following distinctions as foundational:
 - a benchmark win is not automatically a reasoning improvement; and
 - a smaller parameter count is not, by itself, evidence of greater reasoning efficiency.
 
-The primary normative rules are frozen in [`INVARIANTS.md`](INVARIANTS.md) and [`SCIENTIFIC-CONTRACT.md`](SCIENTIFIC-CONTRACT.md). [`MATH-SPEC.md`](MATH-SPEC.md) is normative for the Phase 1 exact mathematical semantics, subject to those higher-level contracts.
+The primary normative rules are [`INVARIANTS.md`](INVARIANTS.md) and [`SCIENTIFIC-CONTRACT.md`](SCIENTIFIC-CONTRACT.md). [`MATH-SPEC.md`](MATH-SPEC.md) is normative for the Phase 1 exact mathematical semantics, subject to those higher-level contracts.
 
 ## Documentation map
 
@@ -51,7 +51,9 @@ The primary normative rules are frozen in [`INVARIANTS.md`](INVARIANTS.md) and [
 | [`LEAN-CACHE-POLICY.md`](LEAN-CACHE-POLICY.md) | Human + AI | Workflow authority, cache integrity, process isolation, and cold-reconstruction semantics |
 | [`ROADMAP.md`](ROADMAP.md) | Human + AI | Staged research programme and current phase status |
 | [`protocols/GEO-SIM-001.md`](protocols/GEO-SIM-001.md) | Human + AI | Phase 1 synthetic conformance protocol |
-| [`PHASE-1-REPORT.md`](PHASE-1-REPORT.md) | Human + AI | Frozen Phase 1 evidence summary and hashes |
+| [`protocols/GEO-CAP-001.md`](protocols/GEO-CAP-001.md) | Human + AI | Phase 2A canonical local hidden-state capture protocol |
+| [`RESEARCH-HYPOTHESIS-MAP.md`](RESEARCH-HYPOTHESIS-MAP.md) | Human + AI | Non-normative theory-to-test registry; sources are hypotheses, not evidence |
+| [`PHASE-1-REPORT.md`](PHASE-1-REPORT.md) | Human + AI | Frozen Phase 1 numerical evidence summary and hashes |
 
 ## Initial research context
 
@@ -65,30 +67,40 @@ External work is treated as motivation and prior art, not as evidence for claims
 
 ### Source boundary
 
-Zhou et al. study **post-hoc representation geometry in fixed, trained models**. Their principal construction is a context-cumulative trajectory of representation states, with finite differences and Menger curvature used to compare logical structure across semantic carriers. Their paper explicitly limits its central scope to natural-language understanding and does not claim to explain training dynamics, generation behaviour, or a causal mechanism of reasoning.
+Zhou et al. study **post-hoc representation geometry in fixed, trained models**. Their principal construction is a context-cumulative trajectory of representation states, with finite differences and Menger curvature used to compare logical structure across semantic carriers. Their central scope does not establish training dynamics, generation behaviour, or a causal mechanism of reasoning.
 
 QSOL-GEO-REASON therefore distinguishes:
 
-- **reproduction**: testing whether the reported geometric patterns can be recovered under a frozen local-model protocol; and
+- **reproduction**: testing whether reported geometric patterns can be recovered under a frozen local-model protocol; and
 - **extension**: adding controls, perturbations, cross-model exposure audits, output-behaviour comparisons, training interventions, serving-equivalence studies, or mechanistic tests that go beyond the cited work.
 
-An extension result must not be attributed to the cited paper unless that result is actually established there.
+An extension result must not be attributed to cited prior work unless that result is actually established there.
+
+The broader theory corpus registered in [`RESEARCH-HYPOTHESIS-MAP.md`](RESEARCH-HYPOTHESIS-MAP.md) is handled even more conservatively: it generates candidate measurements and falsifiable hypotheses. It does not change the evidence state of this repository. Conflicting theoretical predictions remain conflicting hypotheses until an experiment distinguishes them.
 
 ### Serving-system context
 
 The project is also interested in local serving research such as **FreeToken: Efficient Edge-Native MoE Serving with Bandwidth-Adaptive Execution**: <https://arxiv.org/abs/2608.16157>.
 
-Serving ideas such as hardware profiling, phase-aware prefill/decode execution, prefix/state reuse, elastic memory, expert caching, and CPU/GPU co-execution may later improve local-model practicality. They are treated as serving-system prior art, not as evidence about geometric reasoning.
+Serving ideas such as hardware profiling, phase-aware prefill/decode execution, prefix/state reuse, elastic memory, expert caching, and CPU/GPU co-execution may later improve local-model practicality. They are serving-system prior art, not evidence about geometric reasoning.
 
-For representation research, the serving backend is itself part of the instrument. An optimized backend must either pass a serving-equivalence protocol against the canonical capture path or remain an explicit experimental variable.
+For representation research, the serving backend is part of the instrument. An optimized backend must either pass a serving-equivalence protocol against the canonical capture path or remain an explicit experimental variable.
 
 ## Phase 1 mathematical kernel
 
-Phase 1 validates the measurement machinery **before any model hidden state is touched**.
+Phase 1 validated the measurement machinery **before any model hidden state was touched**.
 
 The exact semantics are defined in [`MATH-SPEC.md`](MATH-SPEC.md). Stable identifiers `GEO-MATH-001` through `GEO-MATH-011` define trajectories, finite differences, path length, the project cosine convention, alignment, Menger curvature, transformation laws, undefined cases, and the exact/numerical boundary.
 
-The exact mathematical and numerical kernel was published as immutable release `v0.1.0 — Phase 1 Mathematical Kernel` at commit `1b5ab8b4543b20cdb6d439f7ad215c08e698188f`. Pull request #3 implements `GEO-LEAN-TGT-001` through `GEO-LEAN-TGT-012` against that frozen identity as a separate formal evidence layer. The Lean layer remains a candidate until PR #3 passes final exact-head review and is merged.
+The exact mathematical and numerical kernel was published as immutable release `v0.1.0 — Phase 1 Mathematical Kernel` at commit:
+
+`1b5ab8b4543b20cdb6d439f7ad215c08e698188f`
+
+PR #3 then implemented all twelve frozen `GEO-LEAN-TGT-*` targets against that stationary target. The merged formal evidence layer was published separately as immutable `v0.2.0 — Phase 1 Lean 4 Formal Evidence Layer` at merge commit:
+
+`ec3312dcc102d859819c764a881e2d020662e880`
+
+The two releases deliberately preserve different evidence objects. `v0.2.0` does not rewrite or retroactively upgrade the simulation artifact in `v0.1.0`.
 
 The frozen numerical protocol is [`GEO-SIM-001`](protocols/GEO-SIM-001.md). It provides:
 
@@ -106,7 +118,7 @@ The frozen numerical protocol is [`GEO-SIM-001`](protocols/GEO-SIM-001.md). It p
 - frozen reference fixtures with full metadata-identity and byte-for-byte replay verification; and
 - CI on Python 3.11, 3.12, and 3.13.
 
-Frozen identities:
+Frozen numerical identities:
 
 - release: `v0.1.0 — Phase 1 Mathematical Kernel`
 - release commit: `1b5ab8b4543b20cdb6d439f7ad215c08e698188f`
@@ -115,7 +127,7 @@ Frozen identities:
 - recipe SHA-256: `763edeb96a1eec8d87a90d200f8c03a3e2131ec924b558e26492640a342dbbeb`
 - result artifact SHA-256: `c542bce987d31350b4904122e5ec02ef026715f51a1fe21ee184a452cc67a583`
 
-The frozen checks recover straight-line curvature `0`, radius-2 circular curvature within `0.5 ± 1e-12`, null path length `0`, carrier/control order-1 alignment `1.0`, and a lower order-1 alignment for the deliberate suffix perturbation. The hardened suite preserves tiny nonzero geometry, avoids large-vector cosine overflow, preserves late small arc-length segments, preserves genuine near-collinear curvature, keeps small local displacements visible on large absolute coordinate offsets and at later spacing boundaries, makes exact stored collinearity exactly zero without an epsilon, rejects overflowing finite differences, and rejects undefined empty comparisons. See [`PHASE-1-REPORT.md`](PHASE-1-REPORT.md).
+The frozen checks recover straight-line curvature `0`, radius-2 circular curvature within `0.5 ± 1e-12`, null path length `0`, carrier/control order-1 alignment `1.0`, and a lower order-1 alignment for the deliberate suffix perturbation. See [`PHASE-1-REPORT.md`](PHASE-1-REPORT.md).
 
 ### Running the reference simulation
 
@@ -125,38 +137,79 @@ python -m qsol_geo_reason recipes/reference-suite.json \
   --output /tmp/reference-result.json
 ```
 
-The CLI uses `HEAD` only when the source checkout is clean with respect to source-relevant changes. Generated interpreter/build artifacts such as `__pycache__` do not make an otherwise clean checkout dirty.
-
-Verify the frozen evidence artifact:
+Verify the frozen numerical evidence artifact:
 
 ```bash
 python -m unittest discover -s tests -v
 python tools/verify_reference.py
 ```
 
-The hardened suite contains **48 unit tests** before the cross-version CI matrix is applied.
+The frozen Phase 1 numerical suite contains **48 unit tests** before the cross-version CI matrix is applied. Later tests extend repository coverage without changing that historical count.
 
-## Release and Lean handoff
+## Phase 1 release and Lean handoff
 
-The Phase 1 handoff now has this actual state:
+The completed provenance chain is:
 
 ```text
 PR #2 exact-head review and merge
         ↓
-immutable v0.1.0 release at 1b5ab8b…
+immutable v0.1.0 numerical kernel at 1b5ab8b…
         ↓
 PR #3 Lean 4 formalization of all twelve frozen targets
         ↓
-current gate: exact-head review, protected CI, then merge PR #3
+merge commit ec3312d…
+        ↓
+immutable v0.2.0 formal evidence layer
+        ↓
+Phase 2A canonical hidden-state capture instrument
 ```
 
-The immutable numerical release is historical evidence and will not be rewritten. The formalization is additive evidence stored on a later branch and commit lineage.
-
-The sole release-grade cold proof authority is the manually dispatched `lean-isolated-audit / isolated-cold-trust` job. The routine `lean-phase1` workflow is pull-request-only and carries no competing cold-trust authority. The protected theorem audit imports the source-bound GeoReason object graph without executing project initializers and emits its completion record only after all twelve theorem-kind and axiom-allowlist checks pass.
+The sole release-grade cold proof authority is the manually dispatched `lean-isolated-audit / isolated-cold-trust` job. `lean-phase1` is a verified-cache regression/cache-maintenance lane: pull-request runs validate candidates, while relevant pushes to `main` and explicit maintenance dispatches may seed authenticated caches for later pull requests. Those cache-maintenance executions carry no competing cold-trust authority. The protected theorem audit imports the source-bound GeoReason object graph without executing project initializers and emits its completion record only after all twelve theorem-kind and axiom-allowlist checks pass.
 
 Lean proves the exact-real mathematics, not CPython floating point, JSON, SHA-256, Git provenance, serving behaviour, or LLM semantics. An implementation-refinement proof would be a separate result.
 
-If later work discovers a mathematical defect, the correction must receive a new release identity rather than rewriting `v0.1.0` under the formal development.
+## Phase 2A canonical local capture
+
+[`GEO-CAP-001`](protocols/GEO-CAP-001.md) introduces the first empirical **instrument**, not the first empirical conclusion.
+
+The canonical production path is intentionally boring in the best possible way:
+
+- direct Hugging Face/PyTorch replay;
+- model and tokenizer pinned to full 40-hex Hugging Face commit identities;
+- local files only;
+- no remote code;
+- no quantization in the canonical lane;
+- `use_cache=false`;
+- explicit hidden-state tuple indices captured selectively with hooks rather than retaining every layer output;
+- requested spans moved to CPU before bounded float64 pooling, including MPS captures;
+- exact input IDs and token-span provenance;
+- explicit cumulative/isolated context mode;
+- explicit pooling;
+- recorded runtime/device/dtype/backend metadata; and
+- content-addressed request, manifest, vector, and trajectory identities.
+
+Install optional model-capture dependencies with:
+
+```bash
+python -m pip install -e '.[capture]'
+```
+
+Then copy and edit the request template:
+
+```bash
+cp examples/GEO-CAP-001.example.json /tmp/capture-request.json
+```
+
+Replace the placeholder zero revisions with the exact model and tokenizer commit identities already available locally, freeze the step segmentation, then run:
+
+```bash
+qsol-geo-capture /tmp/capture-request.json \
+  --output-dir /tmp/GEO-CAP-001-run
+```
+
+The example request is not itself valid empirical evidence. Production model selection, first frozen capture, and replay evidence remain open roadmap items.
+
+CI exercises the capture contract with a deterministic fake backend. That fixture is explicitly `SIMULATION`; it cannot close an empirical Phase 2A milestone.
 
 ## Evidence classes and replication
 
@@ -171,22 +224,21 @@ The repository uses six evidence classes defined normatively in [`SCIENTIFIC-CON
 
 **Replication is orthogonal to that sequence.** A result separately records whether the underlying evidence has been replicated, failed replication, produced mixed replications, or has not yet been replicated.
 
-These are claim ceilings, not an automatic ladder: completing a later experiment does not silently grant every stronger interpretation.
-
-See [`ROADMAP.md`](ROADMAP.md) for the full programme.
+These are claim ceilings, not an automatic ladder.
 
 ## Non-claims
 
-Phase 1 and its Lean proof layer do **not** claim that:
+Phase 1, its Lean proof layer, and the Phase 2A capture implementation do **not** claim that:
 
 - latent or representation geometry is the mechanism of reasoning;
-- any LLM has been observed to produce the synthetic structures in the fixture;
+- any LLM has yet been shown by this repository to produce the synthetic structures in the Phase 1 fixture;
 - smooth trajectories imply correct reasoning;
-- curvature, velocity, or other geometric quantities have a unique cognitive interpretation;
+- curvature, velocity, holonomy, entropy, gauge, or other geometric/physical vocabulary has a unique cognitive interpretation;
 - matching outputs across serving engines imply matching hidden-state geometry;
 - the exact Lean proof layer automatically proves the Python/IEEE-754 implementation;
+- a software-only fake capture fixture is a model observation;
 - geometric reasoning makes small models equivalent to larger models; or
-- any cited external performance claim has been independently reproduced here.
+- any cited external performance or theoretical claim has been independently reproduced here.
 
 ## License
 

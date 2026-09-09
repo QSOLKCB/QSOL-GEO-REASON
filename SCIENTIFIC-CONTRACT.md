@@ -324,6 +324,8 @@ They do not answer whether a local model reasons geometrically.
 
 Synthetic artifacts must be visibly labelled `SIMULATION`.
 
+A software-only Phase 2 capture-contract fixture driven by a fake backend is also `SIMULATION` evidence about instrumentation behaviour, never `OBSERVATION` evidence about an LLM.
+
 ## 13. Falsification contract
 
 Each major hypothesis must eventually have a stated observation that would count against it.
@@ -341,14 +343,18 @@ The repository must preserve these outcomes if observed.
 
 ## 14. Current evidence status
 
-At PR #1 / foundation stage:
+Phase 1 is complete and frozen without changing the empirical claim ceiling:
 
-- evidence class: none;
-- replication status: not applicable;
-- empirical runs: none;
-- reference simulations: none;
+- immutable numerical release: `v0.1.0`, evidence class `SIMULATION`;
+- immutable Lean formal evidence release: `v0.2.0`, a separate exact-mathematics proof layer rather than an empirical LLM evidence class;
+- all twelve frozen Lean theorem targets: implemented, reviewed, merged, and frozen in `v0.2.0`;
+- empirical local-model runs: none at the start of Phase 2A;
+- empirical `OBSERVATION` results: none until a production `GEO-CAP-001` run is executed;
+- `ASSOCIATION` results: none;
+- `PERTURBATION` results: none;
+- `INTERVENTION` results: none;
+- supported `MECHANISM` claims: none;
 - serving-equivalence studies: none;
-- geometric training interventions: none;
-- supported mechanism claims: none.
+- geometric training interventions: none.
 
-The repository currently establishes only the rules under which later evidence will be generated and interpreted.
+PR #4 introduces the canonical Phase 2A capture instrument, schemas, and software-only contract fixture. Their existence does not satisfy the empirical Phase 2A evidence gate. The repository still assumes no geometric, gauge, thermodynamic, SU(3), E8, qutrit, or other mechanistic theory of LLM reasoning.

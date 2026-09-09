@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0.0",
+  "protocol_id": "GEO-CAP-001",
+  "run_id": "capture-contract-fixture-001",
+  "model": {
+    "identifier": "fixture/model",
+    "revision": "1111111111111111111111111111111111111111",
+    "revision_kind": "hf_commit",
+    "tokenizer_identifier": "fixture/tokenizer",
+    "tokenizer_revision": "2222222222222222222222222222222222222222",
+    "tokenizer_revision_kind": "hf_commit"
+  },
+  "backend": {
+    "name": "huggingface-pytorch",
+    "local_files_only": true,
+    "trust_remote_code": false,
+    "device": "cpu",
+    "dtype": "float32",
+    "quantization": "none"
+  },
+  "capture": {
+    "context_mode": "cumulative",
+    "phase": "replayed_prefix",
+    "layers": [0, 2],
+    "pooling": {"mode": "step_mean"},
+    "prefix_text": "P",
+    "step_joiner": "|"
+  },
+  "determinism": {
+    "mode": "required",
+    "seed": 7
+  },
+  "generation_parameters": {
+    "generation_used": false
+  },
+  "steps": [
+    {"step_id": "s0", "text": "AB"},
+    {"step_id": "s1", "text": "CD"}
+  ],
+  "notes": "SOFTWARE-ONLY CI fixture. The model/tokenizer identities are synthetic and this request must never be presented as an empirical local-model observation."
+}

@@ -1,0 +1,655 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/QSOLKCB/QSOL-GEO-REASON/schemas/capture-run-manifest.schema.json",
+  "title": "QSOL-GEO-REASON GEO-CAP-001 run manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "protocol_id", "run_id", "repository_commit", "request_sha256", "model", "backend_request", "backend_observed", "capture", "determinism", "generation_parameters", "run_manifest_id", "artifacts", "manifest_sha256"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "protocol_id": {"const": "GEO-CAP-001"},
+    "run_id": {"type": "string", "minLength": 1, "pattern": "\\S"},
+    "repository_commit": {"$ref": "#/$defs/gitSha"},
+    "request_sha256": {"$ref": "#/$defs/sha256"},
+    "model": {"$ref": "#/$defs/model"},
+    "backend_request": {"$ref": "#/$defs/backendRequest"},
+    "backend_observed": {"$ref": "#/$defs/backendObserved"},
+    "capture": {"$ref": "#/$defs/capture"},
+    "determinism": {"$ref": "#/$defs/determinism"},
+    "generation_parameters": {"$ref": "#/$defs/generationParameters"},
+    "run_manifest_id": {"$ref": "#/$defs/sha256"},
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capture_request_sha256", "captured_trajectory_sha256"],
+      "properties": {
+        "capture_request_sha256": {"$ref": "#/$defs/sha256"},
+        "captured_trajectory_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "manifest_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"backend_request": {"properties": {"device": {"const": "cpu"}}, "required": ["device"]}},
+        "required": ["backend_request"]
+      },
+      "then": {
+        "properties": {"backend_observed": {"properties": {"device": {"const": "cpu"}}, "required": ["device"]}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"backend_request": {"properties": {"device": {"const": "mps"}}, "required": ["device"]}},
+        "required": ["backend_request"]
+      },
+      "then": {
+        "properties": {"backend_observed": {"properties": {"device": {"const": "mps"}}, "required": ["device"]}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"backend_request": {"properties": {"device": {"type": "string", "pattern": "^cuda:[0-9]+$"}}, "required": ["device"]}},
+        "required": ["backend_request"]
+      },
+      "then": {
+        "properties": {"backend_observed": {"properties": {"device": {"type": "string", "pattern": "^cuda:[0-9]+$"}}, "required": ["device"]}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"backend_request": {"properties": {"dtype": {"const": "float32"}}, "required": ["dtype"]}},
+        "required": ["backend_request"]
+      },
+      "then": {
+        "properties": {"backend_observed": {"properties": {"dtype": {"const": "float32"}}, "required": ["dtype"]}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"backend_request": {"properties": {"dtype": {"const": "float16"}}, "required": ["dtype"]}},
+        "required": ["backend_request"]
+      },
+      "then": {
+        "properties": {"backend_observed": {"properties": {"dtype": {"const": "float16"}}, "required": ["dtype"]}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"backend_request": {"properties": {"dtype": {"const": "bfloat16"}}, "required": ["dtype"]}},
+        "required": ["backend_request"]
+      },
+      "then": {
+        "properties": {"backend_observed": {"properties": {"dtype": {"const": "bfloat16"}}, "required": ["dtype"]}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"determinism": {"properties": {"mode": {"const": "required"}}, "required": ["mode"]}},
+        "required": ["determinism"]
+      },
+      "then": {
+        "properties": {"backend_observed": {"properties": {"determinism_mode": {"const": "required"}}, "required": ["determinism_mode"]}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"determinism": {"properties": {"mode": {"const": "best_effort"}}, "required": ["mode"]}},
+        "required": ["determinism"]
+      },
+      "then": {
+        "properties": {"backend_observed": {"properties": {"determinism_mode": {"const": "best_effort"}}, "required": ["determinism_mode"]}}
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "backend_observed": {
+            "properties": {"name": {"const": "huggingface-pytorch"}},
+            "required": ["name"]
+          }
+        },
+        "required": ["backend_observed"]
+      },
+      "then": {
+        "properties": {
+          "model": {
+            "required": ["revision_tree_sha256", "tokenizer_revision_tree_sha256"]
+          }
+        }
+      }
+    }
+  ],
+  "x-qsol-semantic-validation": {
+    "required": true,
+    "constraints": [
+      "backend_observed.device must equal backend_request.device exactly; JSON Schema enforces cpu/mps equality and CUDA-family agreement, while the canonical semantic verifier enforces the exact cuda:N index.",
+      "backend_observed.dtype must equal backend_request.dtype exactly.",
+      "backend_observed.determinism_mode must equal determinism.mode exactly.",
+      "backend_observed observed model/tokenizer commits must equal the corresponding frozen model revisions.",
+      "Production OBSERVATION manifests require model.revision_tree_sha256 and model.tokenizer_revision_tree_sha256 so verified Hub commits retain the same frozen tree binding required by the canonical constructor.",
+      "Production OBSERVATION manifests content-bind the imported Hugging Face Hub package with huggingface_hub_package_file_count and huggingface_hub_package_receipt_sha256 in addition to the package version.",
+      "Production OBSERVATION model snapshots must contain Safetensors weights and must not contain .bin, .pt, .pth, or .ckpt checkpoint artifacts.",
+      "CUDA device identity fields must be null on CPU and MPS manifests.",
+      "Every production torch_build_config must contain exactly one canonical QSOL_GEO_CPU_FLUSH_DENORMAL=false record immediately before exactly one canonical QSOL_GEO_CPU_RUNTIME record for the CPU float64 pooling instrument; on CUDA the CPU runtime record immediately precedes the final CUDA runtime record.",
+      "MPS torch_build_config must contain exactly one canonical QSOL_GEO_MPS_RUNTIME mapped-native runtime receipt immediately before QSOL_GEO_CPU_FLUSH_DENORMAL=false; non-MPS manifests must not contain that record.",
+      "CUDA torch_build_config must contain exactly one canonical QSOL_GEO_CUDA_RUNTIME record as its final line; non-CUDA manifests must not contain that record."
+    ]
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "gitSha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "nullableString": {"type": ["string", "null"]},
+    "nullableInteger": {"type": ["integer", "null"]},
+    "nullableBoolean": {"type": ["boolean", "null"]},
+    "hubRepoId": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 96,
+      "pattern": "^(?!.*(?:--|\\.\\.))[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9_])?/[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9_])?$"
+    },
+    "snapshotPath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?![A-Za-z]:/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!.*\\\\)[^/\\\\]+(?:/[^/\\\\]+)*$"
+    },
+    "shaMap": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"$ref": "#/$defs/snapshotPath"},
+      "additionalProperties": {"$ref": "#/$defs/sha256"}
+    },
+    "device": {
+      "oneOf": [
+        {"enum": ["cpu", "mps"]},
+        {"type": "string", "pattern": "^cuda:[0-9]+$"}
+      ]
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identifier", "revision", "revision_kind", "tokenizer_identifier", "tokenizer_revision", "tokenizer_revision_kind"],
+      "properties": {
+        "identifier": {"$ref": "#/$defs/hubRepoId"},
+        "revision": {"$ref": "#/$defs/gitSha"},
+        "revision_kind": {"const": "hf_commit"},
+        "revision_tree_sha256": {"$ref": "#/$defs/sha256"},
+        "tokenizer_identifier": {"$ref": "#/$defs/hubRepoId"},
+        "tokenizer_revision": {"$ref": "#/$defs/gitSha"},
+        "tokenizer_revision_kind": {"const": "hf_commit"},
+        "tokenizer_revision_tree_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "backendRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "local_files_only", "trust_remote_code", "device", "dtype", "quantization"],
+      "properties": {
+        "name": {"const": "huggingface-pytorch"},
+        "local_files_only": {"const": true},
+        "trust_remote_code": {"const": false},
+        "device": {"$ref": "#/$defs/device"},
+        "dtype": {"enum": ["float32", "float16", "bfloat16"]},
+        "quantization": {"const": "none"}
+      }
+    },
+    "pooling": {
+      "oneOf": [
+        {"type": "object", "additionalProperties": false, "required": ["mode"], "properties": {"mode": {"enum": ["last_token", "step_mean", "context_mean"]}}},
+        {"type": "object", "additionalProperties": false, "required": ["mode", "window_tokens"], "properties": {"mode": {"const": "bounded_context_mean"}, "window_tokens": {"type": "integer", "minimum": 1}}}
+      ]
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["context_mode", "phase", "layers", "pooling", "prefix_text", "step_joiner"],
+      "properties": {
+        "context_mode": {"enum": ["cumulative", "isolated"]},
+        "phase": {"const": "replayed_prefix"},
+        "layers": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "integer", "minimum": 0}},
+        "pooling": {"$ref": "#/$defs/pooling"},
+        "prefix_text": {"type": "string"},
+        "step_joiner": {"type": "string"}
+      }
+    },
+    "determinism": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "seed"],
+      "properties": {
+        "mode": {"enum": ["required", "best_effort"]},
+        "seed": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615}
+      }
+    },
+    "generationParameters": {
+      "type": "object",
+      "required": ["generation_used"],
+      "properties": {"generation_used": {"const": false}},
+      "additionalProperties": {"type": "null"}
+    },
+    "backendObserved": {
+      "oneOf": [
+        {"$ref": "#/$defs/backendObservedProduction"},
+        {"$ref": "#/$defs/backendObservedSimulation"}
+      ]
+    },
+    "backendObservedSimulation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "observed_model_commit", "observed_tokenizer_commit", "device", "dtype", "quantization", "local_files_only", "trust_remote_code", "use_cache", "capture_phase", "kv_cache_reuse", "determinism_mode"],
+      "properties": {
+        "name": {"const": "software-simulation"},
+        "observed_model_commit": {"$ref": "#/$defs/gitSha"},
+        "observed_tokenizer_commit": {"$ref": "#/$defs/gitSha"},
+        "device": {"$ref": "#/$defs/device"},
+        "dtype": {"enum": ["float32", "float16", "bfloat16"]},
+        "quantization": {"const": "none"},
+        "local_files_only": {"const": true},
+        "trust_remote_code": {"const": false},
+        "use_cache": {"const": false},
+        "capture_phase": {"const": "replayed_prefix"},
+        "kv_cache_reuse": {"const": false},
+        "determinism_mode": {"enum": ["required", "best_effort"]}
+      }
+    },
+    "backendObservedProduction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name", "python_version", "platform", "torch_version", "transformers_version",
+        "torch_package_file_count", "torch_package_receipt_sha256",
+        "transformers_package_file_count", "transformers_package_receipt_sha256",
+        "huggingface_hub_package_file_count", "huggingface_hub_package_receipt_sha256",
+        "tokenizers_native_backend_active", "tokenizers_package_file_count", "tokenizers_package_receipt_sha256",
+        "safetensors_deserializer_active", "safetensors_package_file_count", "safetensors_package_receipt_sha256",
+        "torch_build_config", "torch_build_config_sha256",
+        "tokenizers_version", "huggingface_hub_version", "model_class", "tokenizer_class",
+        "observed_model_commit", "observed_tokenizer_commit", "checkpoint_loading_clean",
+        "quantization_config_present", "model_reports_quantized", "attention_implementation",
+        "device", "cpu_machine", "cpu_processor", "cpu_instruction_flags", "torch_num_threads",
+        "cpu_aten_capability", "aten_cpu_capability_env", "aten_cpu_capability_env_known",
+        "cpu_math_dispatch_env_known", "onednn_max_cpu_isa", "dnnl_max_cpu_isa", "mkl_cbwr",
+        "torch_num_interop_threads", "omp_num_threads", "mkl_num_threads",
+        "cpu_mkldnn_enabled", "cpu_mkldnn_matmul_fp32_precision", "cuda_device_name",
+        "cuda_device_capability", "cuda_resolved_device_index", "cuda_device_uuid",
+        "cuda_visible_devices", "cuda_build_version", "cudnn_version", "nvidia_driver_version",
+        "float32_matmul_precision", "cuda_matmul_allow_tf32", "cudnn_allow_tf32",
+        "cudnn_benchmark", "cudnn_deterministic",
+        "cuda_matmul_allow_fp16_reduced_precision_reduction",
+        "cuda_matmul_allow_bf16_reduced_precision_reduction",
+        "cuda_matmul_allow_fp16_accumulation",
+        "sdpa_flash_enabled", "sdpa_mem_efficient_enabled", "sdpa_math_enabled", "sdpa_cudnn_enabled",
+        "nvidia_tf32_override", "torch_allow_tf32_cublas_override", "cublas_workspace_config",
+        "mps_device_active", "mps_built", "mps_available", "mps_mac_model", "mps_cpu_brand",
+        "mps_macos_version", "mps_fallback_env", "mps_fast_math_env", "mps_prefer_metal_env", "autocast_disabled",
+        "dtype", "observed_hidden_state_dtypes", "pool_accumulation_dtype",
+        "pool_accumulation_device", "hidden_state_capture_strategy", "hidden_state_block_path",
+        "hidden_state_count", "snapshot_authentication", "model_snapshot_file_count",
+        "model_snapshot_file_sha256", "model_snapshot_receipt_sha256",
+        "tokenizer_snapshot_file_count", "tokenizer_snapshot_file_sha256",
+        "tokenizer_snapshot_receipt_sha256", "quantization", "offloading", "local_files_only",
+        "trust_remote_code", "use_cache", "capture_phase", "kv_cache_reuse",
+        "deterministic_algorithms_enabled", "deterministic_warn_only_enabled", "determinism_mode"
+      ],
+      "properties": {
+        "name": {"const": "huggingface-pytorch"},
+        "python_version": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "platform": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "torch_version": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "transformers_version": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "torch_package_file_count": {
+          "type": "integer", "minimum": 1,
+          "description": "Count of regular files in the imported PyTorch package tree, including native binaries and excluding only authenticated source-equivalent bytecode caches."
+        },
+        "torch_package_receipt_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 canonical receipt over package-relative file paths and content digests for the actually imported PyTorch implementation."
+        },
+        "transformers_package_file_count": {
+          "type": "integer", "minimum": 1,
+          "description": "Count of regular files in the imported Transformers package tree, excluding disposable Python bytecode caches."
+        },
+        "transformers_package_receipt_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 canonical receipt over package-relative file paths and content digests for the actually imported Transformers implementation."
+        },
+        "huggingface_hub_package_file_count": {
+          "type": "integer", "minimum": 1,
+          "description": "Count of receipt-bound files in the Hugging Face Hub package authenticated before its first import."
+        },
+        "huggingface_hub_package_receipt_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Content receipt for the Hugging Face Hub implementation that resolves the frozen local snapshots."
+        },
+        "tokenizers_native_backend_active": {"const": true},
+        "tokenizers_package_file_count": {
+          "type": "integer", "minimum": 1,
+          "description": "Count of receipt-bound files in the required native Tokenizers package used by every canonical production observation."
+        },
+        "tokenizers_package_receipt_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Content receipt for the required native Tokenizers implementation used by every canonical production observation."
+        },
+        "safetensors_deserializer_active": {
+          "const": true,
+          "description": "Canonical OBSERVATION requires Safetensors checkpoint loading; legacy pickle-capable checkpoint lanes are forbidden."
+        },
+        "safetensors_package_file_count": {
+          "type": "integer", "minimum": 1,
+          "description": "Count of receipt-bound files in the imported Safetensors package used by the canonical checkpoint loader."
+        },
+        "safetensors_package_receipt_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Content receipt for the active Safetensors checkpoint deserializer."
+        },
+        "torch_build_config": {
+          "type": "string", "minLength": 1,
+          "pattern": "(?:^|\\n)QSOL_GEO_CPU_FLUSH_DENORMAL=false\\nQSOL_GEO_CPU_RUNTIME=\\{\"loaded_cpu_runtime_libraries\":\\{\"cpu_runtime_library_file_count\":[0-9]+,\"cpu_runtime_library_receipt_sha256\":\"[0-9a-f]{64}\"\\}\\}\\n(?:QSOL_GEO_CUDA_RUNTIME=\\{\"loaded_cuda_runtime_libraries\":\\{\"cuda_runtime_library_file_count\":[1-9][0-9]*,\"cuda_runtime_library_receipt_sha256\":\"[0-9a-f]{64}\"\\}\\}\\n?)?$",
+          "description": "torch.__config__.show() captured at backend construction. MPS observations place exactly one QSOL_GEO_MPS_RUNTIME receipt immediately before the CPU denormal/runtime suffix; every production device then records QSOL_GEO_CPU_FLUSH_DENORMAL=false and QSOL_GEO_CPU_RUNTIME, while CUDA appends QSOL_GEO_CUDA_RUNTIME as the final line."
+        },
+        "torch_build_config_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 of the UTF-8 bytes of torch_build_config; the canonical bundle verifier recomputes this receipt."
+        },
+        "tokenizers_version": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "huggingface_hub_version": {"$ref": "#/$defs/nullableString"},
+        "model_class": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "tokenizer_class": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "observed_model_commit": {"$ref": "#/$defs/gitSha"},
+        "observed_tokenizer_commit": {"$ref": "#/$defs/gitSha"},
+        "checkpoint_loading_clean": {"const": true},
+        "quantization_config_present": {"const": false},
+        "model_reports_quantized": {"const": false},
+        "attention_implementation": {"enum": ["eager", "sdpa"]},
+        "device": {"$ref": "#/$defs/device"},
+        "cpu_machine": {"$ref": "#/$defs/nullableString"},
+        "cpu_processor": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "not": {
+            "pattern": "^\\s*(?:[Uu][Nn][Kk][Nn][Oo][Ww][Nn]|[Gg][Ee][Nn][Ee][Rr][Ii][Cc]|[Cc][Pp][Uu]|[Pp][Rr][Oo][Cc][Ee][Ss][Ss][Oo][Rr]|[Xx]86_64|[Aa][Mm][Dd]64|[Xx]64|[Ii]386|[Ii]686|[Aa][Rr][Mm]|[Aa][Rr][Mm]64|[Aa][Aa][Rr][Cc][Hh]64|[Pp][Pp][Cc]64|[Pp][Pp][Cc]64[Ll][Ee]|[Ss]390[Xx])\\s*$"
+          }
+        },
+        "cpu_instruction_flags": {"$ref": "#/$defs/nullableString"},
+        "cpu_aten_capability": {
+          "enum": ["DEFAULT", "VSX", "Z VECTOR", "NO AVX", "AVX2", "AVX512", "SVE256"],
+          "description": "Effective ATen ISA used by the CPU float64 pooling instrument on every production device."
+        },
+        "aten_cpu_capability_env": {"$ref": "#/$defs/nullableString", "description": "Initialization-time ATEN_CPU_CAPABILITY override only when captured before the first PyTorch import. Otherwise unknown/null."},
+        "aten_cpu_capability_env_known": {"type": "boolean", "description": "Whether the initialization-time ATEN_CPU_CAPABILITY override is known for the CPU pooling instrument; false requires a null override while effective runtime capability remains mandatory."},
+        "cpu_math_dispatch_env_known": {"$ref": "#/$defs/nullableBoolean"},
+        "onednn_max_cpu_isa": {"$ref": "#/$defs/nullableString"},
+        "dnnl_max_cpu_isa": {"$ref": "#/$defs/nullableString"},
+        "mkl_cbwr": {"$ref": "#/$defs/nullableString"},
+        "torch_num_threads": {"type": "integer", "minimum": 1},
+        "torch_num_interop_threads": {"type": "integer", "minimum": 1},
+        "omp_num_threads": {"$ref": "#/$defs/nullableString"},
+        "mkl_num_threads": {"$ref": "#/$defs/nullableString"},
+        "cpu_mkldnn_enabled": {"$ref": "#/$defs/nullableBoolean"},
+        "cpu_mkldnn_matmul_fp32_precision": {"$ref": "#/$defs/nullableString"},
+        "cuda_device_name": {"$ref": "#/$defs/nullableString"},
+        "cuda_device_capability": {
+          "anyOf": [{"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"}, {"type": "null"}]
+        },
+        "cuda_resolved_device_index": {"$ref": "#/$defs/nullableInteger"},
+        "cuda_device_uuid": {"$ref": "#/$defs/nullableString"},
+        "cuda_visible_devices": {"$ref": "#/$defs/nullableString"},
+        "cuda_build_version": {"$ref": "#/$defs/nullableString"},
+        "cudnn_version": {"$ref": "#/$defs/nullableInteger"},
+        "nvidia_driver_version": {"$ref": "#/$defs/nullableString"},
+        "float32_matmul_precision": {"$ref": "#/$defs/nullableString"},
+        "cuda_matmul_allow_tf32": {"$ref": "#/$defs/nullableBoolean"},
+        "cudnn_allow_tf32": {"$ref": "#/$defs/nullableBoolean"},
+        "cudnn_benchmark": {"$ref": "#/$defs/nullableBoolean"},
+        "cudnn_deterministic": {"$ref": "#/$defs/nullableBoolean"},
+        "cuda_matmul_allow_fp16_reduced_precision_reduction": {"$ref": "#/$defs/nullableBoolean"},
+        "cuda_matmul_allow_bf16_reduced_precision_reduction": {"$ref": "#/$defs/nullableBoolean"},
+        "cuda_matmul_allow_fp16_accumulation": {"enum": [false, null], "description": "False when exposed by the CUDA build; null when unavailable or outside CUDA."},
+        "sdpa_flash_enabled": {"$ref": "#/$defs/nullableBoolean"},
+        "sdpa_mem_efficient_enabled": {"$ref": "#/$defs/nullableBoolean"},
+        "sdpa_math_enabled": {"$ref": "#/$defs/nullableBoolean"},
+        "sdpa_cudnn_enabled": {"$ref": "#/$defs/nullableBoolean"},
+        "nvidia_tf32_override": {"$ref": "#/$defs/nullableString"},
+        "torch_allow_tf32_cublas_override": {"$ref": "#/$defs/nullableString"},
+        "cublas_workspace_config": {"$ref": "#/$defs/nullableString"},
+        "mps_device_active": {"type": "boolean"},
+        "mps_built": {"type": "boolean"},
+        "mps_available": {"type": "boolean"},
+        "mps_mac_model": {"$ref": "#/$defs/nullableString"},
+        "mps_cpu_brand": {"$ref": "#/$defs/nullableString"},
+        "mps_macos_version": {"$ref": "#/$defs/nullableString"},
+        "mps_fallback_env": {"$ref": "#/$defs/nullableString"},
+        "mps_fast_math_env": {"$ref": "#/$defs/nullableString"},
+        "mps_prefer_metal_env": {"$ref": "#/$defs/nullableString"},
+        "autocast_disabled": {"const": true},
+        "dtype": {"enum": ["float32", "float16", "bfloat16"]},
+        "observed_hidden_state_dtypes": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {"pattern": "^(?:0|[1-9][0-9]*)$"},
+          "additionalProperties": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "pattern": "\\S", "enum": ["bfloat16", "float16", "float32", "float64"]}},
+          "description": "Nonempty map keyed by canonical non-negative decimal layer index; the semantic verifier requires the key set to equal capture.layers exactly."
+        },
+        "pool_accumulation_dtype": {"const": "float64"},
+        "pool_accumulation_device": {"const": "cpu"},
+        "hidden_state_capture_strategy": {"const": "selective_forward_hooks"},
+        "hidden_state_block_path": {"enum": ["layers", "h", "decoder.layers", "transformer.h", "gpt_neox.layers"]},
+        "hidden_state_count": {"type": "integer", "minimum": 2},
+        "snapshot_authentication": {"const": "sha256_all_snapshot_files_pre_and_post_load"},
+        "model_snapshot_file_count": {"type": "integer", "minimum": 1},
+        "model_snapshot_file_sha256": {"$ref": "#/$defs/shaMap"},
+        "model_snapshot_receipt_sha256": {"$ref": "#/$defs/sha256"},
+        "tokenizer_snapshot_file_count": {"type": "integer", "minimum": 1},
+        "tokenizer_snapshot_file_sha256": {"$ref": "#/$defs/shaMap"},
+        "tokenizer_snapshot_receipt_sha256": {"$ref": "#/$defs/sha256"},
+        "quantization": {"const": "none"},
+        "offloading": {"const": "none"},
+        "local_files_only": {"const": true},
+        "trust_remote_code": {"const": false},
+        "use_cache": {"const": false},
+        "capture_phase": {"const": "replayed_prefix"},
+        "kv_cache_reuse": {"const": false},
+        "deterministic_algorithms_enabled": {"type": "boolean"},
+        "deterministic_warn_only_enabled": {"const": false},
+        "determinism_mode": {"enum": ["required", "best_effort"]}
+      },
+      "if": {
+        "properties": {"determinism_mode": {"const": "required"}},
+        "required": ["determinism_mode"]
+      },
+      "then": {
+        "properties": {"deterministic_algorithms_enabled": {"const": true}}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"device": {"const": "mps"}}, "required": ["device"]},
+          "then": {
+            "properties": {
+              "mps_device_active": {"const": true},
+              "mps_built": {"const": true},
+              "mps_available": {"const": true},
+              "torch_build_config": {
+                "type": "string",
+                "pattern": "(?:^|\\n)QSOL_GEO_MPS_RUNTIME=\\{\"loaded_mps_runtime_libraries\":\\{\"mps_runtime_library_file_count\":[1-9][0-9]*,\"mps_runtime_library_receipt_sha256\":\"[0-9a-f]{64}\"\\}\\}\\nQSOL_GEO_CPU_FLUSH_DENORMAL=false\\nQSOL_GEO_CPU_RUNTIME=\\{\"loaded_cpu_runtime_libraries\":\\{\"cpu_runtime_library_file_count\":[0-9]+,\"cpu_runtime_library_receipt_sha256\":\"[0-9a-f]{64}\"\\}\\}\\n?$"
+              },
+              "mps_fallback_env": {
+                "anyOf": [
+                  {"type": "null"},
+                  {"type": "string", "pattern": "^\\s*(?:0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff])?\\s*$"}
+                ]
+              },
+              "mps_fast_math_env": {
+                "anyOf": [
+                  {"type": "null"},
+                  {"type": "string", "pattern": "^\\s*(?:0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff])?\\s*$"}
+                ]
+              },
+              "mps_prefer_metal_env": {
+                "anyOf": [
+                  {"type": "null"},
+                  {"type": "string", "pattern": "^\\s*(?:0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff])?\\s*$"}
+                ]
+              }
+            },
+            "anyOf": [
+              {"properties": {"mps_mac_model": {"type": "string", "minLength": 1, "pattern": "\\S"}}, "required": ["mps_mac_model"]},
+              {"properties": {"mps_cpu_brand": {"type": "string", "minLength": 1, "pattern": "\\S"}}, "required": ["mps_cpu_brand"]}
+            ]
+          },
+          "else": {
+            "properties": {
+              "mps_device_active": {"const": false},
+              "torch_build_config": {"not": {"pattern": "(?:^|\\n)QSOL_GEO_MPS_RUNTIME="}}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "device": {"type": "string", "pattern": "^cuda:[0-9]+$"},
+              "determinism_mode": {"const": "required"}
+            },
+            "required": ["device", "determinism_mode"]
+          },
+          "then": {
+            "properties": {
+              "cublas_workspace_config": {"enum": [":4096:8", ":16:8"]}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"device": {"type": "string", "pattern": "^cuda:[0-9]+$"}},
+            "required": ["device"]
+          },
+          "then": {
+            "properties": {
+              "cuda_device_name": {"type": "string", "minLength": 1, "pattern": "\\S"},
+              "cuda_device_capability": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
+              "cuda_resolved_device_index": {"type": "integer", "minimum": 0},
+              "torch_build_config": {
+                "type": "string",
+                "pattern": "(?:^|\\n)QSOL_GEO_CUDA_RUNTIME=\\{\"loaded_cuda_runtime_libraries\":\\{\"cuda_runtime_library_file_count\":[1-9][0-9]*,\"cuda_runtime_library_receipt_sha256\":\"[0-9a-f]{64}\"\\}\\}\\n?$"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "cuda_device_name": {"type": "null"},
+              "cuda_device_capability": {"type": "null"},
+              "cuda_resolved_device_index": {"type": "null"},
+              "cuda_device_uuid": {"type": "null"},
+              "torch_build_config": {
+                "not": {"pattern": "(?:^|\\n)QSOL_GEO_CUDA_RUNTIME="}
+              }
+            }
+          }
+        },
+        {
+          "if": {"properties": {"device": {"type": "string", "pattern": "^cuda:[0-9]+$"}}, "required": ["device"]},
+          "then": {
+            "properties": {
+              "float32_matmul_precision": {"enum": ["highest", "high", "medium"]},
+              "cuda_matmul_allow_tf32": {"type": "boolean"},
+              "cudnn_allow_tf32": {"type": "boolean"},
+              "cudnn_benchmark": {"type": "boolean"},
+              "cudnn_deterministic": {"type": "boolean"},
+              "cuda_matmul_allow_fp16_reduced_precision_reduction": {"const": false},
+              "cuda_matmul_allow_bf16_reduced_precision_reduction": {"const": false}
+            }
+          },
+          "else": {
+            "properties": {
+              "float32_matmul_precision": {"type": "null"},
+              "cuda_matmul_allow_tf32": {"type": "null"},
+              "cudnn_allow_tf32": {"type": "null"},
+              "cudnn_benchmark": {"type": "null"},
+              "cudnn_deterministic": {"type": "null"},
+              "cuda_matmul_allow_fp16_reduced_precision_reduction": {"type": "null"},
+              "cuda_matmul_allow_bf16_reduced_precision_reduction": {"type": "null"},
+              "cuda_matmul_allow_fp16_accumulation": {"type": "null"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"device": {"const": "cpu"}}, "required": ["device"]},
+          "then": {
+            "properties": {
+              "cpu_processor": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S",
+                "not": {
+                  "pattern": "^\\s*(?:[Uu][Nn][Kk][Nn][Oo][Ww][Nn]|[Gg][Ee][Nn][Ee][Rr][Ii][Cc]|[Cc][Pp][Uu]|[Pp][Rr][Oo][Cc][Ee][Ss][Ss][Oo][Rr]|[Xx]86_64|[Aa][Mm][Dd]64|[Xx]64|[Ii]386|[Ii]686|[Aa][Rr][Mm]|[Aa][Rr][Mm]64|[Aa][Aa][Rr][Cc][Hh]64|[Pp][Pp][Cc]64|[Pp][Pp][Cc]64[Ll][Ee]|[Ss]390[Xx])\\s*$"
+                }
+              },
+              "cpu_math_dispatch_env_known": {"type": "boolean"}
+            }
+          },
+          "else": {"properties": {
+            "cpu_mkldnn_enabled": {"type": "null"},
+            "cpu_mkldnn_matmul_fp32_precision": {"type": "null"},
+            "cpu_math_dispatch_env_known": {"type": "null"},
+            "onednn_max_cpu_isa": {"type": "null"},
+            "dnnl_max_cpu_isa": {"type": "null"},
+            "mkl_cbwr": {"type": "null"}
+          }}
+        },
+        {
+          "if": {"properties": {"tokenizers_native_backend_active": {"const": true}}, "required": ["tokenizers_native_backend_active"]},
+          "then": {"properties": {
+            "tokenizers_version": {"type": "string", "minLength": 1, "pattern": "\\S"},
+            "tokenizers_package_file_count": {"type": "integer", "minimum": 1},
+            "tokenizers_package_receipt_sha256": {"$ref": "#/$defs/sha256"}
+          }},
+          "else": {"properties": {
+            "tokenizers_package_file_count": {"type": "null"},
+            "tokenizers_package_receipt_sha256": {"type": "null"}
+          }}
+        },
+        {
+          "if": {"properties": {"safetensors_deserializer_active": {"const": true}}, "required": ["safetensors_deserializer_active"]},
+          "then": {"properties": {
+            "safetensors_package_file_count": {"type": "integer", "minimum": 1},
+            "safetensors_package_receipt_sha256": {"$ref": "#/$defs/sha256"}
+          }},
+          "else": {"properties": {
+            "safetensors_package_file_count": {"type": "null"},
+            "safetensors_package_receipt_sha256": {"type": "null"}
+          }}
+        },
+        {
+          "if": {"properties": {"aten_cpu_capability_env_known": {"const": false}}, "required": ["aten_cpu_capability_env_known"]},
+          "then": {"properties": {"aten_cpu_capability_env": {"type": "null"}}}
+        },
+        {
+          "if": {"properties": {"cpu_math_dispatch_env_known": {"const": false}}, "required": ["cpu_math_dispatch_env_known"]},
+          "then": {"properties": {
+            "onednn_max_cpu_isa": {"type": "null"},
+            "dnnl_max_cpu_isa": {"type": "null"},
+            "mkl_cbwr": {"type": "null"}
+          }}
+        },
+        {
+          "if": {"properties": {"attention_implementation": {"const": "sdpa"}}, "required": ["attention_implementation"]},
+          "then": {"properties": {"sdpa_flash_enabled": {"const": false}, "sdpa_mem_efficient_enabled": {"const": false}, "sdpa_math_enabled": {"const": true}, "sdpa_cudnn_enabled": {"enum": [false, null]}}},
+          "else": {"properties": {"sdpa_flash_enabled": {"type": "null"}, "sdpa_mem_efficient_enabled": {"type": "null"}, "sdpa_math_enabled": {"type": "null"}, "sdpa_cudnn_enabled": {"type": "null"}}}
+        },
+        {
+          "if": {"properties": {"safetensors_deserializer_active": {"const": true}}, "required": ["safetensors_deserializer_active"]},
+          "then": {
+            "properties": {
+              "model_snapshot_file_sha256": {
+                "propertyNames": {
+                  "pattern": "^(?!.*\\.(?:[Bb][Ii][Nn]|[Pp][Tt]|[Pp][Tt][Hh]|[Cc][Kk][Pp][Tt])$).+$"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
