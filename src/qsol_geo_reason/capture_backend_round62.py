@@ -1,10 +1,11 @@
-"""Round-62 verifier binding for mapped MPS runtime provenance."""
+"""Round-62 verifier binding for mapped MPS runtime and Hub package provenance."""
 from __future__ import annotations
 
 import json
 from typing import Any, Mapping
 
 from .capture_common import CaptureContractError
+from .capture_package import _validate_python_package_provenance
 from . import capture_runtime as _runtime
 from . import capture_provenance as _provenance
 
@@ -76,18 +77,28 @@ def _mps_runtime_library_provenance_from_build_config_round62(
 def _validate_torch_build_metadata_round62(observed: Mapping[str, Any]) -> None:
     _ORIGINAL_VALIDATE_TORCH_BUILD_METADATA(observed)
     config = observed.get("torch_build_config")
-    if not isinstance(config, str):
-        return
-    mps_runtime = _mps_runtime_library_provenance_from_build_config_round62(config)
-    device = observed.get("device")
-    if device == "mps":
-        if mps_runtime is None:
+    if isinstance(config, str):
+        mps_runtime = _mps_runtime_library_provenance_from_build_config_round62(config)
+        device = observed.get("device")
+        if device == "mps":
+            if mps_runtime is None:
+                raise CaptureContractError(
+                    "MPS torch_build_config is missing the authenticated mapped MPS runtime receipt"
+                )
+        elif mps_runtime is not None:
             raise CaptureContractError(
-                "MPS torch_build_config is missing the authenticated mapped MPS runtime receipt"
+                "MPS runtime library provenance must be absent outside MPS"
             )
-    elif mps_runtime is not None:
-        raise CaptureContractError(
-            "MPS runtime library provenance must be absent outside MPS"
+
+    if (
+        "huggingface_hub_package_file_count" in observed
+        or "huggingface_hub_package_receipt_sha256" in observed
+    ):
+        _validate_python_package_provenance(
+            observed,
+            count_field="huggingface_hub_package_file_count",
+            receipt_field="huggingface_hub_package_receipt_sha256",
+            where="Hugging Face Hub",
         )
 
 
