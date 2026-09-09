@@ -104,14 +104,14 @@ class CaptureRound50RegressionTests(unittest.TestCase):
         self.assertIs(vars(AutoModelForCausalLM)["from_pretrained"], model_descriptor)
 
     def test_fresh_import_boundary_includes_native_loading_packages(self):
-        for root, loaded_name in (
-            ("safetensors", "safetensors.torch"),
-            ("tokenizers", "tokenizers.tokenizers"),
-            ("huggingface_hub", "huggingface_hub.file_download"),
+        for root, loaded_name, diagnostic in (
+            ("safetensors", "safetensors.torch", "Safetensors"),
+            ("tokenizers", "tokenizers.tokenizers", "Tokenizers"),
+            ("huggingface_hub", "huggingface_hub.file_download", "HuggingFace Hub"),
         ):
             module = types.ModuleType(loaded_name)
             with self.subTest(root=root):
-                with self.assertRaisesRegex(CaptureContractError, root.split("_")[0]):
+                with self.assertRaisesRegex(CaptureContractError, diagnostic):
                     Round45Backend._assert_pristine_mps_import_state(
                         "cpu", modules={loaded_name: module}
                     )
