@@ -23,9 +23,10 @@ from test_capture import execute, fixture_request
 
 
 _CPU_PREFIX = "QSOL_GEO_CPU_RUNTIME="
+_MPS_PREFIX = "QSOL_GEO_MPS_RUNTIME="
 
 
-def _cpu_config(*, count: int = 0, receipt: str = "a" * 64) -> str:
+def _cpu_runtime_record(*, count: int = 0, receipt: str = "a" * 64) -> str:
     payload = json.dumps(
         {
             "loaded_cpu_runtime_libraries": {
@@ -36,7 +37,32 @@ def _cpu_config(*, count: int = 0, receipt: str = "a" * 64) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
-    return "SYNTHETIC\n" + _CPU_PREFIX + payload + "\n"
+    return _CPU_PREFIX + payload
+
+
+def _cpu_config(*, count: int = 0, receipt: str = "a" * 64) -> str:
+    return "SYNTHETIC\n" + _cpu_runtime_record(count=count, receipt=receipt) + "\n"
+
+
+def _mps_config() -> str:
+    mps_payload = json.dumps(
+        {
+            "loaded_mps_runtime_libraries": {
+                "mps_runtime_library_file_count": 1,
+                "mps_runtime_library_receipt_sha256": "b" * 64,
+            }
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return (
+        "SYNTHETIC\n"
+        + _MPS_PREFIX
+        + mps_payload
+        + "\nQSOL_GEO_CPU_FLUSH_DENORMAL=false\n"
+        + _cpu_runtime_record()
+        + "\n"
+    )
 
 
 def _observed(config: str, device: str) -> dict[str, str]:
@@ -95,8 +121,10 @@ class CaptureRound41RegressionTests(unittest.TestCase):
 
         _validate_torch_build_metadata(_observed(_cpu_config(), "cpu"))
 
-        with self.assertRaisesRegex(CaptureContractError, "absent outside CPU"):
-            _validate_torch_build_metadata(_observed(_cpu_config(), "mps"))
+        # MPS forwards still pool selected spans on CPU float64, so a canonical
+        # MPS build receipt carries both mapped MPS runtime provenance and the
+        # external CPU pooling-runtime receipt.
+        _validate_torch_build_metadata(_observed(_mps_config(), "mps"))
 
         with self.assertRaises(CaptureContractError):
             _validate_torch_build_metadata(
