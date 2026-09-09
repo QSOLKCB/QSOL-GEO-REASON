@@ -324,7 +324,7 @@ def _validate_torch_build_metadata(observed: Mapping[str, Any]) -> None:
             )
         if production_device and cpu_runtime is None:
             raise CaptureContractError(
-                "production torch_build_config is missing the authenticated CPU pooling runtime library receipt"
+                "production torch_build_config is missing the authenticated CPU runtime library receipt required for CPU pooling"
             )
         if cpu_runtime is not None and not production_device:
             raise CaptureContractError(
