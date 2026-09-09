@@ -13,6 +13,7 @@ from qsol_geo_reason import capture
 from qsol_geo_reason import capture_backend_round56 as round56
 from qsol_geo_reason import capture_backend_round58 as round58
 from qsol_geo_reason import capture_backend_round60 as round60
+from qsol_geo_reason import capture_backend_round66 as round66
 from qsol_geo_reason import capture_common
 from qsol_geo_reason import capture_execute
 from qsol_geo_reason import provenance
@@ -38,19 +39,25 @@ class Round58TrustBoundaryTests(unittest.TestCase):
             provenance._git_run = forged_git
             self.assertIs(
                 sealed_resolve,
-                round60._resolve_implementation_revision_round60,
+                round66._resolve_implementation_revision_round66,
             )
+            closure_values = tuple(
+                cell.cell_contents for cell in sealed_resolve.__closure__ or ()
+            )
+            self.assertIn(round60._resolve_implementation_revision_round60, closure_values)
+
             # Round 60 intentionally stopped exposing the private provenance graph
-            # through the exported resolver's writable module globals.  The resolver
-            # is closure-bound and authenticates its private dependency graph before
-            # and after source resolution instead.
-            self.assertNotIn("_git_run", sealed_resolve.__globals__)
-            self.assertNotIn("git_source_revision", sealed_resolve.__globals__)
-            self.assertIsNot(sealed_resolve.__globals__, provenance.__dict__)
+            # through its resolver's writable module globals. Round 66 only adds the
+            # ignored-Python-source guard and closure-binds this same Round-60 resolver.
+            canonical = round60._resolve_implementation_revision_round60
+            self.assertNotIn("_git_run", canonical.__globals__)
+            self.assertNotIn("git_source_revision", canonical.__globals__)
+            self.assertIsNot(canonical.__globals__, provenance.__dict__)
 
             # Even if an embedded caller plants the historical names in the public
-            # module globals, they are not execution dependencies of the resolver.
-            globals_dict = sealed_resolve.__globals__
+            # Round-60 module globals, they are not execution dependencies of the
+            # canonical source resolver held by Round 66.
+            globals_dict = canonical.__globals__
             missing = object()
             old_runner = globals_dict.get("_git_run", missing)
             old_source = globals_dict.get("git_source_revision", missing)

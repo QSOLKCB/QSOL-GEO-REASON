@@ -8,14 +8,24 @@ from pathlib import Path
 from qsol_geo_reason import capture
 from qsol_geo_reason import capture_backend_round56 as round56
 from qsol_geo_reason import capture_backend_round61 as round61
+from qsol_geo_reason import capture_backend_round65 as round65
 
 
 class Round61PreloadStabilityTests(unittest.TestCase):
-    def test_public_backend_uses_round61_preload_constructor(self):
+    def test_public_backend_retains_round61_preload_constructor_under_later_layers(self):
         self.assertIs(capture.HuggingFacePyTorchBackend, round56.HuggingFacePyTorchBackend)
         self.assertIs(capture.HuggingFacePyTorchBackend, round61.HuggingFacePyTorchBackend)
-        self.assertIs(round56.HuggingFacePyTorchBackend.__init__, round61.HuggingFacePyTorchBackend.__init__)
-        self.assertEqual(round56.HuggingFacePyTorchBackend.__init__.__module__, round61.__name__)
+        self.assertIs(capture.HuggingFacePyTorchBackend, round65.HuggingFacePyTorchBackend)
+        public_init = round56.HuggingFacePyTorchBackend.__init__
+        self.assertIs(public_init, round65.HuggingFacePyTorchBackend.__init__)
+        closure_values = tuple(cell.cell_contents for cell in public_init.__closure__ or ())
+        self.assertTrue(
+            any(
+                callable(value) and getattr(value, "__module__", None) == round61.__name__
+                for value in closure_values
+            ),
+            "Round-65 constructor must closure-bind the earlier Round-61 preload constructor chain",
+        )
 
     def test_preload_stability_receipt_detects_write_restore_aba(self):
         with tempfile.TemporaryDirectory() as directory:

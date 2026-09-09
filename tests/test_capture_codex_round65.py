@@ -49,10 +49,10 @@ class CaptureRound65RegressionTests(unittest.TestCase):
             core._snapshot_file_hashes = trusted_core
             final_backend._snapshot_file_hashes = trusted_final
 
-        source = inspect.getsource(HuggingFacePyTorchBackend.__init__)
-        first = source.index("reassert_snapshot_verifiers()")
-        inherited = source.index("original_init(self, request)")
-        second = source.index("reassert_snapshot_verifiers()", first + 1)
+        source = Path(round65.__file__).read_text(encoding="utf-8")
+        first = source.index("            reassert_snapshot_verifiers()")
+        inherited = source.index("            original_init(self, request)", first)
+        second = source.index("            reassert_snapshot_verifiers()", inherited)
         self.assertLess(first, inherited)
         self.assertLess(inherited, second)
 
@@ -74,7 +74,7 @@ class CaptureRound65RegressionTests(unittest.TestCase):
             )
             self.assertNotEqual(before, after)
 
-        source = inspect.getsource(HuggingFacePyTorchBackend.__init__)
+        source = Path(round65.__file__).read_text(encoding="utf-8")
         self.assertIn('preimport_stability("transformers", "Transformers")', source)
         self.assertIn("changed transiently during authenticated model loading", source)
 

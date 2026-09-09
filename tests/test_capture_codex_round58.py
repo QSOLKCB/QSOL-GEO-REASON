@@ -6,6 +6,7 @@ import unittest
 from qsol_geo_reason import capture
 from qsol_geo_reason import capture_backend_round56 as round56
 from qsol_geo_reason import capture_backend_round60 as round60
+from qsol_geo_reason import capture_backend_round66 as round66
 from qsol_geo_reason import capture_execute
 from qsol_geo_reason import provenance
 
@@ -15,8 +16,14 @@ class Round60ProvenanceWrapperTests(unittest.TestCase):
         self.assertIs(capture.HuggingFacePyTorchBackend, round56.HuggingFacePyTorchBackend)
         self.assertIs(
             capture_execute.resolve_implementation_revision,
-            round60._resolve_implementation_revision_round60,
+            round66._resolve_implementation_revision_round66,
         )
+        closure_values = tuple(
+            cell.cell_contents
+            for cell in capture_execute.resolve_implementation_revision.__closure__ or ()
+        )
+        self.assertIn(round60._resolve_implementation_revision_round60, closure_values)
+
         public_globals = round60._resolve_implementation_revision_round60.__globals__
         self.assertNotIn("_git_run", public_globals)
         self.assertNotIn("git_source_revision", public_globals)
