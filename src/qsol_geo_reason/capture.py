@@ -9,9 +9,11 @@ from .capture_backend_round46 import HuggingFacePyTorchBackend
 from .capture_backend_round56 import HuggingFacePyTorchBackend
 from .capture_backend_round61 import HuggingFacePyTorchBackend
 from .capture_backend_round64 import HuggingFacePyTorchBackend
+from .capture_backend_round65 import HuggingFacePyTorchBackend
 from . import capture_backend_round62 as _capture_backend_round62
 from . import capture_backend_round63 as _capture_backend_round63
 from . import capture_backend_round60 as _capture_backend_round60
+from . import capture_backend_round66 as _capture_backend_round66
 
 # Round 46 must retain its runtime try/finally so private authenticated loader
 # redirects are restored on every construction exit, including BaseException paths.
@@ -20,9 +22,11 @@ from . import capture_backend_round60 as _capture_backend_round60
 # introspection wrapper without changing which callable Python actually executes.
 # Round 56 subclasses that wrapper; Round 61 adds the pre-load PyTorch package
 # stability boundary; Round 64 content-binds and closure-seals the Hugging Face Hub
-# package receipt and loader chain; Round 62 binds MPS runtime receipts; Round 63
-# closure-seals the exported Round-58 Git runner; and Round 60 freezes the canonical
-# source-identity graph.
+# package receipt and loader chain; Round 65 seals construction-time snapshot
+# verification, Transformers package stability, and determinism-policy callables;
+# Round 62 binds MPS runtime receipts; Round 63 closure-seals the exported Round-58
+# Git runner; Round 60 freezes the canonical source-identity graph; and Round 66
+# rejects Git-ignored Python source inside the importable package.
 HuggingFacePyTorchBackend.__init__.__wrapped__ = _Round45HuggingFacePyTorchBackend.__init__
 
 from .capture_execute import execute_capture
