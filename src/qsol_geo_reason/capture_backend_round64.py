@@ -127,6 +127,27 @@ del _make_round64_constructor
 del _make_round64_metadata
 
 
+_ORIGINAL_VALIDATE_PRODUCTION_METADATA_SHAPE = (
+    _capture_provenance._validate_production_metadata_shape
+)
+
+
+def _validate_production_metadata_shape_round64(
+    observed: Mapping[str, Any], request: Mapping[str, Any]
+) -> None:
+    _ORIGINAL_VALIDATE_PRODUCTION_METADATA_SHAPE(observed, request)
+    _validate_python_package_provenance(
+        observed,
+        count_field="huggingface_hub_package_file_count",
+        receipt_field="huggingface_hub_package_receipt_sha256",
+        where="Hugging Face Hub",
+    )
+
+
+_capture_provenance._validate_production_metadata_shape = (
+    _validate_production_metadata_shape_round64
+)
+
 _ORIGINAL_VALIDATE_BACKEND_METADATA = _capture_provenance._validate_backend_metadata
 
 
