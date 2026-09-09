@@ -28,6 +28,7 @@ class Round62MPSRuntimeTests(unittest.TestCase):
                     separators=(",", ":"),
                 )
             )
+        lines.append("QSOL_GEO_CPU_FLUSH_DENORMAL=false")
         lines.append(
             "QSOL_GEO_CPU_RUNTIME="
             + json.dumps(
