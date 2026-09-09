@@ -150,7 +150,7 @@ class CaptureRound39RegressionTests(unittest.TestCase):
 
     def test_cuda_library_receipt_is_embedded_in_authenticated_runtime_config(self):
         source = inspect.getsource(Round39Backend.metadata)
-        self.assertIn("loaded_cuda_runtime_library_provenance()", source)
+        self.assertIn("loaded_cuda_runtime_library_snapshot()", source)
         self.assertIn("QSOL_GEO_CUDA_RUNTIME=", source)
         config = 'SYNTHETIC\nQSOL_GEO_CUDA_RUNTIME={"loaded_cuda_runtime_libraries":{"cuda_runtime_library_file_count":2,"cuda_runtime_library_receipt_sha256":"' + "a" * 64 + '"}}\n'
         observed = {
