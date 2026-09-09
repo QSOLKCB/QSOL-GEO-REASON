@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import unittest
 
@@ -85,7 +86,7 @@ class Round62MPSRuntimeTests(unittest.TestCase):
             round62._validate_torch_build_metadata_round62(observed)
 
     def test_round39_binds_mps_baseline_and_final_runtime_state(self):
-        source = __import__("inspect").getsource(round39.HuggingFacePyTorchBackend)
+        source = inspect.getsource(round39)
         self.assertIn("loaded_mps_runtime_library_snapshot", source)
         self.assertIn("mps_before", source)
         self.assertIn('label="MPS"', source)
