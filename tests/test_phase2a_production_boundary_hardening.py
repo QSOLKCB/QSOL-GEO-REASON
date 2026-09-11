@@ -11,6 +11,7 @@ from unittest import mock
 from qsol_geo_reason import first_production_observation as TOOL
 from qsol_geo_reason.capture_common import CaptureContractError
 from qsol_geo_reason import capture_hub_prepare_worker
+from reference_environment_fixture import reference_environment_receipt
 
 
 class Phase2AProductionBoundaryHardeningTests(unittest.TestCase):
@@ -20,7 +21,7 @@ class Phase2AProductionBoundaryHardeningTests(unittest.TestCase):
             "revision_tree_sha256": "a" * 64,
             "tokenizer_revision_tree_sha256": "b" * 64,
             "huggingface_hub_package_file_count": 137,
-            "huggingface_hub_package_receipt_sha256": "c" * 64,
+            "huggingface_hub_package_receipt_sha256": "7" * 64,
         }
 
         def fake_run(command, **kwargs):
@@ -57,17 +58,29 @@ class Phase2AProductionBoundaryHardeningTests(unittest.TestCase):
         for key in hostile:
             self.assertNotIn(key, environment)
 
-    def test_hub_tree_compatibility_surface_does_not_leak_package_fields_into_request(self) -> None:
+    def test_hub_tree_compatibility_surface_binds_package_then_returns_only_request_fields(self) -> None:
         evidence = {
             "revision_tree_sha256": "a" * 64,
             "tokenizer_revision_tree_sha256": "b" * 64,
             "huggingface_hub_package_file_count": 137,
-            "huggingface_hub_package_receipt_sha256": "c" * 64,
+            "huggingface_hub_package_receipt_sha256": "7" * 64,
         }
-        with mock.patch.object(
-            TOOL,
-            "prepare_hub_evidence",
-            return_value=evidence,
+
+        def fake_run(command, **kwargs):
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(evidence, sort_keys=True) + "\n",
+                stderr="",
+            )
+
+        with (
+            mock.patch.object(TOOL.subprocess, "run", side_effect=fake_run),
+            mock.patch.object(
+                TOOL,
+                "verify_current_reference_environment",
+                return_value=reference_environment_receipt(),
+            ),
         ):
             receipts = TOOL.prepare_tree_receipts({"frozen": "request"})
         self.assertEqual(
@@ -77,6 +90,36 @@ class Phase2AProductionBoundaryHardeningTests(unittest.TestCase):
                 "tokenizer_revision_tree_sha256": "b" * 64,
             },
         )
+
+    def test_hub_tree_compatibility_surface_rejects_worker_package_digest_drift(self) -> None:
+        evidence = {
+            "revision_tree_sha256": "a" * 64,
+            "tokenizer_revision_tree_sha256": "b" * 64,
+            "huggingface_hub_package_file_count": 137,
+            "huggingface_hub_package_receipt_sha256": "c" * 64,
+        }
+
+        def fake_run(command, **kwargs):
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(evidence, sort_keys=True) + "\n",
+                stderr="",
+            )
+
+        with (
+            mock.patch.object(TOOL.subprocess, "run", side_effect=fake_run),
+            mock.patch.object(
+                TOOL,
+                "verify_current_reference_environment",
+                return_value=reference_environment_receipt(),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                CaptureContractError,
+                "package provenance does not match",
+            ):
+                TOOL.prepare_tree_receipts({"frozen": "request"})
 
     def test_hub_worker_rejects_preloaded_huggingface_hub(self) -> None:
         fake_hub = types.ModuleType("huggingface_hub")
