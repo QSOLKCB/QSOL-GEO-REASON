@@ -1,8 +1,8 @@
 """Fresh-process worker for canonical GEO-CAP-001 OBSERVATION capture.
 
-This module is intentionally internal.  ``qsol-geo-capture`` launches it with
+This module is intentionally internal. ``qsol-geo-capture`` launches it with
 CPython isolated mode (``-I``) and bytecode writes disabled (``-B``), after removing
-Python/loader injection environment variables.  The worker then imports the canonical
+Python/loader injection environment variables. The worker then imports the canonical
 backend stack and performs one offline observation.
 """
 from __future__ import annotations
@@ -25,13 +25,22 @@ _EXTERNAL_CAPTURE_PREFIXES = (
 
 def _assert_fresh_worker_boundary() -> None:
     if os.environ.get("QSOL_GEO_CAPTURE_FRESH_WORKER") != "1":
-        raise RuntimeError("canonical capture worker must be launched by qsol-geo-capture")
-    if not sys.flags.isolated or not sys.flags.no_user_site or not sys.flags.ignore_environment:
+        raise RuntimeError(
+            "canonical capture worker must be launched by qsol-geo-capture"
+        )
+    if (
+        not sys.flags.isolated
+        or not sys.flags.no_user_site
+        or not sys.flags.ignore_environment
+    ):
         raise RuntimeError("canonical capture worker requires CPython isolated mode (-I)")
     contaminated = sorted(
         name
         for name in sys.modules
-        if any(name == prefix or name.startswith(prefix + ".") for prefix in _EXTERNAL_CAPTURE_PREFIXES)
+        if any(
+            name == prefix or name.startswith(prefix + ".")
+            for prefix in _EXTERNAL_CAPTURE_PREFIXES
+        )
     )
     if contaminated:
         raise RuntimeError(
@@ -45,12 +54,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("request", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--implementation-revision")
+    parser.add_argument("--execution-id")
+    parser.add_argument("--execution-receipt", type=Path)
     args = parser.parse_args(argv)
 
     try:
         _assert_fresh_worker_boundary()
+        if (args.execution_id is None) != (args.execution_receipt is None):
+            raise RuntimeError(
+                "canonical execution identity requires both --execution-id and --execution-receipt"
+            )
 
-        # Import only after the worker boundary is established.  In particular no
+        # Import only after the worker boundary is established. In particular no
         # Torch/Transformers/Hub code has executed in this interpreter before here.
         from .capture import (
             CaptureBackendUnavailable,
@@ -61,6 +76,11 @@ def main(argv: list[str] | None = None) -> int:
             write_capture_bundle,
         )
         from . import capture_execute
+        from .capture_execution import (
+            build_execution_receipt,
+            verify_execution_receipt,
+            write_execution_receipt,
+        )
         from .provenance import SourceIdentityError
 
         request = json.loads(args.request.read_text(encoding="utf-8"))
@@ -76,7 +96,29 @@ def main(argv: list[str] | None = None) -> int:
             backend=backend,
             evidence_class="OBSERVATION",
         )
+
+        execution_receipt = None
+        if args.execution_id is not None:
+            execution_receipt = build_execution_receipt(
+                execution_id=args.execution_id,
+                request=validated,
+                manifest=manifest,
+                trajectory=trajectory,
+            )
+            verify_execution_receipt(
+                execution_receipt,
+                request=validated,
+                manifest=manifest,
+                trajectory=trajectory,
+            )
+
+        # Publish the immutable scientific bundle first. If the separate occurrence
+        # receipt cannot then be durably published, this worker fails and the parent
+        # experiment preserves the attempt rather than accepting an identity-less run.
         write_capture_bundle(args.output_dir, validated, manifest, trajectory)
+        if execution_receipt is not None:
+            write_execution_receipt(args.execution_receipt, execution_receipt)
+
         print(manifest["manifest_sha256"])
         return 0
     except (

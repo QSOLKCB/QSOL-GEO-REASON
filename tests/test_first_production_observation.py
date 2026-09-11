@@ -110,7 +110,7 @@ class FirstProductionObservationTests(unittest.TestCase):
                 ],
             )
 
-    def test_observe_snapshots_request_before_launching_workers(self) -> None:
+    def test_observe_snapshots_request_and_assigns_distinct_execution_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             original = self._materialized_request()
@@ -118,12 +118,22 @@ class FirstProductionObservationTests(unittest.TestCase):
             request_path.write_text(json.dumps(original), encoding="utf-8")
             output_root = directory / "observation"
             seen_paths: list[Path] = []
-            seen_revisions: list[str | None] = []
+            seen_revisions: list[str] = []
+            seen_execution_ids: list[str] = []
+            seen_execution_receipts: list[Path] = []
             repository_commit = "f" * 40
 
-            def fake_run(path: Path, output: Path, revision: str | None) -> str:
+            def fake_run(
+                path: Path,
+                output: Path,
+                revision: str,
+                execution_id: str,
+                execution_receipt_path: Path,
+            ) -> str:
                 seen_paths.append(path)
                 seen_revisions.append(revision)
+                seen_execution_ids.append(execution_id)
+                seen_execution_receipts.append(execution_receipt_path)
                 if len(seen_paths) == 1:
                     changed = json.loads(json.dumps(original))
                     changed["model"]["revision_tree_sha256"] = "9" * 64
@@ -137,6 +147,11 @@ class FirstProductionObservationTests(unittest.TestCase):
                     "resolve_implementation_revision",
                     return_value=repository_commit,
                 ) as resolver,
+                mock.patch.object(
+                    TOOL,
+                    "authenticate_tracked_tool_against_revision",
+                    return_value="1" * 40,
+                ) as authenticate_runner,
                 mock.patch.object(TOOL, "_run_capture", side_effect=fake_run),
                 mock.patch.object(TOOL, "build_replay_verdict", return_value=verdict),
                 mock.patch.object(TOOL, "verify_replay_verdict", return_value=verdict),
@@ -144,11 +159,22 @@ class FirstProductionObservationTests(unittest.TestCase):
                 observed, status = TOOL.observe(request_path, output_root, None)
 
             resolver.assert_called_once_with(None, require_checkout=True)
+            authenticate_runner.assert_called_once_with(TOOL.RUNNER_PATH, repository_commit)
             self.assertEqual(status, 0)
             self.assertEqual(observed, verdict)
             self.assertEqual(len(seen_paths), 2)
             self.assertEqual(seen_paths[0], seen_paths[1])
             self.assertEqual(seen_revisions, [repository_commit, repository_commit])
+            self.assertNotEqual(seen_execution_ids[0], seen_execution_ids[1])
+            self.assertTrue(seen_execution_ids[0].endswith(":run-a"))
+            self.assertTrue(seen_execution_ids[1].endswith(":run-b"))
+            self.assertEqual(
+                seen_execution_receipts,
+                [
+                    output_root / "run-a-execution-receipt.json",
+                    output_root / "run-b-execution-receipt.json",
+                ],
+            )
             self.assertNotEqual(seen_paths[0], request_path)
             snapshot = json.loads(
                 (output_root / "validated-request.json").read_text(encoding="utf-8")
@@ -156,7 +182,7 @@ class FirstProductionObservationTests(unittest.TestCase):
             self.assertEqual(snapshot, original)
             self.assertNotEqual(json.loads(request_path.read_text(encoding="utf-8")), original)
 
-    def test_failed_observation_is_bound_to_revision_and_retry_path_survives(self) -> None:
+    def test_failed_observation_is_bound_to_revision_execution_ids_and_retry_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             request_path = directory / "request.json"
@@ -174,6 +200,11 @@ class FirstProductionObservationTests(unittest.TestCase):
                 ) as resolver,
                 mock.patch.object(
                     TOOL,
+                    "authenticate_tracked_tool_against_revision",
+                    return_value="2" * 40,
+                ) as authenticate_runner,
+                mock.patch.object(
+                    TOOL,
                     "_run_capture",
                     side_effect=CaptureContractError("transient backend failure"),
                 ) as run_capture,
@@ -184,8 +215,10 @@ class FirstProductionObservationTests(unittest.TestCase):
                     TOOL.observe(request_path, output_root, None)
 
             resolver.assert_called_once_with(None, require_checkout=True)
+            authenticate_runner.assert_called_once_with(TOOL.RUNNER_PATH, repository_commit)
             self.assertEqual(run_capture.call_count, 1)
             self.assertEqual(run_capture.call_args.args[2], repository_commit)
+            self.assertTrue(run_capture.call_args.args[3].endswith(":run-a"))
             self.assertFalse(output_root.exists())
             failed = list((directory / "missing-parent").glob("observation.failed-*"))
             self.assertEqual(len(failed), 1)
@@ -195,6 +228,10 @@ class FirstProductionObservationTests(unittest.TestCase):
             self.assertEqual(marker["repository_commit"], repository_commit)
             self.assertEqual(marker["attempt_status"], "failed_before_replay_verdict")
             self.assertEqual(marker["completed_run_directories"], [])
+            self.assertNotEqual(
+                marker["planned_execution_ids"]["run-a"],
+                marker["planned_execution_ids"]["run-b"],
+            )
             self.assertTrue((failed[0] / "validated-request.json").is_file())
 
     def test_revision_resolution_failure_creates_no_attempt_directory(self) -> None:
@@ -212,7 +249,36 @@ class FirstProductionObservationTests(unittest.TestCase):
                 side_effect=SourceIdentityError("checkout is dirty"),
             ):
                 with self.assertRaisesRegex(
-                    CaptureContractError, "unable to bind production observation"
+                    CaptureContractError, "unable to bind production observation runner"
+                ):
+                    TOOL.observe(request_path, output_root, None)
+
+            self.assertFalse(output_root.exists())
+
+    def test_runner_authentication_failure_creates_no_attempt_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            request_path = directory / "request.json"
+            request_path.write_text(
+                json.dumps(self._materialized_request()), encoding="utf-8"
+            )
+            output_root = directory / "observation"
+            repository_commit = "d" * 40
+
+            with (
+                mock.patch.object(
+                    TOOL,
+                    "resolve_implementation_revision",
+                    return_value=repository_commit,
+                ),
+                mock.patch.object(
+                    TOOL,
+                    "authenticate_tracked_tool_against_revision",
+                    side_effect=SourceIdentityError("runner bytes differ from HEAD"),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    CaptureContractError, "unable to bind production observation runner"
                 ):
                     TOOL.observe(request_path, output_root, None)
 
@@ -233,12 +299,7 @@ class FirstProductionObservationTests(unittest.TestCase):
                 mock.patch.object(
                     sys,
                     "argv",
-                    [
-                        str(SCRIPT),
-                        "prepare",
-                        "--output",
-                        str(output),
-                    ],
+                    [str(SCRIPT), "prepare", "--output", str(output)],
                 ),
                 contextlib.redirect_stderr(stderr),
             ):

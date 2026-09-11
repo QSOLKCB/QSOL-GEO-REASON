@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/QSOLKCB/QSOL-GEO-REASON/schemas/replay-verdict.schema.json",
   "title": "QSOL-GEO-REASON GEO-CAP-001 replay verdict",
-  "description": "Structural schema for the machine-readable result of a dual canonical GEO-CAP-001 observation replay. Canonical acceptance additionally requires the repository semantic verifier in qsol_geo_reason.capture_replay.verify_replay_verdict so hashes and cross-bundle identities are recomputed from the evidence artifacts. Deterministic replay is not scientific replication, so replication_status remains not_attempted.",
+  "description": "Structural schema for the machine-readable result of a dual canonical GEO-CAP-001 observation replay. Canonical acceptance additionally requires qsol_geo_reason.capture_replay.verify_replay_verdict so hashes, execution receipts, and cross-bundle identities are recomputed from the evidence artifacts. Deterministic replay is not scientific replication, so replication_status remains not_attempted.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -13,6 +13,10 @@
     "replication_status",
     "request_sha256",
     "validated_request_artifact_sha256",
+    "run_a_execution_id",
+    "run_b_execution_id",
+    "run_a_execution_receipt_file_sha256",
+    "run_b_execution_receipt_file_sha256",
     "run_a_manifest_receipt_sha256",
     "run_b_manifest_receipt_sha256",
     "run_a_bundle_file_sha256",
@@ -32,6 +36,10 @@
     "replication_status": {"const": "not_attempted"},
     "request_sha256": {"$ref": "#/$defs/sha256"},
     "validated_request_artifact_sha256": {"$ref": "#/$defs/sha256"},
+    "run_a_execution_id": {"type": "string", "minLength": 1, "pattern": "\\S"},
+    "run_b_execution_id": {"type": "string", "minLength": 1, "pattern": "\\S"},
+    "run_a_execution_receipt_file_sha256": {"$ref": "#/$defs/sha256"},
+    "run_b_execution_receipt_file_sha256": {"$ref": "#/$defs/sha256"},
     "run_a_manifest_receipt_sha256": {"$ref": "#/$defs/sha256"},
     "run_b_manifest_receipt_sha256": {"$ref": "#/$defs/sha256"},
     "run_a_bundle_file_sha256": {"$ref": "#/$defs/bundleReceipts"},
@@ -43,8 +51,8 @@
     "replay_outcome": {"enum": ["byte_identical", "diverged"]},
     "interpretation": {
       "enum": [
-        "Deterministic replay established for this exact request/backend/runtime pair.",
-        "Deterministic replay was not established. Preserve both observations and investigate the recorded divergence; do not tune or discard it."
+        "Deterministic replay established for the three canonical scientific bundle files; the separate execution receipts intentionally differ because they identify distinct executions.",
+        "Deterministic replay was not established. Preserve both observations and their execution receipts and investigate the recorded divergence; do not tune or discard it."
       ]
     }
   },

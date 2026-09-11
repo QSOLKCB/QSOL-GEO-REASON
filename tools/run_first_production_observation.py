@@ -7,7 +7,8 @@ The experiment has two deliberately separate stages:
    into the preregistered request template, and writes one final request.
 2. ``observe`` is offline. It snapshots the validated final request, executes that
    exact snapshot twice through the canonical fresh-worker production backend,
-   verifies both bundles, and records a machine-verifiable replay verdict.
+   verifies both bundles and their distinct execution receipts, and records a
+   machine-verifiable replay verdict.
 
 A replay divergence is retained as a result. A failed attempt is moved to a uniquely
 named failure directory instead of occupying the requested final output path. This tool
@@ -41,9 +42,13 @@ from qsol_geo_reason.provenance import (
     SourceIdentityError,
     resolve_implementation_revision,
 )
+from qsol_geo_reason.runner_provenance import (
+    authenticate_tracked_tool_against_revision,
+)
 
 
-ROOT = Path(__file__).resolve().parents[1]
+RUNNER_PATH = Path(__file__).resolve()
+ROOT = RUNNER_PATH.parents[1]
 EXPERIMENT_ID = "GEO-CAP-001-EXP-001"
 TEMPLATE = ROOT / "experiments" / "GEO-CAP-001-EXP-001.request.template.json"
 BUNDLE_FILES = REPLAY_BUNDLE_FILES
@@ -144,9 +149,6 @@ def _ensure_parent_directory_durable(path: Path) -> None:
                     "experiment artifact parent path was replaced by a non-directory"
                 )
         else:
-            # The new child name lives in directory.parent. Sync that containing
-            # directory immediately so every newly created ancestor is reachable
-            # after a crash before deeper descendants are published.
             _fsync_directory(directory.parent)
 
 
@@ -167,8 +169,6 @@ def _create_output_root_durable(output_root: Path) -> None:
     try:
         _fsync_directory(output_root.parent)
     except OSError as exc:
-        # No experiment artifact exists yet. Best-effort removal keeps a failed
-        # durability probe from poisoning the explicit retry path.
         try:
             output_root.rmdir()
         except OSError:
@@ -259,10 +259,13 @@ def _offline_environment() -> dict[str, str]:
 def _run_capture(
     request_path: Path,
     output_dir: Path,
-    implementation_revision: str | None,
+    implementation_revision: str,
+    execution_id: str,
+    execution_receipt_path: Path,
 ) -> str:
     # Security boundary: this is a fixed argv vector with shell=False. User-supplied
-    # paths are individual argv elements and are never interpolated into a shell string.
+    # paths and identities are individual argv elements and are never interpolated
+    # into a shell string.
     command = [
         sys.executable,
         "-m",
@@ -270,9 +273,13 @@ def _run_capture(
         str(request_path.resolve()),
         "--output-dir",
         str(output_dir.resolve()),
+        "--implementation-revision",
+        implementation_revision,
+        "--execution-id",
+        execution_id,
+        "--execution-receipt",
+        str(execution_receipt_path.resolve()),
     ]
-    if implementation_revision:
-        command.extend(["--implementation-revision", implementation_revision])
     completed = subprocess.run(
         command,
         cwd=ROOT,
@@ -295,6 +302,10 @@ def _run_capture(
         raise CaptureContractError(
             "capture CLI returned a malformed manifest SHA-256 receipt"
         )
+    if not execution_receipt_path.is_file():
+        raise CaptureContractError(
+            f"capture worker did not publish execution receipt {execution_receipt_path}"
+        )
     return lines[0]
 
 
@@ -313,6 +324,7 @@ def _preserve_failed_attempt(
     output_root: Path,
     exc: BaseException,
     repository_commit: str,
+    execution_ids: Mapping[str, str],
 ) -> Path:
     """Move an incomplete attempt aside so the requested output path can be retried."""
     marker = {
@@ -320,6 +332,7 @@ def _preserve_failed_attempt(
         "protocol_id": "GEO-CAP-001",
         "experiment_id": EXPERIMENT_ID,
         "repository_commit": repository_commit,
+        "planned_execution_ids": dict(execution_ids),
         "attempt_status": "failed_before_replay_verdict",
         "error_type": type(exc).__name__,
         "error_message": str(exc),
@@ -332,8 +345,6 @@ def _preserve_failed_attempt(
     try:
         _exclusive_write_json(output_root / "execution-failure.json", marker)
     except CaptureContractError:
-        # The partial capture directories remain useful forensic evidence even when
-        # the filesystem cannot accept the marker itself.
         pass
 
     failed_path = output_root.with_name(
@@ -344,7 +355,6 @@ def _preserve_failed_attempt(
         _fsync_directory(failed_path.parent)
         return failed_path
     except OSError:
-        # Preserve rather than delete evidence if the failure directory cannot move.
         return output_root
 
 
@@ -362,26 +372,33 @@ def observe(
             f"refusing to reuse output root {output_root}; observation evidence directories are immutable"
         )
 
-    # Bind the executing checkout before any evidence directory is created and before
-    # either worker starts. Both workers receive this exact revision, and a failed
-    # attempt records the same identity even when no run bundle was published.
     try:
         repository_commit = resolve_implementation_revision(
             implementation_revision,
             require_checkout=True,
         )
+        authenticate_tracked_tool_against_revision(
+            RUNNER_PATH,
+            repository_commit,
+        )
     except SourceIdentityError as exc:
         raise CaptureContractError(
-            f"unable to bind production observation to a clean repository revision: {exc}"
+            f"unable to bind production observation runner to a clean repository revision: {exc}"
         ) from exc
+
+    # Each physical execution receives a fresh occurrence identity while both workers
+    # continue to consume the exact same preregistered request. The worker publishes a
+    # separate receipt bound to the immutable three-file bundle; run_id/run_manifest_id
+    # therefore remain scientific/content identities rather than occurrence counters.
+    attempt_nonce = secrets.token_hex(16)
+    execution_ids = {
+        "run-a": f"{EXPERIMENT_ID}:{attempt_nonce}:run-a",
+        "run-b": f"{EXPERIMENT_ID}:{attempt_nonce}:run-b",
+    }
 
     _create_output_root_durable(output_root)
 
     try:
-        # Snapshot the already validated request before either worker starts. Both
-        # subprocesses consume this staged artifact rather than re-opening the caller's
-        # mutable source path. The semantic replay verifier later requires each bundled
-        # capture-request.json to equal this exact request including both Hub receipts.
         validated_request_path = output_root / "validated-request.json"
         _exclusive_write_json(validated_request_path, request)
         if _read_json(validated_request_path) != request:
@@ -391,11 +408,21 @@ def observe(
 
         run_a = output_root / "run-a"
         run_b = output_root / "run-b"
+        run_a_execution_receipt = output_root / "run-a-execution-receipt.json"
+        run_b_execution_receipt = output_root / "run-b-execution-receipt.json"
         manifest_a = _run_capture(
-            validated_request_path, run_a, repository_commit
+            validated_request_path,
+            run_a,
+            repository_commit,
+            execution_ids["run-a"],
+            run_a_execution_receipt,
         )
         manifest_b = _run_capture(
-            validated_request_path, run_b, repository_commit
+            validated_request_path,
+            run_b,
+            repository_commit,
+            execution_ids["run-b"],
+            run_b_execution_receipt,
         )
 
         verdict = build_replay_verdict(
@@ -403,6 +430,8 @@ def observe(
             validated_request_path=validated_request_path,
             run_a_dir=run_a,
             run_b_dir=run_b,
+            run_a_execution_receipt_path=run_a_execution_receipt,
+            run_b_execution_receipt_path=run_b_execution_receipt,
             run_a_manifest_receipt=manifest_a,
             run_b_manifest_receipt=manifest_b,
             experiment_id=EXPERIMENT_ID,
@@ -416,6 +445,8 @@ def observe(
             validated_request_path=validated_request_path,
             run_a_dir=run_a,
             run_b_dir=run_b,
+            run_a_execution_receipt_path=run_a_execution_receipt,
+            run_b_execution_receipt_path=run_b_execution_receipt,
             run_a_manifest_receipt=manifest_a,
             run_b_manifest_receipt=manifest_b,
             experiment_id=EXPERIMENT_ID,
@@ -426,6 +457,7 @@ def observe(
             output_root,
             exc,
             repository_commit,
+            execution_ids,
         )
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
             raise
@@ -444,7 +476,7 @@ def main() -> int:
 
     prepare_parser = subparsers.add_parser(
         "prepare",
-        help="ONLINE: warm exact Hub commits and write the final request with tree receipts",
+        help="ONLINE: warm exact canonical-Hub commits and write the final request with tree receipts",
     )
     prepare_parser.add_argument("--output", type=Path, required=True)
 
@@ -458,7 +490,7 @@ def main() -> int:
         "--implementation-revision",
         default=os.environ.get("QSOL_GEO_REASON_IMPLEMENTATION_REVISION"),
         help=(
-            "Optional immutable repository commit to bind explicitly. If omitted, the canonical worker requires a clean Git checkout and binds HEAD."
+            "Optional immutable repository commit to bind explicitly. If omitted, the canonical runner requires a clean Git checkout and binds HEAD."
         ),
     )
 
