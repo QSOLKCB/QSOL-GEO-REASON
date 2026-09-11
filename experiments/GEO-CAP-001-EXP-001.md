@@ -12,13 +12,15 @@ This experiment is the first real-model use of the canonical Phase 2A capture in
 
 The selected reference model and tokenizer are both:
 
-- Hugging Face repository: `openai-community/gpt2`
-- immutable revision: `607a30d783dfa663caf39e06633721c8d4cfcd7e`
+- Hugging Face repository: `Qwen/Qwen2.5-0.5B`
+- immutable revision: `060db6499f32faf8b98477b0a26969ef7d8b9987`
 - revision kind: `hf_commit`
 
 The same immutable repository revision is used for the model and tokenizer. The production lane remains `local_files_only=true`, `trust_remote_code=false`, and `quantization=none`.
 
-GPT-2 was chosen for this first observation because it is small enough for routine local CPU replay, uses a long-established Transformers architecture supported by the canonical decoder-layout resolver, and does not require remote model code. The selection is about auditability and repeatability, not state-of-the-art reasoning capability.
+Qwen2.5-0.5B was chosen for this first observation because the frozen repository is compact enough for routine local warm-up, stores the model weights as Safetensors, uses the `qwen2` Transformers architecture supported by the canonical decoder-layout resolver, and requires no remote model code. The repository's documented Transformers floor is 4.37; the project's pinned reference lane uses Transformers 4.40.2. The selection is about auditability and repeatability, not model ranking or a claim about reasoning capability.
+
+The frozen model has 24 decoder layers, so the request samples the canonical hidden-state sequence at the input, quarter-depth, half-depth, three-quarter-depth, and final base-model state.
 
 ## Frozen capture definition
 
@@ -32,7 +34,7 @@ It freezes before observation:
 - seed: `20260912`;
 - context mode: `cumulative`;
 - phase: `replayed_prefix`;
-- sampled hidden-state indices: `0, 3, 6, 9, 12`;
+- sampled hidden-state indices: `0, 6, 12, 18, 24`;
 - pooling: `step_mean`;
 - exact prefix text, step joiner, ordered step IDs, and ordered step text; and
 - `generation_used=false`.
@@ -106,7 +108,7 @@ Before the production command is actually executed, this experiment contributes 
 
 After a valid run exists, the captured hidden-state trajectory is an `OBSERVATION` of this exact model/request/backend/runtime configuration. Even a byte-identical replay does not establish:
 
-- that GPT-2 reasons geometrically;
+- that Qwen2.5-0.5B reasons geometrically;
 - that the trajectory encodes logical truth;
 - that curvature or higher-order differences are mechanisms of reasoning;
 - that the same representation is preserved by a different serving backend;
