@@ -78,6 +78,12 @@ def _require_exact_keys(value: Mapping[str, Any], expected: frozenset[str], wher
         raise CaptureContractError(f"{where} keys are not canonical: {'; '.join(parts)}")
 
 
+def _require_nonempty_string(value: Any, where: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise CaptureContractError(f"{where} must be a non-empty string")
+    return value
+
+
 def _require_sha256(value: Any, where: str) -> str:
     if (
         not isinstance(value, str)
@@ -216,8 +222,7 @@ def build_replay_verdict(
     experiment_id: str,
 ) -> dict[str, Any]:
     """Construct a verdict solely from verified immutable request/bundle artifacts."""
-    if not isinstance(experiment_id, str) or not experiment_id.strip():
-        raise CaptureContractError("experiment_id must be a non-empty string")
+    experiment_id = _require_nonempty_string(experiment_id, "experiment_id")
     state = _actual_replay_state(
         request=request,
         validated_request_path=validated_request_path,
@@ -277,7 +282,13 @@ def verify_replay_verdict(
         raise CaptureContractError("replay verdict schema_version is invalid")
     if verdict["protocol_id"] != REPLAY_VERDICT_PROTOCOL_ID:
         raise CaptureContractError("replay verdict protocol_id is invalid")
-    if verdict["experiment_id"] != experiment_id:
+    expected_experiment_id = _require_nonempty_string(
+        experiment_id, "expected experiment_id"
+    )
+    observed_experiment_id = _require_nonempty_string(
+        verdict["experiment_id"], "replay verdict experiment_id"
+    )
+    if observed_experiment_id != expected_experiment_id:
         raise CaptureContractError("replay verdict experiment_id is invalid")
     if verdict["evidence_class"] != "OBSERVATION":
         raise CaptureContractError("replay verdict evidence_class must be OBSERVATION")
@@ -312,7 +323,7 @@ def verify_replay_verdict(
         verdict["repository_commit_equal"], "repository_commit_equal"
     )
     outcome = verdict["replay_outcome"]
-    if outcome not in REPLAY_INTERPRETATIONS:
+    if not isinstance(outcome, str) or outcome not in REPLAY_INTERPRETATIONS:
         raise CaptureContractError("replay_outcome must be byte_identical or diverged")
     if verdict["interpretation"] != REPLAY_INTERPRETATIONS[outcome]:
         raise CaptureContractError("replay verdict interpretation does not match replay_outcome")
