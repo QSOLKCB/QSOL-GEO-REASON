@@ -83,10 +83,13 @@ python tools/run_first_production_observation.py observe \
   --output-root /tmp/GEO-CAP-001-EXP-001
 ```
 
-The canonical capture CLI launches a fresh isolated worker for each run. The experiment runner executes the exact request twice and creates:
+Before launching either worker, the runner validates the final request and publishes an immutable canonical snapshot named `validated-request.json`. Both workers consume that staged snapshot rather than reopening the caller's original request path. The replay verifier then requires each bundle's `capture-request.json` to equal the validated snapshot exactly, including both authenticated tree-receipt hashes.
+
+The canonical capture CLI launches a fresh isolated worker for each run. A successful experiment directory is:
 
 ```text
 GEO-CAP-001-EXP-001/
+├── validated-request.json
 ├── run-a/
 │   ├── capture-request.json
 │   ├── run-manifest.json
@@ -98,7 +101,7 @@ GEO-CAP-001-EXP-001/
 └── replay-verdict.json
 ```
 
-Both observation bundles are independently verified with the canonical semantic verifier. The replay verdict records byte-level equality for each canonical bundle file, manifest-receipt equality, trajectory-hash equality, and the observed replay outcome.
+Both observation bundles are independently verified with the canonical semantic verifier. `replay-verdict.json` is itself a machine-readable evidence artifact governed by `schemas/replay-verdict.schema.json` and the semantic verifier `qsol_geo_reason.capture_replay.verify_replay_verdict`. The verifier recomputes the validated-request artifact hash, every canonical bundle-file hash, manifest-receipt equality, trajectory-hash equality, repository-commit equality, and the resulting replay outcome before accepting the verdict.
 
 A completed divergence is retained. The tool writes `replay_outcome: "diverged"` and exits nonzero rather than tuning the request, deleting the differing run, or silently weakening the determinism requirement.
 
