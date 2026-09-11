@@ -78,8 +78,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--execution-receipt", type=Path)
     args = parser.parse_args(argv)
 
-    # Establish all pre-import trust boundaries before any production dependency or
-    # canonical capture module is imported into this interpreter.
+    receipt_reservation = None
+
+    # Establish all pre-import trust/publication boundaries before any production
+    # dependency or model backend is imported into this interpreter.
     try:
         _assert_fresh_worker_boundary()
         if (args.execution_id is None) != (args.execution_receipt is None):
@@ -90,6 +92,14 @@ def main(argv: list[str] | None = None) -> int:
             args.output_dir,
             args.execution_receipt,
         )
+        if args.execution_receipt is not None:
+            from .execution_receipt_reservation import (
+                reserve_execution_receipt_destination,
+            )
+
+            receipt_reservation = reserve_execution_receipt_destination(
+                args.execution_receipt
+            )
     except RuntimeError as exc:
         print(f"qsol-geo-capture worker: {exc}", file=sys.stderr)
         return 2
@@ -106,10 +116,14 @@ def main(argv: list[str] | None = None) -> int:
     from .capture_execution import (
         build_execution_receipt,
         verify_execution_receipt,
-        write_execution_receipt,
+    )
+    from .execution_receipt_reservation import (
+        commit_execution_receipt_reservation,
+        release_execution_receipt_reservation,
     )
     from .provenance import SourceIdentityError
 
+    bundle_published = False
     try:
         request = json.loads(args.request.read_text(encoding="utf-8"))
         validated = validate_capture_request(request)
@@ -125,10 +139,11 @@ def main(argv: list[str] | None = None) -> int:
             evidence_class="OBSERVATION",
         )
 
-        # Publish the immutable scientific bundle first. The occurrence receipt is
-        # deliberately outside that directory and is built from the exact archived
-        # bytes after publication, so its *_file_sha256 fields are literal file hashes.
+        # Publish the immutable scientific bundle first. The occurrence receipt name
+        # has already been durably reserved outside that directory, so a pre-existing
+        # or unwritable destination cannot strand a provenance-less successful bundle.
         write_capture_bundle(args.output_dir, validated, manifest, trajectory)
+        bundle_published = True
         if args.execution_id is not None:
             execution_receipt = build_execution_receipt(
                 execution_id=args.execution_id,
@@ -138,7 +153,12 @@ def main(argv: list[str] | None = None) -> int:
                 execution_receipt,
                 bundle_dir=args.output_dir,
             )
-            write_execution_receipt(args.execution_receipt, execution_receipt)
+            if receipt_reservation is None:
+                raise RuntimeError("execution receipt reservation is missing")
+            commit_execution_receipt_reservation(
+                receipt_reservation,
+                execution_receipt,
+            )
 
         print(manifest["manifest_sha256"])
         return 0
@@ -151,6 +171,8 @@ def main(argv: list[str] | None = None) -> int:
         OSError,
         RuntimeError,
     ) as exc:
+        if receipt_reservation is not None and not bundle_published:
+            release_execution_receipt_reservation(receipt_reservation)
         print(f"qsol-geo-capture worker: {exc}", file=sys.stderr)
         return 2
 

@@ -178,18 +178,95 @@ def _exclusive_write_json(path: Path, value: Mapping[str, Any]) -> None:
             pass
 
 
+def _reconstruct_request_from_preparation_receipt(
+    receipt: Mapping[str, Any],
+    *,
+    recovery_repository_commit: str,
+) -> dict[str, Any]:
+    """Reconstruct the exact final request from one valid receipt-only crash state."""
+    preparation_repository_commit = receipt.get("preparation_repository_commit")
+    if (
+        not isinstance(preparation_repository_commit, str)
+        or len(preparation_repository_commit) != 40
+        or any(ch not in "0123456789abcdef" for ch in preparation_repository_commit)
+    ):
+        raise CaptureContractError(
+            "incomplete preparation receipt has an invalid preparation repository commit"
+        )
+
+    # Recovery is only sound when the frozen experiment declaration is byte-identical
+    # both at the current clean recovery revision and at the original preparation
+    # revision recorded by the sidecar.
+    template = _load_template(recovery_repository_commit)
+    try:
+        authenticate_tracked_file_against_revision(
+            TEMPLATE,
+            preparation_repository_commit,
+        )
+    except SourceIdentityError as exc:
+        raise CaptureContractError(
+            "cannot recover incomplete preparation because the frozen template no longer "
+            f"matches the recorded preparation revision: {exc}"
+        ) from exc
+
+    final_request = json.loads(json.dumps(template))
+    model = final_request["model"]
+    for field in TREE_FIELDS:
+        model[field] = receipt.get(field)
+    final_request = _assert_exact_experiment_request(
+        final_request,
+        require_receipts=True,
+        repository_commit=recovery_repository_commit,
+    )
+    verify_preparation_receipt(
+        receipt,
+        request=final_request,
+        experiment_id=EXPERIMENT_ID,
+    )
+    return final_request
+
+
+def _recover_incomplete_preparation(
+    output: Path,
+    preparation_receipt_path: Path,
+    *,
+    recovery_repository_commit: str,
+) -> str:
+    """Finish a receipt-only interrupted preparation without repeating online warm-up."""
+    receipt = _read_json(preparation_receipt_path)
+    final_request = _reconstruct_request_from_preparation_receipt(
+        receipt,
+        recovery_repository_commit=recovery_repository_commit,
+    )
+
+    # Reauthenticate immediately before publishing the recovered request so source or
+    # template changes during recovery cannot be attributed to the earlier clean check.
+    try:
+        resolve_implementation_revision(
+            recovery_repository_commit,
+            require_checkout=True,
+        )
+        authenticate_tracked_file_against_revision(
+            TEMPLATE,
+            recovery_repository_commit,
+        )
+    except SourceIdentityError as exc:
+        raise CaptureContractError(
+            f"incomplete preparation recovery inputs changed before publication: {exc}"
+        ) from exc
+
+    _exclusive_write_json(output, final_request)
+    return sha256_json(final_request)
+
+
 def prepare(
     output: Path,
     implementation_revision: str | None = None,
 ) -> str:
-    """Online warm-up with a clean-revision provenance receipt for the final request."""
+    """Online warm-up with crash-safe recovery of a receipt-only partial publication."""
     preparation_receipt_path = _default_preparation_receipt_path(output)
     if output.exists():
         raise CaptureContractError(f"refusing to overwrite existing artifact {output}")
-    if preparation_receipt_path.exists():
-        raise CaptureContractError(
-            f"refusing to overwrite existing artifact {preparation_receipt_path}"
-        )
 
     try:
         preparation_repository_commit = resolve_implementation_revision(
@@ -200,6 +277,17 @@ def prepare(
         raise CaptureContractError(
             f"unable to bind online preparation to a clean repository revision: {exc}"
         ) from exc
+
+    # Receipt-first publication deliberately guarantees that the final request never
+    # appears without preparation provenance. If an abrupt process/host failure leaves
+    # only the durable sidecar, complete the missing request deterministically from the
+    # authenticated template and receipt instead of repeating the Hub warm-up.
+    if preparation_receipt_path.exists():
+        return _recover_incomplete_preparation(
+            output,
+            preparation_receipt_path,
+            recovery_repository_commit=preparation_repository_commit,
+        )
 
     # The preregistered experiment declaration is outside src/, so authenticate its
     # literal working-tree bytes against the same bound revision before trusting it.
