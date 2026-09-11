@@ -54,11 +54,11 @@ The authenticated package orchestrator enforces that boundary by comparing the f
 
 ## Execution procedure
 
-Use the frozen Python 3.11 capture-reference lane from a clean checkout. Create an isolated Python 3.11 environment, install the pinned CPU PyTorch build, then install the capture extra under the repository constraints:
+Use the frozen Python 3.11 capture-reference lane from a clean checkout. The virtual environment must be created **outside the repository checkout** so environment files cannot dirty the source tree that preparation later authenticates. Create the external environment, install the pinned CPU PyTorch build, then install the capture extra under the repository constraints:
 
 ```bash
-python3.11 -m venv .venv-capture-py311
-. .venv-capture-py311/bin/activate
+python3.11 -m venv /tmp/qsol-geo-reason-capture-py311
+. /tmp/qsol-geo-reason-capture-py311/bin/activate
 python -m pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.2.2'
 python -m pip install \
   -c constraints/capture-reference-py311.txt \
@@ -67,7 +67,7 @@ python -m pip install \
 python --version  # must report Python 3.11.x
 ```
 
-`constraints/capture-reference-py311.txt` is the authoritative frozen dependency set for this reference lane. Do not substitute a different compatible dependency resolution and still describe the run as the selected reference environment.
+`constraints/capture-reference-py311.txt` is the authoritative frozen dependency set for this reference lane. Do not substitute a different compatible dependency resolution and still describe the run as the selected reference environment. Do not create the virtual environment inside the checkout: `prepare` requires the repository to remain clean and will reject source-relevant untracked files.
 
 ### 1. Online trusted preparation
 
