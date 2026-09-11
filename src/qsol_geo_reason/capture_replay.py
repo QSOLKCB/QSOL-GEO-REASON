@@ -12,6 +12,7 @@ from .capture_verify import verify_capture_bundle
 
 REPLAY_VERDICT_SCHEMA_VERSION = "1.0.0"
 REPLAY_VERDICT_PROTOCOL_ID = "GEO-CAP-001"
+REPLAY_REPLICATION_STATUS = "not_attempted"
 REPLAY_BUNDLE_FILES = (
     "capture-request.json",
     "run-manifest.json",
@@ -32,6 +33,7 @@ _VERDICT_KEYS = frozenset(
         "protocol_id",
         "experiment_id",
         "evidence_class",
+        "replication_status",
         "request_sha256",
         "validated_request_artifact_sha256",
         "run_a_manifest_receipt_sha256",
@@ -52,9 +54,13 @@ def _read_json(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise CaptureContractError(f"unable to read replay evidence JSON from {path}: {exc}") from exc
+        raise CaptureContractError(
+            f"unable to read replay evidence JSON from {path}: {exc}"
+        ) from exc
     if not isinstance(value, dict):
-        raise CaptureContractError(f"replay evidence file {path} must contain a JSON object")
+        raise CaptureContractError(
+            f"replay evidence file {path} must contain a JSON object"
+        )
     return value
 
 
@@ -62,10 +68,14 @@ def _sha256_file(path: Path) -> str:
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError as exc:
-        raise CaptureContractError(f"unable to hash replay evidence file {path}: {exc}") from exc
+        raise CaptureContractError(
+            f"unable to hash replay evidence file {path}: {exc}"
+        ) from exc
 
 
-def _require_exact_keys(value: Mapping[str, Any], expected: frozenset[str], where: str) -> None:
+def _require_exact_keys(
+    value: Mapping[str, Any], expected: frozenset[str], where: str
+) -> None:
     actual = set(value)
     missing = sorted(expected - actual)
     extra = sorted(actual - expected)
@@ -75,7 +85,9 @@ def _require_exact_keys(value: Mapping[str, Any], expected: frozenset[str], wher
             parts.append("missing=" + ",".join(missing))
         if extra:
             parts.append("extra=" + ",".join(extra))
-        raise CaptureContractError(f"{where} keys are not canonical: {'; '.join(parts)}")
+        raise CaptureContractError(
+            f"{where} keys are not canonical: {'; '.join(parts)}"
+        )
 
 
 def _require_nonempty_string(value: Any, where: str) -> str:
@@ -90,7 +102,9 @@ def _require_sha256(value: Any, where: str) -> str:
         or len(value) != 64
         or any(character not in "0123456789abcdef" for character in value)
     ):
-        raise CaptureContractError(f"{where} must be a lowercase 64-hex SHA-256")
+        raise CaptureContractError(
+            f"{where} must be a lowercase 64-hex SHA-256"
+        )
     return value
 
 
@@ -144,7 +158,9 @@ def _load_verified_observation_bundle(
         )
     verify_capture_bundle(request, manifest, trajectory)
     if trajectory.get("evidence_class") != "OBSERVATION":
-        raise CaptureContractError(f"{directory} is not an OBSERVATION capture bundle")
+        raise CaptureContractError(
+            f"{directory} is not an OBSERVATION capture bundle"
+        )
     return request, manifest, trajectory
 
 
@@ -164,8 +180,12 @@ def _actual_replay_state(
         )
     request_artifact_sha256 = _sha256_file(validated_request_path)
 
-    _, manifest_a, trajectory_a = _load_verified_observation_bundle(run_a_dir, request)
-    _, manifest_b, trajectory_b = _load_verified_observation_bundle(run_b_dir, request)
+    _, manifest_a, trajectory_a = _load_verified_observation_bundle(
+        run_a_dir, request
+    )
+    _, manifest_b, trajectory_b = _load_verified_observation_bundle(
+        run_b_dir, request
+    )
 
     manifest_a_sha = _require_sha256(
         manifest_a.get("manifest_sha256"), "run-a manifest.manifest_sha256"
@@ -173,11 +193,21 @@ def _actual_replay_state(
     manifest_b_sha = _require_sha256(
         manifest_b.get("manifest_sha256"), "run-b manifest.manifest_sha256"
     )
-    if _require_sha256(run_a_manifest_receipt, "run-a CLI manifest receipt") != manifest_a_sha:
+    if (
+        _require_sha256(
+            run_a_manifest_receipt, "run-a CLI manifest receipt"
+        )
+        != manifest_a_sha
+    ):
         raise CaptureContractError(
             "run-a CLI manifest receipt does not match run-manifest.json"
         )
-    if _require_sha256(run_b_manifest_receipt, "run-b CLI manifest receipt") != manifest_b_sha:
+    if (
+        _require_sha256(
+            run_b_manifest_receipt, "run-b CLI manifest receipt"
+        )
+        != manifest_b_sha
+    ):
         raise CaptureContractError(
             "run-b CLI manifest receipt does not match run-manifest.json"
         )
@@ -190,10 +220,12 @@ def _actual_replay_state(
     }
     manifest_equal = manifest_a_sha == manifest_b_sha
     trajectory_equal = (
-        trajectory_a.get("trajectory_sha256") == trajectory_b.get("trajectory_sha256")
+        trajectory_a.get("trajectory_sha256")
+        == trajectory_b.get("trajectory_sha256")
     )
     repository_equal = (
-        manifest_a.get("repository_commit") == manifest_b.get("repository_commit")
+        manifest_a.get("repository_commit")
+        == manifest_b.get("repository_commit")
     )
     byte_identical = all(equality.values()) and manifest_equal
 
@@ -237,8 +269,11 @@ def build_replay_verdict(
         "protocol_id": REPLAY_VERDICT_PROTOCOL_ID,
         "experiment_id": experiment_id,
         "evidence_class": "OBSERVATION",
+        "replication_status": REPLAY_REPLICATION_STATUS,
         "request_sha256": sha256_json(request),
-        "validated_request_artifact_sha256": state["request_artifact_sha256"],
+        "validated_request_artifact_sha256": state[
+            "request_artifact_sha256"
+        ],
         "run_a_manifest_receipt_sha256": state["manifest_a_sha256"],
         "run_b_manifest_receipt_sha256": state["manifest_b_sha256"],
         "run_a_bundle_file_sha256": state["receipts_a"],
@@ -279,7 +314,9 @@ def verify_replay_verdict(
         raise CaptureContractError("replay verdict must be an object")
     _require_exact_keys(verdict, _VERDICT_KEYS, "replay verdict")
     if verdict["schema_version"] != REPLAY_VERDICT_SCHEMA_VERSION:
-        raise CaptureContractError("replay verdict schema_version is invalid")
+        raise CaptureContractError(
+            "replay verdict schema_version is invalid"
+        )
     if verdict["protocol_id"] != REPLAY_VERDICT_PROTOCOL_ID:
         raise CaptureContractError("replay verdict protocol_id is invalid")
     expected_experiment_id = _require_nonempty_string(
@@ -291,9 +328,17 @@ def verify_replay_verdict(
     if observed_experiment_id != expected_experiment_id:
         raise CaptureContractError("replay verdict experiment_id is invalid")
     if verdict["evidence_class"] != "OBSERVATION":
-        raise CaptureContractError("replay verdict evidence_class must be OBSERVATION")
+        raise CaptureContractError(
+            "replay verdict evidence_class must be OBSERVATION"
+        )
+    if verdict["replication_status"] != REPLAY_REPLICATION_STATUS:
+        raise CaptureContractError(
+            "replay verdict replication_status must be not_attempted"
+        )
 
-    request_sha = _require_sha256(verdict["request_sha256"], "request_sha256")
+    request_sha = _require_sha256(
+        verdict["request_sha256"], "request_sha256"
+    )
     request_artifact_sha = _require_sha256(
         verdict["validated_request_artifact_sha256"],
         "validated_request_artifact_sha256",
@@ -324,9 +369,13 @@ def verify_replay_verdict(
     )
     outcome = verdict["replay_outcome"]
     if not isinstance(outcome, str) or outcome not in REPLAY_INTERPRETATIONS:
-        raise CaptureContractError("replay_outcome must be byte_identical or diverged")
+        raise CaptureContractError(
+            "replay_outcome must be byte_identical or diverged"
+        )
     if verdict["interpretation"] != REPLAY_INTERPRETATIONS[outcome]:
-        raise CaptureContractError("replay verdict interpretation does not match replay_outcome")
+        raise CaptureContractError(
+            "replay verdict interpretation does not match replay_outcome"
+        )
 
     state = _actual_replay_state(
         request=request,
@@ -338,7 +387,9 @@ def verify_replay_verdict(
     )
     expected = {
         "request_sha256": sha256_json(request),
-        "validated_request_artifact_sha256": state["request_artifact_sha256"],
+        "validated_request_artifact_sha256": state[
+            "request_artifact_sha256"
+        ],
         "run_a_manifest_receipt_sha256": state["manifest_a_sha256"],
         "run_b_manifest_receipt_sha256": state["manifest_b_sha256"],
         "run_a_bundle_file_sha256": state["receipts_a"],
@@ -373,6 +424,7 @@ def verify_replay_verdict(
 
 __all__ = [
     "REPLAY_BUNDLE_FILES",
+    "REPLAY_REPLICATION_STATUS",
     "REPLAY_VERDICT_PROTOCOL_ID",
     "REPLAY_VERDICT_SCHEMA_VERSION",
     "build_replay_verdict",
