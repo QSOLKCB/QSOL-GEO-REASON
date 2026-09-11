@@ -77,6 +77,7 @@ class CaptureArchitectureRemediationTests(unittest.TestCase):
         self.assertIn("unexpected", verifier)
         self.assertIn("mismatched", verifier)
         self.assertIn("capture-reference-py311.txt", verifier)
+        self.assertIn("Hugging Face Hub package tree", verifier)
 
         integration = (
             ROOT / "tools" / "run_capture_production_integration.py"
@@ -98,7 +99,10 @@ class CaptureArchitectureRemediationTests(unittest.TestCase):
         threat_model = (
             ROOT / "docs" / "GEO-CAP-001-THREAT-MODEL.md"
         ).read_text(encoding="utf-8")
-        self.assertIn("trusted local CLI that launches a fresh isolated Python worker", threat_model)
+        self.assertIn(
+            "trusted local CLI that launches fresh isolated Python workers",
+            threat_model,
+        )
         self.assertIn("arbitrary hostile mutation inside an already-running embedding process", threat_model)
         self.assertIn("not a sandbox", threat_model)
         self.assertIn("capture-reference-py311.txt", threat_model)
