@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import importlib.util
 import io
 import json
 import sys
@@ -10,6 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from qsol_geo_reason import first_production_observation as TOOL
 from qsol_geo_reason.capture_common import (
     CaptureBackendUnavailable,
     CaptureContractError,
@@ -19,10 +19,6 @@ from qsol_geo_reason.provenance import SourceIdentityError
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "tools" / "run_first_production_observation.py"
-SPEC = importlib.util.spec_from_file_location("qsol_first_observation_tool", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
-TOOL = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(TOOL)
 
 
 class FirstProductionObservationTests(unittest.TestCase):
@@ -31,6 +27,14 @@ class FirstProductionObservationTests(unittest.TestCase):
         request["model"]["revision_tree_sha256"] = "1" * 64
         request["model"]["tokenizer_revision_tree_sha256"] = "2" * 64
         return TOOL._assert_exact_experiment_request(request, require_receipts=True)
+
+    def test_tools_entrypoint_contains_no_evidence_orchestration(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('"qsol_geo_reason.first_production_observation"', source)
+        self.assertIn("os.execv", source)
+        self.assertNotIn("prepare_tree_receipts", source)
+        self.assertNotIn("build_replay_verdict", source)
+        self.assertNotIn("subprocess.run", source)
 
     def test_template_freezes_small_cpu_reference_model_and_capture_definition(self) -> None:
         request = TOOL._load_template()
@@ -56,7 +60,6 @@ class FirstProductionObservationTests(unittest.TestCase):
         final = self._materialized_request()
         self.assertEqual(final["model"]["revision_tree_sha256"], "1" * 64)
         self.assertEqual(final["model"]["tokenizer_revision_tree_sha256"], "2" * 64)
-
         final["capture"]["layers"] = [0, 12, 24]
         with self.assertRaises(CaptureContractError):
             TOOL._assert_exact_experiment_request(final, require_receipts=True)
@@ -92,22 +95,16 @@ class FirstProductionObservationTests(unittest.TestCase):
             base = Path(tmp)
             output_root = base / "level-a" / "level-b" / "observation"
             synced: list[Path] = []
-
             with mock.patch.object(
                 TOOL,
                 "_fsync_directory",
                 side_effect=lambda path: synced.append(Path(path)),
             ):
                 TOOL._create_output_root_durable(output_root)
-
             self.assertTrue(output_root.is_dir())
             self.assertEqual(
                 synced,
-                [
-                    base,
-                    base / "level-a",
-                    base / "level-a" / "level-b",
-                ],
+                [base, base / "level-a", base / "level-a" / "level-b"],
             )
 
     def test_observe_snapshots_request_and_assigns_distinct_execution_ids(self) -> None:
@@ -120,20 +117,14 @@ class FirstProductionObservationTests(unittest.TestCase):
             seen_paths: list[Path] = []
             seen_revisions: list[str] = []
             seen_execution_ids: list[str] = []
-            seen_execution_receipts: list[Path] = []
+            seen_receipts: list[Path] = []
             repository_commit = "f" * 40
 
-            def fake_run(
-                path: Path,
-                output: Path,
-                revision: str,
-                execution_id: str,
-                execution_receipt_path: Path,
-            ) -> str:
+            def fake_run(path, output, revision, execution_id, execution_receipt_path):
                 seen_paths.append(path)
                 seen_revisions.append(revision)
                 seen_execution_ids.append(execution_id)
-                seen_execution_receipts.append(execution_receipt_path)
+                seen_receipts.append(execution_receipt_path)
                 if len(seen_paths) == 1:
                     changed = json.loads(json.dumps(original))
                     changed["model"]["revision_tree_sha256"] = "9" * 64
@@ -147,11 +138,6 @@ class FirstProductionObservationTests(unittest.TestCase):
                     "resolve_implementation_revision",
                     return_value=repository_commit,
                 ) as resolver,
-                mock.patch.object(
-                    TOOL,
-                    "authenticate_tracked_tool_against_revision",
-                    return_value="1" * 40,
-                ) as authenticate_runner,
                 mock.patch.object(TOOL, "_run_capture", side_effect=fake_run),
                 mock.patch.object(TOOL, "build_replay_verdict", return_value=verdict),
                 mock.patch.object(TOOL, "verify_replay_verdict", return_value=verdict),
@@ -159,66 +145,50 @@ class FirstProductionObservationTests(unittest.TestCase):
                 observed, status = TOOL.observe(request_path, output_root, None)
 
             resolver.assert_called_once_with(None, require_checkout=True)
-            authenticate_runner.assert_called_once_with(TOOL.RUNNER_PATH, repository_commit)
             self.assertEqual(status, 0)
             self.assertEqual(observed, verdict)
-            self.assertEqual(len(seen_paths), 2)
             self.assertEqual(seen_paths[0], seen_paths[1])
+            self.assertNotEqual(seen_paths[0], request_path)
             self.assertEqual(seen_revisions, [repository_commit, repository_commit])
             self.assertNotEqual(seen_execution_ids[0], seen_execution_ids[1])
             self.assertTrue(seen_execution_ids[0].endswith(":run-a"))
             self.assertTrue(seen_execution_ids[1].endswith(":run-b"))
             self.assertEqual(
-                seen_execution_receipts,
+                seen_receipts,
                 [
                     output_root / "run-a-execution-receipt.json",
                     output_root / "run-b-execution-receipt.json",
                 ],
             )
-            self.assertNotEqual(seen_paths[0], request_path)
             snapshot = json.loads(
                 (output_root / "validated-request.json").read_text(encoding="utf-8")
             )
             self.assertEqual(snapshot, original)
             self.assertNotEqual(json.loads(request_path.read_text(encoding="utf-8")), original)
 
-    def test_failed_observation_is_bound_to_revision_execution_ids_and_retry_path(self) -> None:
+    def test_failed_observation_preserves_revision_and_planned_execution_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             request_path = directory / "request.json"
-            request_path.write_text(
-                json.dumps(self._materialized_request()), encoding="utf-8"
-            )
+            request_path.write_text(json.dumps(self._materialized_request()), encoding="utf-8")
             output_root = directory / "missing-parent" / "observation"
             repository_commit = "e" * 40
-
             with (
                 mock.patch.object(
                     TOOL,
                     "resolve_implementation_revision",
                     return_value=repository_commit,
-                ) as resolver,
-                mock.patch.object(
-                    TOOL,
-                    "authenticate_tracked_tool_against_revision",
-                    return_value="2" * 40,
-                ) as authenticate_runner,
+                ),
                 mock.patch.object(
                     TOOL,
                     "_run_capture",
                     side_effect=CaptureContractError("transient backend failure"),
                 ) as run_capture,
             ):
-                with self.assertRaisesRegex(
-                    CaptureContractError, "incomplete evidence preserved"
-                ):
+                with self.assertRaisesRegex(CaptureContractError, "incomplete evidence preserved"):
                     TOOL.observe(request_path, output_root, None)
-
-            resolver.assert_called_once_with(None, require_checkout=True)
-            authenticate_runner.assert_called_once_with(TOOL.RUNNER_PATH, repository_commit)
             self.assertEqual(run_capture.call_count, 1)
             self.assertEqual(run_capture.call_args.args[2], repository_commit)
-            self.assertTrue(run_capture.call_args.args[3].endswith(":run-a"))
             self.assertFalse(output_root.exists())
             failed = list((directory / "missing-parent").glob("observation.failed-*"))
             self.assertEqual(len(failed), 1)
@@ -238,50 +208,15 @@ class FirstProductionObservationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             request_path = directory / "request.json"
-            request_path.write_text(
-                json.dumps(self._materialized_request()), encoding="utf-8"
-            )
+            request_path.write_text(json.dumps(self._materialized_request()), encoding="utf-8")
             output_root = directory / "observation"
-
             with mock.patch.object(
                 TOOL,
                 "resolve_implementation_revision",
                 side_effect=SourceIdentityError("checkout is dirty"),
             ):
-                with self.assertRaisesRegex(
-                    CaptureContractError, "unable to bind production observation runner"
-                ):
+                with self.assertRaisesRegex(CaptureContractError, "unable to bind production observation"):
                     TOOL.observe(request_path, output_root, None)
-
-            self.assertFalse(output_root.exists())
-
-    def test_runner_authentication_failure_creates_no_attempt_directory(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            directory = Path(tmp)
-            request_path = directory / "request.json"
-            request_path.write_text(
-                json.dumps(self._materialized_request()), encoding="utf-8"
-            )
-            output_root = directory / "observation"
-            repository_commit = "d" * 40
-
-            with (
-                mock.patch.object(
-                    TOOL,
-                    "resolve_implementation_revision",
-                    return_value=repository_commit,
-                ),
-                mock.patch.object(
-                    TOOL,
-                    "authenticate_tracked_tool_against_revision",
-                    side_effect=SourceIdentityError("runner bytes differ from HEAD"),
-                ),
-            ):
-                with self.assertRaisesRegex(
-                    CaptureContractError, "unable to bind production observation runner"
-                ):
-                    TOOL.observe(request_path, output_root, None)
-
             self.assertFalse(output_root.exists())
 
     def test_prepare_missing_capture_dependency_uses_argparse_error(self) -> None:
@@ -292,19 +227,12 @@ class FirstProductionObservationTests(unittest.TestCase):
                 mock.patch.object(
                     TOOL,
                     "prepare_tree_receipts",
-                    side_effect=CaptureBackendUnavailable(
-                        "install qsol-geo-reason[capture]"
-                    ),
-                ),
-                mock.patch.object(
-                    sys,
-                    "argv",
-                    [str(SCRIPT), "prepare", "--output", str(output)],
+                    side_effect=CaptureBackendUnavailable("install qsol-geo-reason[capture]"),
                 ),
                 contextlib.redirect_stderr(stderr),
             ):
                 with self.assertRaises(SystemExit) as raised:
-                    TOOL.main()
+                    TOOL.main(["prepare", "--output", str(output)])
             self.assertEqual(raised.exception.code, 2)
             self.assertIn("install qsol-geo-reason[capture]", stderr.getvalue())
             self.assertFalse(output.exists())
