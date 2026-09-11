@@ -43,6 +43,11 @@ _TRANSPORT_ENV_NAMES = frozenset(
         "TRANSFORMERS_OFFLINE",
     }
 )
+_HUB_PACKAGE_FIELDS = (
+    "huggingface_hub_package_file_count",
+    "huggingface_hub_package_receipt_sha256",
+)
+_HUB_EVIDENCE_FIELDS = (*_core.TREE_FIELDS, *_HUB_PACKAGE_FIELDS)
 _HUB_BOOTSTRAP = (
     "import sys;"
     "src=sys.argv[1];"
@@ -104,8 +109,8 @@ def _literal_site_package_paths() -> list[str]:
     return paths
 
 
-def _isolated_prepare_tree_receipts(request: Mapping[str, Any]) -> dict[str, str]:
-    """Perform online Hub work in a fresh -I -S child with package-content authentication."""
+def _isolated_prepare_hub_evidence(request: Mapping[str, Any]) -> dict[str, Any]:
+    """Perform online Hub work in a fresh -I -S child and return content-bound evidence."""
     command = [
         sys.executable,
         "-I",
@@ -142,11 +147,11 @@ def _isolated_prepare_tree_receipts(request: Mapping[str, Any]) -> dict[str, str
         raise CaptureContractError(
             "isolated Hub preparation returned malformed JSON"
         ) from exc
-    if not isinstance(value, dict) or set(value) != set(_core.TREE_FIELDS):
+    if not isinstance(value, dict) or set(value) != set(_HUB_EVIDENCE_FIELDS):
         raise CaptureContractError(
-            "isolated Hub preparation returned a noncanonical receipt set"
+            "isolated Hub preparation returned a noncanonical evidence set"
         )
-    receipts: dict[str, str] = {}
+    evidence: dict[str, Any] = {}
     for field in _core.TREE_FIELDS:
         receipt = value.get(field)
         if (
@@ -157,8 +162,30 @@ def _isolated_prepare_tree_receipts(request: Mapping[str, Any]) -> dict[str, str
             raise CaptureContractError(
                 f"isolated Hub preparation returned invalid {field}"
             )
-        receipts[field] = receipt
-    return receipts
+        evidence[field] = receipt
+    package_count = value.get("huggingface_hub_package_file_count")
+    if isinstance(package_count, bool) or not isinstance(package_count, int) or package_count < 1:
+        raise CaptureContractError(
+            "isolated Hub preparation returned invalid Hugging Face Hub package file count"
+        )
+    package_receipt = value.get("huggingface_hub_package_receipt_sha256")
+    if (
+        not isinstance(package_receipt, str)
+        or len(package_receipt) != 64
+        or any(ch not in "0123456789abcdef" for ch in package_receipt)
+    ):
+        raise CaptureContractError(
+            "isolated Hub preparation returned invalid Hugging Face Hub package receipt"
+        )
+    evidence["huggingface_hub_package_file_count"] = package_count
+    evidence["huggingface_hub_package_receipt_sha256"] = package_receipt
+    return evidence
+
+
+def _isolated_prepare_tree_receipts(request: Mapping[str, Any]) -> dict[str, str]:
+    """Compatibility surface returning only the two request-ready tree receipts."""
+    evidence = _isolated_prepare_hub_evidence(request)
+    return {field: evidence[field] for field in _core.TREE_FIELDS}
 
 
 def _authenticate_external_inputs(revision: str) -> None:
@@ -233,7 +260,13 @@ def prepare(
 
     reference_environment = _core.verify_current_reference_environment()
     template = _core._load_template(preparation_repository_commit)
-    receipts = _core.prepare_tree_receipts(template)
+    hub_evidence = _core.prepare_hub_evidence(template)
+    for field in _HUB_PACKAGE_FIELDS:
+        if hub_evidence[field] != reference_environment[field]:
+            raise CaptureContractError(
+                "isolated Hub package provenance does not match the authenticated reference environment receipt"
+            )
+    receipts = {field: hub_evidence[field] for field in _core.TREE_FIELDS}
     final_request = json.loads(json.dumps(template))
     final_request["model"].update(receipts)
     final_request = _core._assert_exact_experiment_request(
@@ -416,6 +449,7 @@ _core.LAUNCHER = LAUNCHER
 _core.REFERENCE_LOCK = REFERENCE_LOCK
 _core.authenticate_tracked_tool_against_revision = authenticate_tracked_tool_against_revision
 _core.verify_current_reference_environment = verify_current_reference_environment
+_core.prepare_hub_evidence = _isolated_prepare_hub_evidence
 _core.prepare_tree_receipts = _isolated_prepare_tree_receipts
 _core._recover_incomplete_preparation = _recover_incomplete_preparation
 _core.prepare = prepare
