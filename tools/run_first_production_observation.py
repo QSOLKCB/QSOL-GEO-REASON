@@ -5,9 +5,9 @@ The experiment has two deliberately separate stages:
 1. ``prepare`` is the only online stage. It warms the exact immutable Hugging Face
    snapshot(s), creates authenticated QSOL Hub-tree receipts, injects those receipts
    into the preregistered request template, and writes one final request.
-2. ``observe`` is offline. It executes that exact final request twice through the
-   canonical fresh-worker production backend, verifies both bundles, and records a
-   replay verdict without rewriting either observation bundle.
+2. ``observe`` is offline. It snapshots the validated final request, executes that
+   exact snapshot twice through the canonical fresh-worker production backend,
+   verifies both bundles, and records a machine-verifiable replay verdict.
 
 A replay divergence is retained as a result. A failed attempt is moved to a uniquely
 named failure directory instead of occupying the requested final output path. This tool
@@ -17,7 +17,6 @@ trajectory as mechanism evidence.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import secrets
@@ -27,20 +26,23 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from qsol_geo_reason.canonical import sha256_json
-from qsol_geo_reason.capture import verify_capture_bundle
-from qsol_geo_reason.capture_common import CaptureContractError
+from qsol_geo_reason.capture_common import (
+    CaptureBackendUnavailable,
+    CaptureContractError,
+)
 from qsol_geo_reason.capture_hub_tree import prepare_tree_receipts
+from qsol_geo_reason.capture_replay import (
+    REPLAY_BUNDLE_FILES,
+    build_replay_verdict,
+    verify_replay_verdict,
+)
 from qsol_geo_reason.capture_validation import validate_capture_request
 
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPERIMENT_ID = "GEO-CAP-001-EXP-001"
 TEMPLATE = ROOT / "experiments" / "GEO-CAP-001-EXP-001.request.template.json"
-BUNDLE_FILES = (
-    "capture-request.json",
-    "run-manifest.json",
-    "captured-trajectory.json",
-)
+BUNDLE_FILES = REPLAY_BUNDLE_FILES
 TREE_FIELDS = ("revision_tree_sha256", "tokenizer_revision_tree_sha256")
 
 
@@ -49,10 +51,6 @@ def _canonical_bytes(value: Any) -> bytes:
         json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         + "\n"
     ).encode("utf-8")
-
-
-def _sha256_bytes(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -126,13 +124,7 @@ def _unique_sibling(path: Path, marker: str) -> Path:
 
 
 def _exclusive_write_json(path: Path, value: Mapping[str, Any]) -> None:
-    """Write durable JSON and publish it only after the complete payload is synced.
-
-    A sibling temporary file is fully written and fsynced first. A hard-link publish
-    provides no-replace semantics: an existing destination can never be overwritten.
-    Any ordinary pre-publication failure removes the temporary file, so a later retry
-    is not blocked by a partial destination.
-    """
+    """Stage, fsync, and publish immutable JSON with no-replace semantics."""
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         raise CaptureContractError(f"refusing to overwrite existing artifact {path}")
@@ -241,43 +233,13 @@ def _run_capture(
     return lines[0]
 
 
-def _read_bundle(
-    directory: Path,
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-    return tuple(  # type: ignore[return-value]
-        _read_json(directory / name) for name in BUNDLE_FILES
-    )
-
-
-def _verify_observation_bundle(
-    directory: Path,
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-    request, manifest, trajectory = _read_bundle(directory)
-    _assert_exact_experiment_request(request, require_receipts=True)
-    verify_capture_bundle(request, manifest, trajectory)
-    if trajectory.get("evidence_class") != "OBSERVATION":
-        raise CaptureContractError(f"{directory} did not emit OBSERVATION evidence")
-    return request, manifest, trajectory
-
-
-def _file_receipts(directory: Path) -> dict[str, str]:
-    receipts: dict[str, str] = {}
-    for name in BUNDLE_FILES:
-        try:
-            payload = (directory / name).read_bytes()
-        except OSError as exc:
-            raise CaptureContractError(
-                f"unable to hash {directory / name}: {exc}"
-            ) from exc
-        receipts[name] = _sha256_bytes(payload)
-    return receipts
-
-
 def _completed_run_directories(output_root: Path) -> list[str]:
     completed: list[str] = []
     for name in ("run-a", "run-b"):
         directory = output_root / name
-        if directory.is_dir() and all((directory / item).is_file() for item in BUNDLE_FILES):
+        if directory.is_dir() and all(
+            (directory / item).is_file() for item in BUNDLE_FILES
+        ):
             completed.append(name)
     return completed
 
@@ -300,8 +262,8 @@ def _preserve_failed_attempt(output_root: Path, exc: BaseException) -> Path:
     try:
         _exclusive_write_json(output_root / "execution-failure.json", marker)
     except CaptureContractError:
-        # The partial capture directories themselves remain useful forensic evidence
-        # even if a full filesystem cannot accept the marker.
+        # The partial capture directories remain useful forensic evidence even when
+        # the filesystem cannot accept the marker itself.
         pass
 
     failed_path = output_root.with_name(
@@ -321,7 +283,7 @@ def observe(
     output_root: Path,
     implementation_revision: str | None,
 ) -> tuple[dict[str, Any], int]:
-    """Run two offline canonical observations and preserve the replay outcome."""
+    """Run two offline canonical observations from one immutable request snapshot."""
     request = _assert_exact_experiment_request(
         _read_json(request_path), require_receipts=True
     )
@@ -332,49 +294,49 @@ def observe(
     output_root.mkdir(parents=True, exist_ok=False)
 
     try:
+        # Snapshot the already validated request before either worker starts. Both
+        # subprocesses consume this staged artifact rather than re-opening the caller's
+        # mutable source path. The semantic replay verifier later requires each bundled
+        # capture-request.json to equal this exact request including both Hub receipts.
+        validated_request_path = output_root / "validated-request.json"
+        _exclusive_write_json(validated_request_path, request)
+        if _read_json(validated_request_path) != request:
+            raise CaptureContractError(
+                "validated request snapshot changed immediately after publication"
+            )
+
         run_a = output_root / "run-a"
         run_b = output_root / "run-b"
-        manifest_a = _run_capture(request_path, run_a, implementation_revision)
-        manifest_b = _run_capture(request_path, run_b, implementation_revision)
+        manifest_a = _run_capture(
+            validated_request_path, run_a, implementation_revision
+        )
+        manifest_b = _run_capture(
+            validated_request_path, run_b, implementation_revision
+        )
 
-        _, first_manifest, first_trajectory = _verify_observation_bundle(run_a)
-        _, second_manifest, second_trajectory = _verify_observation_bundle(run_b)
-        receipts_a = _file_receipts(run_a)
-        receipts_b = _file_receipts(run_b)
-        equality = {
-            name: receipts_a[name] == receipts_b[name] for name in BUNDLE_FILES
-        }
-        byte_identical = all(equality.values()) and manifest_a == manifest_b
-
-        verdict: dict[str, Any] = {
-            "schema_version": "1.0.0",
-            "protocol_id": "GEO-CAP-001",
-            "experiment_id": EXPERIMENT_ID,
-            "evidence_class": "OBSERVATION",
-            "request_sha256": sha256_json(request),
-            "run_a_manifest_receipt_sha256": manifest_a,
-            "run_b_manifest_receipt_sha256": manifest_b,
-            "run_a_bundle_file_sha256": receipts_a,
-            "run_b_bundle_file_sha256": receipts_b,
-            "bundle_file_byte_equality": equality,
-            "manifest_receipts_equal": manifest_a == manifest_b,
-            "trajectory_sha256_equal": (
-                first_trajectory.get("trajectory_sha256")
-                == second_trajectory.get("trajectory_sha256")
-            ),
-            "repository_commit_equal": (
-                first_manifest.get("repository_commit")
-                == second_manifest.get("repository_commit")
-            ),
-            "replay_outcome": "byte_identical" if byte_identical else "diverged",
-            "interpretation": (
-                "Deterministic replay established for this exact request/backend/runtime pair."
-                if byte_identical
-                else "Deterministic replay was not established. Preserve both observations and investigate the recorded divergence; do not tune or discard it."
-            ),
-        }
-        _exclusive_write_json(output_root / "replay-verdict.json", verdict)
-        return verdict, 0 if byte_identical else 2
+        verdict = build_replay_verdict(
+            request=request,
+            validated_request_path=validated_request_path,
+            run_a_dir=run_a,
+            run_b_dir=run_b,
+            run_a_manifest_receipt=manifest_a,
+            run_b_manifest_receipt=manifest_b,
+            experiment_id=EXPERIMENT_ID,
+        )
+        verdict_path = output_root / "replay-verdict.json"
+        _exclusive_write_json(verdict_path, verdict)
+        persisted = _read_json(verdict_path)
+        verify_replay_verdict(
+            persisted,
+            request=request,
+            validated_request_path=validated_request_path,
+            run_a_dir=run_a,
+            run_b_dir=run_b,
+            run_a_manifest_receipt=manifest_a,
+            run_b_manifest_receipt=manifest_b,
+            experiment_id=EXPERIMENT_ID,
+        )
+        return persisted, 0 if persisted["replay_outcome"] == "byte_identical" else 2
     except BaseException as exc:
         failed_path = _preserve_failed_attempt(output_root, exc)
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
@@ -425,7 +387,13 @@ def main() -> int:
         )
         print(json.dumps(verdict, sort_keys=True, separators=(",", ":")))
         return status
-    except (CaptureContractError, OSError, UnicodeError, json.JSONDecodeError) as exc:
+    except (
+        CaptureContractError,
+        CaptureBackendUnavailable,
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+    ) as exc:
         parser.error(str(exc))
     return 2
 
