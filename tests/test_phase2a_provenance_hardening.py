@@ -59,7 +59,7 @@ class Phase2AProvenanceHardeningTests(unittest.TestCase):
         self.assertEqual(environment["QSOL_SAFE_SENTINEL"], "keep-me")
         self.assertEqual(environment["PATH"], launcher._trusted_system_path())
         for key in hostile:
-            if key != "QSOL_SAFE_SENTINEL":
+            if key not in {"QSOL_SAFE_SENTINEL", "PATH"}:
                 self.assertNotIn(key, environment)
         self.assertEqual(environment["GIT_NO_REPLACE_OBJECTS"], "1")
         self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
