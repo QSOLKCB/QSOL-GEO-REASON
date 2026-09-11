@@ -1,5 +1,6 @@
 """Verify the complete Phase 2A Python 3.11 CPU reference runtime lock.
 
+Canonical lock: constraints/capture-reference-py311.txt.
 Reject missing, mismatched, and unexpected runtime distributions as well as any
 interpreter/platform outside the selected CPython 3.11 Linux x86_64 lane.
 """
