@@ -14,11 +14,13 @@ from qsol_geo_reason import capture_hub_prepare_worker
 
 
 class Phase2AProductionBoundaryHardeningTests(unittest.TestCase):
-    def test_isolated_hub_preparation_uses_no_site_child_and_sanitized_environment(self) -> None:
+    def test_isolated_hub_preparation_uses_no_site_child_sanitized_environment_and_returns_package_receipt(self) -> None:
         seen: dict[str, object] = {}
-        receipts = {
+        evidence = {
             "revision_tree_sha256": "a" * 64,
             "tokenizer_revision_tree_sha256": "b" * 64,
+            "huggingface_hub_package_file_count": 137,
+            "huggingface_hub_package_receipt_sha256": "c" * 64,
         }
 
         def fake_run(command, **kwargs):
@@ -28,7 +30,7 @@ class Phase2AProductionBoundaryHardeningTests(unittest.TestCase):
             return subprocess.CompletedProcess(
                 command,
                 0,
-                stdout=json.dumps(receipts, sort_keys=True) + "\n",
+                stdout=json.dumps(evidence, sort_keys=True) + "\n",
                 stderr="",
             )
 
@@ -45,9 +47,9 @@ class Phase2AProductionBoundaryHardeningTests(unittest.TestCase):
             mock.patch.object(TOOL.subprocess, "run", side_effect=fake_run),
             mock.patch.dict(TOOL.os.environ, hostile, clear=False),
         ):
-            observed = TOOL.prepare_tree_receipts({"frozen": "request"})
+            observed = TOOL.prepare_hub_evidence({"frozen": "request"})
 
-        self.assertEqual(observed, receipts)
+        self.assertEqual(observed, evidence)
         command = seen["command"]
         self.assertEqual(command[:4], [sys.executable, "-I", "-S", "-B"])
         self.assertIn("capture_hub_prepare_worker", command[5])
@@ -55,19 +57,42 @@ class Phase2AProductionBoundaryHardeningTests(unittest.TestCase):
         for key in hostile:
             self.assertNotIn(key, environment)
 
+    def test_hub_tree_compatibility_surface_does_not_leak_package_fields_into_request(self) -> None:
+        evidence = {
+            "revision_tree_sha256": "a" * 64,
+            "tokenizer_revision_tree_sha256": "b" * 64,
+            "huggingface_hub_package_file_count": 137,
+            "huggingface_hub_package_receipt_sha256": "c" * 64,
+        }
+        with mock.patch.object(
+            TOOL,
+            "prepare_hub_evidence",
+            return_value=evidence,
+        ):
+            receipts = TOOL.prepare_tree_receipts({"frozen": "request"})
+        self.assertEqual(
+            receipts,
+            {
+                "revision_tree_sha256": "a" * 64,
+                "tokenizer_revision_tree_sha256": "b" * 64,
+            },
+        )
+
     def test_hub_worker_rejects_preloaded_huggingface_hub(self) -> None:
         fake_hub = types.ModuleType("huggingface_hub")
         with mock.patch.dict(sys.modules, {"huggingface_hub": fake_hub}):
             with self.assertRaisesRegex(CaptureContractError, "absent before"):
                 capture_hub_prepare_worker._preimport_hub_package_provenance()
 
-    def test_hub_worker_source_binds_package_before_and_after_work(self) -> None:
+    def test_hub_worker_source_binds_package_before_after_and_into_output(self) -> None:
         source = inspect.getsource(capture_hub_prepare_worker)
         self.assertIn("sys.flags.no_site", source)
         self.assertIn('"sitecustomize" in sys.modules', source)
         self.assertIn("_preimport_hub_package_provenance()", source)
         self.assertIn("after_import != before", source)
         self.assertIn("after_work != before", source)
+        self.assertIn('"huggingface_hub_package_file_count"', source)
+        self.assertIn('"huggingface_hub_package_receipt_sha256"', source)
         self.assertLess(
             source.index("before = _preimport_hub_package_provenance()"),
             source.index("import huggingface_hub"),
