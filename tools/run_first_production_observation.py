@@ -37,6 +37,10 @@ from qsol_geo_reason.capture_replay import (
     verify_replay_verdict,
 )
 from qsol_geo_reason.capture_validation import validate_capture_request
+from qsol_geo_reason.provenance import (
+    SourceIdentityError,
+    resolve_implementation_revision,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -113,6 +117,67 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _ensure_parent_directory_durable(path: Path) -> None:
+    """Create missing directories one at a time and fsync each new parent entry."""
+    path = Path(path)
+    missing: list[Path] = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        parent = current.parent
+        if parent == current:
+            raise CaptureContractError(
+                "unable to locate an existing ancestor for experiment artifact publication"
+            )
+        current = parent
+    if not current.is_dir():
+        raise CaptureContractError(
+            "experiment artifact parent ancestry must contain only directories"
+        )
+
+    for directory in reversed(missing):
+        try:
+            directory.mkdir()
+        except FileExistsError:
+            if not directory.is_dir():
+                raise CaptureContractError(
+                    "experiment artifact parent path was replaced by a non-directory"
+                )
+        else:
+            # The new child name lives in directory.parent. Sync that containing
+            # directory immediately so every newly created ancestor is reachable
+            # after a crash before deeper descendants are published.
+            _fsync_directory(directory.parent)
+
+
+def _create_output_root_durable(output_root: Path) -> None:
+    """Create one immutable observation root and durably publish its directory entry."""
+    _ensure_parent_directory_durable(output_root.parent)
+    try:
+        output_root.mkdir()
+    except FileExistsError as exc:
+        raise CaptureContractError(
+            f"refusing to reuse output root {output_root}; observation evidence directories are immutable"
+        ) from exc
+    except OSError as exc:
+        raise CaptureContractError(
+            f"unable to create observation output root {output_root}: {exc}"
+        ) from exc
+
+    try:
+        _fsync_directory(output_root.parent)
+    except OSError as exc:
+        # No experiment artifact exists yet. Best-effort removal keeps a failed
+        # durability probe from poisoning the explicit retry path.
+        try:
+            output_root.rmdir()
+        except OSError:
+            pass
+        raise CaptureContractError(
+            f"unable to durably publish observation output root {output_root}: {exc}"
+        ) from exc
+
+
 def _unique_sibling(path: Path, marker: str) -> Path:
     """Return an unpredictable sibling path without creating it."""
     while True:
@@ -125,7 +190,7 @@ def _unique_sibling(path: Path, marker: str) -> Path:
 
 def _exclusive_write_json(path: Path, value: Mapping[str, Any]) -> None:
     """Stage, fsync, and publish immutable JSON with no-replace semantics."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_parent_directory_durable(path.parent)
     if path.exists():
         raise CaptureContractError(f"refusing to overwrite existing artifact {path}")
 
@@ -244,12 +309,17 @@ def _completed_run_directories(output_root: Path) -> list[str]:
     return completed
 
 
-def _preserve_failed_attempt(output_root: Path, exc: BaseException) -> Path:
+def _preserve_failed_attempt(
+    output_root: Path,
+    exc: BaseException,
+    repository_commit: str,
+) -> Path:
     """Move an incomplete attempt aside so the requested output path can be retried."""
     marker = {
         "schema_version": "1.0.0",
         "protocol_id": "GEO-CAP-001",
         "experiment_id": EXPERIMENT_ID,
+        "repository_commit": repository_commit,
         "attempt_status": "failed_before_replay_verdict",
         "error_type": type(exc).__name__,
         "error_message": str(exc),
@@ -291,7 +361,21 @@ def observe(
         raise CaptureContractError(
             f"refusing to reuse output root {output_root}; observation evidence directories are immutable"
         )
-    output_root.mkdir(parents=True, exist_ok=False)
+
+    # Bind the executing checkout before any evidence directory is created and before
+    # either worker starts. Both workers receive this exact revision, and a failed
+    # attempt records the same identity even when no run bundle was published.
+    try:
+        repository_commit = resolve_implementation_revision(
+            implementation_revision,
+            require_checkout=True,
+        )
+    except SourceIdentityError as exc:
+        raise CaptureContractError(
+            f"unable to bind production observation to a clean repository revision: {exc}"
+        ) from exc
+
+    _create_output_root_durable(output_root)
 
     try:
         # Snapshot the already validated request before either worker starts. Both
@@ -308,10 +392,10 @@ def observe(
         run_a = output_root / "run-a"
         run_b = output_root / "run-b"
         manifest_a = _run_capture(
-            validated_request_path, run_a, implementation_revision
+            validated_request_path, run_a, repository_commit
         )
         manifest_b = _run_capture(
-            validated_request_path, run_b, implementation_revision
+            validated_request_path, run_b, repository_commit
         )
 
         verdict = build_replay_verdict(
@@ -338,7 +422,11 @@ def observe(
         )
         return persisted, 0 if persisted["replay_outcome"] == "byte_identical" else 2
     except BaseException as exc:
-        failed_path = _preserve_failed_attempt(output_root, exc)
+        failed_path = _preserve_failed_attempt(
+            output_root,
+            exc,
+            repository_commit,
+        )
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
             raise
         raise CaptureContractError(
@@ -390,6 +478,7 @@ def main() -> int:
     except (
         CaptureContractError,
         CaptureBackendUnavailable,
+        SourceIdentityError,
         OSError,
         UnicodeError,
         json.JSONDecodeError,
