@@ -67,6 +67,11 @@ class CaptureReplayVerdictTests(unittest.TestCase):
         self.assertFalse(schema["additionalProperties"])
         self.assertIn("validated_request_artifact_sha256", schema["required"])
         self.assertIn("bundle_file_byte_equality", schema["required"])
+        self.assertIn("replication_status", schema["required"])
+        self.assertEqual(
+            schema["properties"]["replication_status"]["const"],
+            "not_attempted",
+        )
         self.assertEqual(
             schema["properties"]["replay_outcome"]["enum"],
             ["byte_identical", "diverged"],
@@ -94,6 +99,8 @@ class CaptureReplayVerdictTests(unittest.TestCase):
                 )
             self.assertEqual(verified, verdict)
             self.assertEqual(verdict["replay_outcome"], "byte_identical")
+            self.assertEqual(verdict["evidence_class"], "OBSERVATION")
+            self.assertEqual(verdict["replication_status"], "not_attempted")
             self.assertTrue(all(verdict["bundle_file_byte_equality"].values()))
 
     def test_verifier_rejects_rehashed_or_edited_verdict(self) -> None:
@@ -113,6 +120,22 @@ class CaptureReplayVerdictTests(unittest.TestCase):
                 ):
                     capture_replay.verify_replay_verdict(
                         tampered,
+                        request=request,
+                        validated_request_path=snapshot,
+                        run_a_dir=run_a,
+                        run_b_dir=run_b,
+                        run_a_manifest_receipt="a" * 64,
+                        run_b_manifest_receipt="a" * 64,
+                        experiment_id="EXP-TEST-001",
+                    )
+
+                false_replication = json.loads(json.dumps(verdict))
+                false_replication["replication_status"] = "replicated"
+                with self.assertRaisesRegex(
+                    CaptureContractError, "replication_status.*not_attempted"
+                ):
+                    capture_replay.verify_replay_verdict(
+                        false_replication,
                         request=request,
                         validated_request_path=snapshot,
                         run_a_dir=run_a,
@@ -188,6 +211,7 @@ class CaptureReplayVerdictTests(unittest.TestCase):
                     experiment_id="EXP-TEST-001",
                 )
             self.assertEqual(verdict["replay_outcome"], "diverged")
+            self.assertEqual(verdict["replication_status"], "not_attempted")
             self.assertFalse(
                 verdict["bundle_file_byte_equality"]["captured-trajectory.json"]
             )
