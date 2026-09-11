@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import secrets
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -12,10 +11,19 @@ from .capture_common import CaptureContractError
 from .capture_publish import _ensure_parent_directory_durable, _fsync_directory
 
 
-@dataclass(frozen=True)
 class ExecutionReceiptReservation:
-    path: Path
-    marker: bytes
+    """Source-backed immutable-by-convention reservation identity.
+
+    Keep this class explicit rather than using dataclass/namedtuple code generation:
+    canonical source provenance requires every loaded QSOL callable to have a real
+    checkout-backed source filename.
+    """
+
+    __slots__ = ("path", "marker")
+
+    def __init__(self, path: Path, marker: bytes) -> None:
+        self.path = Path(path)
+        self.marker = bytes(marker)
 
 
 def _temporary_sibling(path: Path) -> Path:
