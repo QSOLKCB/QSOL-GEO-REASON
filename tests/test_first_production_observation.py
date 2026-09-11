@@ -16,6 +16,7 @@ from qsol_geo_reason.capture_common import (
     CaptureContractError,
 )
 from qsol_geo_reason.provenance import SourceIdentityError
+from reference_environment_fixture import reference_environment_receipt
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,9 +25,27 @@ SCRIPT = ROOT / "tools" / "run_first_production_observation.py"
 
 class FirstProductionObservationTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.reference_environment = reference_environment_receipt()
+
         patcher = mock.patch.object(TOOL, "authenticate_tracked_file_against_revision")
         self.addCleanup(patcher.stop)
         self.template_auth = patcher.start()
+
+        launcher_patcher = mock.patch.object(
+            TOOL,
+            "authenticate_tracked_tool_against_revision",
+            return_value="1" * 40,
+        )
+        self.addCleanup(launcher_patcher.stop)
+        self.launcher_auth = launcher_patcher.start()
+
+        environment_patcher = mock.patch.object(
+            TOOL,
+            "verify_current_reference_environment",
+            side_effect=lambda expected=None: dict(expected or self.reference_environment),
+        )
+        self.addCleanup(environment_patcher.stop)
+        self.environment_auth = environment_patcher.start()
 
     def _materialized_request(self) -> dict:
         request = TOOL._load_template()
@@ -44,6 +63,7 @@ class FirstProductionObservationTests(unittest.TestCase):
             request=request,
             repository_commit=repository_commit,
             experiment_id=TOOL.EXPERIMENT_ID,
+            reference_environment_receipt=self.reference_environment,
         )
         path = TOOL._default_preparation_receipt_path(request_path)
         path.write_text(
@@ -88,7 +108,7 @@ class FirstProductionObservationTests(unittest.TestCase):
         with self.assertRaises(CaptureContractError):
             TOOL._assert_exact_experiment_request(final, require_receipts=True)
 
-    def test_prepare_binds_clean_revision_template_and_writes_request_plus_provenance(self) -> None:
+    def test_prepare_binds_clean_revision_launcher_lock_environment_and_provenance(self) -> None:
         receipts = {
             "revision_tree_sha256": "a" * 64,
             "tokenizer_revision_tree_sha256": "b" * 64,
@@ -117,6 +137,9 @@ class FirstProductionObservationTests(unittest.TestCase):
                 self.assertEqual(
                     preparation["preparation_repository_commit"], repository_commit
                 )
+                self.assertEqual(
+                    preparation["reference_environment"], self.reference_environment
+                )
                 self.assertEqual(written["model"]["revision_tree_sha256"], "a" * 64)
                 self.assertEqual(
                     written["model"]["tokenizer_revision_tree_sha256"], "b" * 64
@@ -129,12 +152,74 @@ class FirstProductionObservationTests(unittest.TestCase):
                         mock.call(repository_commit, require_checkout=True),
                     ]
                 )
-                self.assertEqual(self.template_auth.call_count, 3)
-                self.template_auth.assert_has_calls(
-                    [mock.call(TOOL.TEMPLATE, repository_commit)] * 3
-                )
+                template_calls = [
+                    call
+                    for call in self.template_auth.call_args_list
+                    if call.args and call.args[0] == TOOL.TEMPLATE
+                ]
+                lock_calls = [
+                    call
+                    for call in self.template_auth.call_args_list
+                    if call.args and call.args[0] == TOOL.REFERENCE_LOCK
+                ]
+                self.assertEqual(len(template_calls), 3)
+                self.assertGreaterEqual(len(lock_calls), 2)
+                self.assertGreaterEqual(self.launcher_auth.call_count, 2)
+                self.assertEqual(self.environment_auth.call_count, 2)
                 with self.assertRaises(CaptureContractError):
                     TOOL.prepare(output)
+
+    def test_concurrent_request_publication_failure_never_deletes_shared_preparation_receipt(self) -> None:
+        receipts = {
+            "revision_tree_sha256": "a" * 64,
+            "tokenizer_revision_tree_sha256": "b" * 64,
+        }
+        repository_commit = "c" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "final-request.json"
+            preparation_path = TOOL._default_preparation_receipt_path(output)
+            real_write = TOOL._exclusive_write_json
+
+            def concurrent_publish(path, value):
+                if path == preparation_path:
+                    return real_write(path, value)
+                if path == output:
+                    # Model the recovery process publishing the request first. The
+                    # original publisher then observes the no-replace conflict.
+                    real_write(path, value)
+                    raise CaptureContractError(
+                        f"refusing to overwrite existing artifact {path}"
+                    )
+                return real_write(path, value)
+
+            with (
+                mock.patch.object(TOOL, "prepare_tree_receipts", return_value=receipts),
+                mock.patch.object(
+                    TOOL,
+                    "resolve_implementation_revision",
+                    return_value=repository_commit,
+                ),
+                mock.patch.object(
+                    TOOL,
+                    "_exclusive_write_json",
+                    side_effect=concurrent_publish,
+                ),
+            ):
+                with self.assertRaisesRegex(CaptureContractError, "refusing to overwrite"):
+                    TOOL.prepare(output)
+
+            self.assertTrue(output.is_file())
+            self.assertTrue(preparation_path.is_file())
+            request = json.loads(output.read_text(encoding="utf-8"))
+            receipt = json.loads(preparation_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                TOOL.verify_preparation_receipt(
+                    receipt,
+                    request=request,
+                    experiment_id=TOOL.EXPERIMENT_ID,
+                ),
+                receipt,
+            )
 
     def test_failed_payload_sync_does_not_publish_partial_request(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -224,7 +309,7 @@ class FirstProductionObservationTests(unittest.TestCase):
                 any(str(key).upper().startswith("PYTHON") for key in environment)
             )
 
-    def test_observe_authenticates_template_and_archives_preparation_into_verdict_inputs(self) -> None:
+    def test_observe_authenticates_template_launcher_lock_environment_and_archives_preparation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             original = self._materialized_request()
@@ -267,8 +352,28 @@ class FirstProductionObservationTests(unittest.TestCase):
                     preparation_path,
                 )
 
-            resolver.assert_called_once_with(None, require_checkout=True)
-            self.template_auth.assert_called_once_with(TOOL.TEMPLATE, repository_commit)
+            self.assertEqual(resolver.call_count, 3)
+            resolver.assert_has_calls(
+                [
+                    mock.call(None, require_checkout=True),
+                    mock.call(repository_commit, require_checkout=True),
+                    mock.call(repository_commit, require_checkout=True),
+                ]
+            )
+            template_calls = [
+                call
+                for call in self.template_auth.call_args_list
+                if call.args and call.args[0] == TOOL.TEMPLATE
+            ]
+            lock_calls = [
+                call
+                for call in self.template_auth.call_args_list
+                if call.args and call.args[0] == TOOL.REFERENCE_LOCK
+            ]
+            self.assertGreaterEqual(len(template_calls), 3)
+            self.assertGreaterEqual(len(lock_calls), 3)
+            self.assertGreaterEqual(self.launcher_auth.call_count, 3)
+            self.assertEqual(self.environment_auth.call_count, 3)
             self.assertEqual(status, 0)
             self.assertEqual(observed, verdict)
             self.assertEqual(seen_paths[0], seen_paths[1])
@@ -304,6 +409,10 @@ class FirstProductionObservationTests(unittest.TestCase):
                 archived_preparation,
                 json.loads(preparation_path.read_text(encoding="utf-8")),
             )
+            self.assertEqual(
+                archived_preparation["reference_environment"],
+                self.reference_environment,
+            )
             self.assertNotEqual(json.loads(request_path.read_text(encoding="utf-8")), original)
 
     def test_observe_rejects_tampered_preparation_before_creating_attempt(self) -> None:
@@ -321,6 +430,25 @@ class FirstProductionObservationTests(unittest.TestCase):
                 CaptureContractError, "request_sha256 does not match"
             ):
                 TOOL.observe(request_path, output_root, None, preparation_path)
+            self.assertFalse(output_root.exists())
+
+    def test_observe_rejects_environment_drift_before_creating_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            request = self._materialized_request()
+            request_path = directory / "request.json"
+            request_path.write_text(json.dumps(request), encoding="utf-8")
+            preparation_path = self._write_preparation_receipt(request_path, request)
+            output_root = directory / "observation"
+            with mock.patch.object(
+                TOOL,
+                "verify_current_reference_environment",
+                side_effect=CaptureContractError(
+                    "current reference environment does not match the preparation reference environment receipt"
+                ),
+            ):
+                with self.assertRaisesRegex(CaptureContractError, "does not match the preparation"):
+                    TOOL.observe(request_path, output_root, None, preparation_path)
             self.assertFalse(output_root.exists())
 
     def test_failed_observation_preserves_both_phase_revisions_and_planned_execution_ids(self) -> None:

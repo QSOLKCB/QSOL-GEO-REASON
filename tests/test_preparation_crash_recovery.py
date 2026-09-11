@@ -8,6 +8,7 @@ from unittest import mock
 
 from qsol_geo_reason import first_production_observation as TOOL
 from qsol_geo_reason.capture_common import CaptureContractError
+from reference_environment_fixture import reference_environment_receipt
 
 
 class PreparationCrashRecoveryTests(unittest.TestCase):
@@ -27,6 +28,7 @@ class PreparationCrashRecoveryTests(unittest.TestCase):
             request=request,
             repository_commit=preparation_commit,
             experiment_id=TOOL.EXPERIMENT_ID,
+            reference_environment_receipt=reference_environment_receipt(),
         )
         return request, receipt
 
@@ -57,6 +59,11 @@ class PreparationCrashRecoveryTests(unittest.TestCase):
                 ) as authenticate,
                 mock.patch.object(
                     TOOL,
+                    "authenticate_tracked_tool_against_revision",
+                    return_value="1" * 40,
+                ) as launcher_auth,
+                mock.patch.object(
+                    TOOL,
                     "prepare_tree_receipts",
                     side_effect=AssertionError("recovery must not contact the Hub"),
                 ) as warmup,
@@ -64,6 +71,7 @@ class PreparationCrashRecoveryTests(unittest.TestCase):
                 request_sha256 = TOOL.prepare(output)
 
             self.assertFalse(warmup.called)
+            self.assertGreaterEqual(launcher_auth.call_count, 2)
             self.assertEqual(
                 json.loads(output.read_text(encoding="utf-8")),
                 request,
@@ -82,6 +90,8 @@ class PreparationCrashRecoveryTests(unittest.TestCase):
             authenticated_revisions = [call.args[1] for call in authenticate.call_args_list]
             self.assertIn(recovery_commit, authenticated_revisions)
             self.assertIn(preparation_commit, authenticated_revisions)
+            authenticated_paths = [call.args[0] for call in authenticate.call_args_list]
+            self.assertIn(TOOL.REFERENCE_LOCK, authenticated_paths)
 
     def test_malformed_receipt_only_state_fails_closed_without_hub_warmup(self) -> None:
         recovery_commit = "f" * 40
@@ -102,6 +112,11 @@ class PreparationCrashRecoveryTests(unittest.TestCase):
                     TOOL,
                     "authenticate_tracked_file_against_revision",
                     return_value="experiments/GEO-CAP-001-EXP-001.request.template.json",
+                ),
+                mock.patch.object(
+                    TOOL,
+                    "authenticate_tracked_tool_against_revision",
+                    return_value="1" * 40,
                 ),
                 mock.patch.object(
                     TOOL,

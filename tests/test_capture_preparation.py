@@ -4,12 +4,15 @@ import json
 import unittest
 from pathlib import Path
 
+from qsol_geo_reason.canonical import sha256_json
 from qsol_geo_reason.capture_common import CaptureContractError
 from qsol_geo_reason.capture_hub_tree import CANONICAL_HF_ENDPOINT
 from qsol_geo_reason.capture_preparation import (
+    PREPARATION_RECEIPT_SCHEMA_VERSION,
     build_preparation_receipt,
     verify_preparation_receipt,
 )
+from reference_environment_fixture import reference_environment_receipt
 from test_capture_codex_round6 import fixture_request
 
 
@@ -23,7 +26,15 @@ class CapturePreparationReceiptTests(unittest.TestCase):
         request["model"]["tokenizer_revision_tree_sha256"] = "2" * 64
         return request
 
-    def test_schema_is_closed_and_pins_endpoint_and_revision(self) -> None:
+    def _receipt(self, request: dict) -> dict:
+        return build_preparation_receipt(
+            request=request,
+            repository_commit="a" * 40,
+            experiment_id="EXP-TEST-001",
+            reference_environment_receipt=reference_environment_receipt(),
+        )
+
+    def test_schema_is_closed_and_pins_endpoint_revision_and_reference_environment(self) -> None:
         schema = json.loads(
             (ROOT / "schemas" / "capture-preparation-receipt.schema.json").read_text(
                 encoding="utf-8"
@@ -34,16 +45,17 @@ class CapturePreparationReceiptTests(unittest.TestCase):
             schema["properties"]["hub_endpoint"]["const"],
             CANONICAL_HF_ENDPOINT,
         )
+        self.assertEqual(schema["properties"]["schema_version"]["const"], PREPARATION_RECEIPT_SCHEMA_VERSION)
         self.assertIn("preparation_repository_commit", schema["required"])
+        self.assertIn("reference_environment", schema["required"])
         self.assertIn("preparation_receipt_sha256", schema["required"])
+        reference_schema = schema["$defs"]["referenceEnvironment"]
+        self.assertEqual(reference_schema["properties"]["python_implementation"]["const"], "CPython")
+        self.assertEqual(reference_schema["properties"]["platform_system"]["const"], "Linux")
 
-    def test_receipt_binds_request_endpoint_and_repository_revision(self) -> None:
+    def test_receipt_binds_request_endpoint_repository_revision_and_complete_environment(self) -> None:
         request = self._request()
-        receipt = build_preparation_receipt(
-            request=request,
-            repository_commit="a" * 40,
-            experiment_id="EXP-TEST-001",
-        )
+        receipt = self._receipt(request)
         verified = verify_preparation_receipt(
             receipt,
             request=request,
@@ -52,15 +64,14 @@ class CapturePreparationReceiptTests(unittest.TestCase):
         self.assertEqual(verified, receipt)
         self.assertEqual(receipt["preparation_repository_commit"], "a" * 40)
         self.assertEqual(receipt["hub_endpoint"], CANONICAL_HF_ENDPOINT)
+        self.assertEqual(receipt["reference_environment"]["distribution_count"], 28)
+        self.assertEqual(receipt["reference_environment"]["python_version"], "3.11.16")
+        self.assertRegex(receipt["reference_environment"]["environment_receipt_sha256"], r"^[0-9a-f]{64}$")
         self.assertRegex(receipt["preparation_receipt_sha256"], r"^[0-9a-f]{64}$")
 
-    def test_receipt_rejects_request_or_endpoint_tampering(self) -> None:
+    def test_receipt_rejects_request_endpoint_or_environment_tampering(self) -> None:
         request = self._request()
-        receipt = build_preparation_receipt(
-            request=request,
-            repository_commit="a" * 40,
-            experiment_id="EXP-TEST-001",
-        )
+        receipt = self._receipt(request)
 
         tampered_request = json.loads(json.dumps(receipt))
         tampered_request["request_sha256"] = "0" * 64
@@ -76,6 +87,29 @@ class CapturePreparationReceiptTests(unittest.TestCase):
         with self.assertRaisesRegex(CaptureContractError, "canonical Hugging Face endpoint"):
             verify_preparation_receipt(
                 tampered_endpoint,
+                request=request,
+                experiment_id="EXP-TEST-001",
+            )
+
+        tampered_environment = json.loads(json.dumps(receipt))
+        tampered_environment["reference_environment"]["python_version"] = "3.12.9"
+        tampered_environment["reference_environment"]["environment_receipt_sha256"] = sha256_json(
+            {
+                key: value
+                for key, value in tampered_environment["reference_environment"].items()
+                if key != "environment_receipt_sha256"
+            }
+        )
+        tampered_environment["preparation_receipt_sha256"] = sha256_json(
+            {
+                key: value
+                for key, value in tampered_environment.items()
+                if key != "preparation_receipt_sha256"
+            }
+        )
+        with self.assertRaisesRegex(CaptureContractError, "Python 3.11"):
+            verify_preparation_receipt(
+                tampered_environment,
                 request=request,
                 experiment_id="EXP-TEST-001",
             )

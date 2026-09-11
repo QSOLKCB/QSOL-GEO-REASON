@@ -11,9 +11,10 @@ from .capture_common import (
     _require_nonempty_string,
 )
 from .capture_hub_tree import CANONICAL_HF_ENDPOINT
+from .capture_reference_environment import verify_reference_environment_receipt
 from .capture_validation import validate_capture_request
 
-PREPARATION_RECEIPT_SCHEMA_VERSION = "1.0.0"
+PREPARATION_RECEIPT_SCHEMA_VERSION = "1.1.0"
 _TREE_FIELDS = ("revision_tree_sha256", "tokenizer_revision_tree_sha256")
 _PREPARATION_RECEIPT_KEYS = frozenset(
     {
@@ -29,6 +30,7 @@ _PREPARATION_RECEIPT_KEYS = frozenset(
         "tokenizer_revision",
         "revision_tree_sha256",
         "tokenizer_revision_tree_sha256",
+        "reference_environment",
         "preparation_receipt_sha256",
     }
 )
@@ -53,13 +55,17 @@ def build_preparation_receipt(
     request: Mapping[str, Any],
     repository_commit: str,
     experiment_id: str,
+    reference_environment_receipt: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Bind one finalized prepared request to the clean code revision that prepared it."""
+    """Bind one finalized prepared request to code, Hub, and complete reference runtime."""
     validated = validate_capture_request(request)
     repository_commit = _require_git_sha(
         repository_commit, "preparation repository_commit"
     )
     experiment_id = _require_nonempty_string(experiment_id, "experiment_id")
+    reference_environment = verify_reference_environment_receipt(
+        reference_environment_receipt
+    )
     model = validated["model"]
     for field in _TREE_FIELDS:
         _require_sha256(model.get(field), f"request.model.{field}")
@@ -79,6 +85,7 @@ def build_preparation_receipt(
         "tokenizer_revision_tree_sha256": model[
             "tokenizer_revision_tree_sha256"
         ],
+        "reference_environment": reference_environment,
     }
     payload["preparation_receipt_sha256"] = sha256_json(payload)
     return payload
@@ -90,7 +97,7 @@ def verify_preparation_receipt(
     request: Mapping[str, Any],
     experiment_id: str,
 ) -> dict[str, Any]:
-    """Fail closed on edited or request-inconsistent online-preparation provenance."""
+    """Fail closed on edited or request/environment-inconsistent preparation provenance."""
     if not isinstance(receipt, dict):
         raise CaptureContractError("preparation receipt must be an object")
     actual_keys = set(receipt)
@@ -131,6 +138,14 @@ def verify_preparation_receipt(
     if receipt["hub_endpoint"] != CANONICAL_HF_ENDPOINT:
         raise CaptureContractError(
             "preparation receipt hub_endpoint is not the canonical Hugging Face endpoint"
+        )
+
+    reference_environment = verify_reference_environment_receipt(
+        receipt["reference_environment"]
+    )
+    if reference_environment != receipt["reference_environment"]:
+        raise CaptureContractError(
+            "preparation receipt reference_environment is not canonical"
         )
 
     model = validated["model"]

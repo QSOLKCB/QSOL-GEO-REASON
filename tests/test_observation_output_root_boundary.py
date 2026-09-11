@@ -9,6 +9,7 @@ from unittest import mock
 
 from qsol_geo_reason import first_production_observation as TOOL
 from qsol_geo_reason.capture_common import CaptureContractError
+from reference_environment_fixture import reference_environment_receipt
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,10 +28,12 @@ class ObservationOutputRootBoundaryTests(unittest.TestCase):
     def test_observe_rejects_checkout_contained_output_before_capture_or_failure_archive(self) -> None:
         request = self._materialized_request()
         repository_commit = "f" * 40
+        environment = reference_environment_receipt()
         preparation = TOOL.build_preparation_receipt(
             request=request,
             repository_commit=repository_commit,
             experiment_id=TOOL.EXPERIMENT_ID,
+            reference_environment_receipt=environment,
         )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -54,6 +57,16 @@ class ObservationOutputRootBoundaryTests(unittest.TestCase):
                 mock.patch.object(
                     TOOL,
                     "authenticate_tracked_file_against_revision",
+                ),
+                mock.patch.object(
+                    TOOL,
+                    "authenticate_tracked_tool_against_revision",
+                    return_value="1" * 40,
+                ),
+                mock.patch.object(
+                    TOOL,
+                    "verify_current_reference_environment",
+                    side_effect=lambda expected=None: dict(expected or environment),
                 ),
                 mock.patch.object(TOOL, "_run_capture") as run_capture,
             ):

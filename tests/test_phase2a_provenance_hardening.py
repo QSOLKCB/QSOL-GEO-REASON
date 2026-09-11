@@ -16,6 +16,7 @@ from qsol_geo_reason.capture_preparation import (
     build_preparation_receipt,
     verify_preparation_receipt,
 )
+from reference_environment_fixture import reference_environment_receipt
 from test_capture_codex_round6 import fixture_request
 
 
@@ -108,6 +109,7 @@ class Phase2AProvenanceHardeningTests(unittest.TestCase):
             request=request,
             repository_commit="a" * 40,
             experiment_id="EXP-TEST-001",
+            reference_environment_receipt=reference_environment_receipt(),
         )
         receipt["preparation_repository_commit"] = "A" * 40
         receipt["preparation_receipt_sha256"] = sha256_json(
@@ -141,6 +143,7 @@ class Phase2AProvenanceHardeningTests(unittest.TestCase):
         self.assertIn("complete resolved runtime lock", document)
         self.assertIn("download.pytorch.org/whl/cpu", document)
         self.assertIn("must report Python 3.11.x", document)
+        self.assertIn("embedded in the preparation receipt", document)
 
 
 if __name__ == "__main__":

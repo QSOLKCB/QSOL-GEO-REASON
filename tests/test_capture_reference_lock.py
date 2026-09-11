@@ -19,6 +19,15 @@ def _load_verifier():
     return module
 
 
+def _reference_platform_patches(verifier):
+    return (
+        mock.patch.object(verifier, "_current_python_version", return_value=(3, 11, 16)),
+        mock.patch.object(verifier, "_current_python_implementation", return_value="CPython"),
+        mock.patch.object(verifier, "_current_platform_system", return_value="Linux"),
+        mock.patch.object(verifier, "_current_platform_machine", return_value="x86_64"),
+    )
+
+
 class CaptureReferenceLockTests(unittest.TestCase):
     def test_complete_lock_contains_resolved_transitive_runtime(self) -> None:
         verifier = _load_verifier()
@@ -47,13 +56,51 @@ class CaptureReferenceLockTests(unittest.TestCase):
         actual = dict(locked)
         actual["requests"] = ("requests", "0.0.0")
         actual["surprise-package"] = ("surprise-package", "1.0.0")
-        with mock.patch.object(
-            verifier,
-            "_installed_runtime_versions",
-            return_value=actual,
+        patches = _reference_platform_patches(verifier)
+        with (
+            mock.patch.object(
+                verifier,
+                "_installed_runtime_versions",
+                return_value=actual,
+            ),
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
         ):
             with self.assertRaisesRegex(RuntimeError, "unexpected=.*surprise-package"):
                 verifier.verify_reference_environment()
+
+    def test_verifier_rejects_non_python311_even_with_exact_distribution_lock(self) -> None:
+        verifier = _load_verifier()
+        locked = verifier._locked_versions()
+        with (
+            mock.patch.object(verifier, "_installed_runtime_versions", return_value=dict(locked)),
+            mock.patch.object(verifier, "_current_python_version", return_value=(3, 12, 9)),
+            mock.patch.object(verifier, "_current_python_implementation", return_value="CPython"),
+            mock.patch.object(verifier, "_current_platform_system", return_value="Linux"),
+            mock.patch.object(verifier, "_current_platform_machine", return_value="x86_64"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "requires Python 3.11"):
+                verifier.verify_reference_environment()
+
+    def test_reference_receipt_is_self_hashed_and_complete(self) -> None:
+        verifier = _load_verifier()
+        locked = verifier._locked_versions()
+        patches = _reference_platform_patches(verifier)
+        with (
+            mock.patch.object(verifier, "_installed_runtime_versions", return_value=dict(locked)),
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+        ):
+            receipt = verifier.verify_reference_environment()
+        self.assertEqual(receipt["distribution_count"], 28)
+        self.assertEqual(receipt["python_version"], "3.11.16")
+        self.assertEqual(receipt["platform_machine"], "x86_64")
+        self.assertRegex(receipt["environment_receipt_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(len(receipt["distributions"]), 28)
 
 
 if __name__ == "__main__":

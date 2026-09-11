@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/QSOLKCB/QSOL-GEO-REASON/schemas/capture-preparation-receipt.schema.json",
   "title": "QSOL-GEO-REASON GEO-CAP-001 preparation provenance receipt",
-  "description": "Binds the finalized request produced by the online trusted preparation phase to the clean QSOL-GEO-REASON repository revision and canonical Hugging Face endpoint that produced its authenticated Hub-tree receipts.",
+  "description": "Binds the finalized request produced by online trusted preparation to the clean QSOL-GEO-REASON revision, canonical Hugging Face endpoint, and complete measured Python 3.11 reference runtime that produced its authenticated Hub-tree receipts.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -18,10 +18,11 @@
     "tokenizer_revision",
     "revision_tree_sha256",
     "tokenizer_revision_tree_sha256",
+    "reference_environment",
     "preparation_receipt_sha256"
   ],
   "properties": {
-    "schema_version": {"const": "1.0.0"},
+    "schema_version": {"const": "1.1.0"},
     "protocol_id": {"const": "GEO-CAP-001"},
     "experiment_id": {"type": "string", "minLength": 1, "pattern": "\\S"},
     "preparation_repository_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
@@ -33,9 +34,44 @@
     "tokenizer_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "revision_tree_sha256": {"$ref": "#/$defs/sha256"},
     "tokenizer_revision_tree_sha256": {"$ref": "#/$defs/sha256"},
+    "reference_environment": {"$ref": "#/$defs/referenceEnvironment"},
     "preparation_receipt_sha256": {"$ref": "#/$defs/sha256"}
   },
   "$defs": {
-    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "referenceEnvironment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "lane",
+        "status",
+        "python_implementation",
+        "python_version",
+        "platform_system",
+        "platform_machine",
+        "lock_sha256",
+        "distribution_count",
+        "distributions",
+        "environment_receipt_sha256"
+      ],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "lane": {"const": "capture-reference-py311-linux-x86_64-cpu"},
+        "status": {"const": "locked"},
+        "python_implementation": {"const": "CPython"},
+        "python_version": {"type": "string", "pattern": "^3\\.11\\.[0-9]+$"},
+        "platform_system": {"const": "Linux"},
+        "platform_machine": {"const": "x86_64"},
+        "lock_sha256": {"$ref": "#/$defs/sha256"},
+        "distribution_count": {"type": "integer", "minimum": 1},
+        "distributions": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {"type": "string", "minLength": 1, "pattern": "\\S"}
+        },
+        "environment_receipt_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
   }
 }
