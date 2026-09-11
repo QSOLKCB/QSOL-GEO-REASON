@@ -45,6 +45,19 @@ class CaptureReplayVerdictTests(unittest.TestCase):
         }
         return dict(expected_request), manifest, trajectory
 
+    def _build_verdict(self, root: Path):
+        request, snapshot, run_a, run_b = self._workspace(root)
+        verdict = capture_replay.build_replay_verdict(
+            request=request,
+            validated_request_path=snapshot,
+            run_a_dir=run_a,
+            run_b_dir=run_b,
+            run_a_manifest_receipt="a" * 64,
+            run_b_manifest_receipt="a" * 64,
+            experiment_id="EXP-TEST-001",
+        )
+        return request, snapshot, run_a, run_b, verdict
+
     def test_schema_is_closed_and_declares_semantic_verifier_fields(self) -> None:
         schema = json.loads(
             (ROOT / "schemas" / "replay-verdict.schema.json").read_text(
@@ -61,20 +74,13 @@ class CaptureReplayVerdictTests(unittest.TestCase):
 
     def test_build_and_verify_byte_identical_verdict(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            request, snapshot, run_a, run_b = self._workspace(Path(tmp))
             with mock.patch.object(
                 capture_replay,
                 "_load_verified_observation_bundle",
                 side_effect=self._fake_bundle_loader,
             ):
-                verdict = capture_replay.build_replay_verdict(
-                    request=request,
-                    validated_request_path=snapshot,
-                    run_a_dir=run_a,
-                    run_b_dir=run_b,
-                    run_a_manifest_receipt="a" * 64,
-                    run_b_manifest_receipt="a" * 64,
-                    experiment_id="EXP-TEST-001",
+                request, snapshot, run_a, run_b, verdict = self._build_verdict(
+                    Path(tmp)
                 )
                 verified = capture_replay.verify_replay_verdict(
                     verdict,
@@ -92,20 +98,13 @@ class CaptureReplayVerdictTests(unittest.TestCase):
 
     def test_verifier_rejects_rehashed_or_edited_verdict(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            request, snapshot, run_a, run_b = self._workspace(Path(tmp))
             with mock.patch.object(
                 capture_replay,
                 "_load_verified_observation_bundle",
                 side_effect=self._fake_bundle_loader,
             ):
-                verdict = capture_replay.build_replay_verdict(
-                    request=request,
-                    validated_request_path=snapshot,
-                    run_a_dir=run_a,
-                    run_b_dir=run_b,
-                    run_a_manifest_receipt="a" * 64,
-                    run_b_manifest_receipt="a" * 64,
-                    experiment_id="EXP-TEST-001",
+                request, snapshot, run_a, run_b, verdict = self._build_verdict(
+                    Path(tmp)
                 )
                 tampered = json.loads(json.dumps(verdict))
                 tampered["request_sha256"] = "0" * 64
@@ -123,9 +122,53 @@ class CaptureReplayVerdictTests(unittest.TestCase):
                         experiment_id="EXP-TEST-001",
                     )
 
+    def test_verifier_rejects_malformed_scalar_types_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(
+                capture_replay,
+                "_load_verified_observation_bundle",
+                side_effect=self._fake_bundle_loader,
+            ):
+                request, snapshot, run_a, run_b, verdict = self._build_verdict(
+                    Path(tmp)
+                )
+
+                malformed_experiment = json.loads(json.dumps(verdict))
+                malformed_experiment["experiment_id"] = 7
+                with self.assertRaisesRegex(
+                    CaptureContractError, "experiment_id.*non-empty string"
+                ):
+                    capture_replay.verify_replay_verdict(
+                        malformed_experiment,
+                        request=request,
+                        validated_request_path=snapshot,
+                        run_a_dir=run_a,
+                        run_b_dir=run_b,
+                        run_a_manifest_receipt="a" * 64,
+                        run_b_manifest_receipt="a" * 64,
+                        experiment_id=7,  # type: ignore[arg-type]
+                    )
+
+                malformed_outcome = json.loads(json.dumps(verdict))
+                malformed_outcome["replay_outcome"] = ["byte_identical"]
+                with self.assertRaisesRegex(
+                    CaptureContractError, "replay_outcome"
+                ):
+                    capture_replay.verify_replay_verdict(
+                        malformed_outcome,
+                        request=request,
+                        validated_request_path=snapshot,
+                        run_a_dir=run_a,
+                        run_b_dir=run_b,
+                        run_a_manifest_receipt="a" * 64,
+                        run_b_manifest_receipt="a" * 64,
+                        experiment_id="EXP-TEST-001",
+                    )
+
     def test_bundle_byte_divergence_is_recorded_not_tuned_away(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            request, snapshot, run_a, run_b = self._workspace(Path(tmp))
+            root = Path(tmp)
+            request, snapshot, run_a, run_b = self._workspace(root)
             (run_b / "captured-trajectory.json").write_text(
                 '{"artifact":"captured-trajectory.json","changed":true}\n',
                 encoding="utf-8",
