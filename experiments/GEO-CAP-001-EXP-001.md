@@ -54,20 +54,25 @@ The authenticated package orchestrator enforces that boundary by comparing the f
 
 ## Execution procedure
 
-Use the frozen Python 3.11 capture-reference lane from a clean checkout. The virtual environment must be created **outside the repository checkout** so environment files cannot dirty the source tree that preparation later authenticates. Create the external environment, install the pinned CPU PyTorch build, then install the capture extra under the repository constraints:
+Use the frozen Python 3.11 capture-reference lane from a clean checkout. The virtual environment must be created **outside the repository checkout** so environment files cannot dirty the source tree that preparation later authenticates. Create the external environment, install the exact CPU PyTorch build under the complete runtime lock, install the capture extra under that same lock, then verify the installed closure before preparation:
 
 ```bash
 python3.11 -m venv /tmp/qsol-geo-reason-capture-py311
 . /tmp/qsol-geo-reason-capture-py311/bin/activate
-python -m pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.2.2'
+python -m pip install \
+  -c constraints/capture-reference-py311.txt \
+  --index-url https://download.pytorch.org/whl/cpu \
+  'torch==2.2.2+cpu'
 python -m pip install \
   -c constraints/capture-reference-py311.txt \
   -e '.[capture]' \
   'jsonschema==4.23.0'
+python tools/verify_capture_reference_environment.py
+python -m pip check
 python --version  # must report Python 3.11.x
 ```
 
-`constraints/capture-reference-py311.txt` is the authoritative frozen dependency set for this reference lane. Do not substitute a different compatible dependency resolution and still describe the run as the selected reference environment. Do not create the virtual environment inside the checkout: `prepare` requires the repository to remain clean and will reject source-relevant untracked files.
+`constraints/capture-reference-py311.txt` is the authoritative complete resolved runtime lock for this Python 3.11 Linux x86_64 CPU reference lane. It pins the direct capture packages **and their transitive runtime closure**, including Torch dependencies, Transformers/Hugging Face dependencies, Requests/TLS dependencies, and the jsonschema validator closure. `tools/verify_capture_reference_environment.py` rejects a missing pin, version mismatch, or unexpected non-bootstrap runtime distribution; a different compatible resolution must not be described as the selected reference environment. Do not create the virtual environment inside the checkout: `prepare` requires the repository to remain clean and will reject source-relevant untracked files.
 
 ### 1. Online trusted preparation
 

@@ -43,11 +43,23 @@ class CaptureArchitectureRemediationTests(unittest.TestCase):
             ROOT / "constraints" / "capture-reference-py311.txt"
         ).read_text(encoding="utf-8")
         for requirement in (
-            "torch==2.2.2",
+            "torch==2.2.2+cpu",
             "transformers==4.40.2",
             "huggingface-hub==0.23.5",
             "tokenizers==0.19.1",
             "safetensors==0.4.3",
+            "filelock==3.32.3",
+            "fsspec==2026.7.0",
+            "Jinja2==3.1.6",
+            "sympy==1.14.0",
+            "networkx==3.6.1",
+            "regex==2026.9.10",
+            "PyYAML==6.0.3",
+            "requests==2.34.2",
+            "certifi==2026.7.22",
+            "jsonschema-specifications==2025.9.1",
+            "referencing==0.37.0",
+            "rpds-py==2026.6.3",
         ):
             self.assertIn(requirement, constraints)
 
@@ -55,7 +67,16 @@ class CaptureArchitectureRemediationTests(unittest.TestCase):
             ROOT / ".github" / "workflows" / "capture-production-integration.yml"
         ).read_text(encoding="utf-8")
         self.assertIn("run_capture_production_integration.py", workflow)
+        self.assertIn("verify_capture_reference_environment.py", workflow)
+        self.assertIn("torch==2.2.2+cpu", workflow)
         self.assertIn("pip check", workflow)
+
+        verifier = (
+            ROOT / "tools" / "verify_capture_reference_environment.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("unexpected", verifier)
+        self.assertIn("mismatched", verifier)
+        self.assertIn("capture-reference-py311.txt", verifier)
 
         integration = (
             ROOT / "tools" / "run_capture_production_integration.py"
@@ -81,6 +102,7 @@ class CaptureArchitectureRemediationTests(unittest.TestCase):
         self.assertIn("arbitrary hostile mutation inside an already-running embedding process", threat_model)
         self.assertIn("not a sandbox", threat_model)
         self.assertIn("capture-reference-py311.txt", threat_model)
+        self.assertIn("complete resolved runtime closure", threat_model)
 
 
 if __name__ == "__main__":

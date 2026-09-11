@@ -136,7 +136,9 @@ class Phase2AProvenanceHardeningTests(unittest.TestCase):
         self.assertNotIn("python3.11 -m venv .venv-capture-py311", document)
         self.assertIn("outside the repository checkout", document)
         self.assertIn("constraints/capture-reference-py311.txt", document)
-        self.assertIn("torch==2.2.2", document)
+        self.assertIn("torch==2.2.2+cpu", document)
+        self.assertIn("verify_capture_reference_environment.py", document)
+        self.assertIn("complete resolved runtime lock", document)
         self.assertIn("download.pytorch.org/whl/cpu", document)
         self.assertIn("must report Python 3.11.x", document)
 

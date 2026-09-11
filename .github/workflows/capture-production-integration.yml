@@ -20,14 +20,17 @@ jobs:
       - name: Install pinned CPU PyTorch reference build
         run: >-
           python -m pip install
+          -c constraints/capture-reference-py311.txt
           --index-url https://download.pytorch.org/whl/cpu
-          "torch==2.2.2"
-      - name: Install frozen capture reference environment
+          "torch==2.2.2+cpu"
+      - name: Install complete frozen capture reference environment
         run: >-
           python -m pip install
           -c constraints/capture-reference-py311.txt
           -e ".[capture]"
           "jsonschema==4.23.0"
+      - name: Verify complete runtime lock
+        run: python tools/verify_capture_reference_environment.py
       - name: Verify dependency consistency
         run: python -m pip check
       - name: Real offline production capture and deterministic replay

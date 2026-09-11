@@ -75,9 +75,11 @@ A receipt does **not** prove that upstream maintainers, package indexes, compile
 
 ## 7. Dependency/reference environment
 
-The repository publishes `constraints/capture-reference-py311.txt` as the Phase 2A reference CPU integration environment. CI installs that exact direct dependency set, builds a tiny local GPT-2-style model and fast tokenizer without downloading model weights, performs two real canonical CLI observations, validates their JSON schemas and semantic bundle verification, and requires deterministic equality.
+The repository publishes `constraints/capture-reference-py311.txt` as the Phase 2A Python 3.11 Linux x86_64 CPU reference runtime lock. It contains the complete resolved runtime closure used by the reference lane, not only the top-level capture packages. CI applies that lock to the CPU PyTorch installation and to the editable capture installation, then runs `tools/verify_capture_reference_environment.py`, which rejects missing pins, version mismatches, and unexpected non-bootstrap runtime distributions before the real backend integration begins.
 
-Production manifests already record exact package versions plus content receipts for the principal execution packages. The reference integration request additionally binds the SHA-256 of the constraints file in its `notes` field so the test artifact identifies the resolved reference environment without changing the GEO-CAP-001 schema.
+CI then builds a tiny local GPT-2-style model and fast tokenizer without downloading model weights, performs two real canonical CLI observations, validates their JSON schemas and semantic bundle verification, and requires deterministic equality. The integration request binds the SHA-256 of the complete lock file in its `notes` field, while production manifests continue to record exact versions and content receipts for the principal execution packages.
+
+The complete runtime lock strengthens reproducibility of the selected reference lane; it does not by itself establish trust in package indexes, upstream releases, the Python interpreter, the operating system, or the wider software supply chain.
 
 ## 8. Historical Round modules
 
