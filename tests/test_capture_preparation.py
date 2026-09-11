@@ -34,7 +34,7 @@ class CapturePreparationReceiptTests(unittest.TestCase):
             reference_environment_receipt=reference_environment_receipt(),
         )
 
-    def test_schema_is_closed_and_pins_endpoint_revision_and_reference_environment(self) -> None:
+    def test_schema_is_closed_and_pins_endpoint_revision_reference_environment_and_hub_content(self) -> None:
         schema = json.loads(
             (ROOT / "schemas" / "capture-preparation-receipt.schema.json").read_text(
                 encoding="utf-8"
@@ -45,15 +45,33 @@ class CapturePreparationReceiptTests(unittest.TestCase):
             schema["properties"]["hub_endpoint"]["const"],
             CANONICAL_HF_ENDPOINT,
         )
-        self.assertEqual(schema["properties"]["schema_version"]["const"], PREPARATION_RECEIPT_SCHEMA_VERSION)
+        self.assertEqual(
+            schema["properties"]["schema_version"]["const"],
+            PREPARATION_RECEIPT_SCHEMA_VERSION,
+        )
+        self.assertEqual(PREPARATION_RECEIPT_SCHEMA_VERSION, "1.2.0")
         self.assertIn("preparation_repository_commit", schema["required"])
         self.assertIn("reference_environment", schema["required"])
         self.assertIn("preparation_receipt_sha256", schema["required"])
         reference_schema = schema["$defs"]["referenceEnvironment"]
-        self.assertEqual(reference_schema["properties"]["python_implementation"]["const"], "CPython")
-        self.assertEqual(reference_schema["properties"]["platform_system"]["const"], "Linux")
+        self.assertEqual(
+            reference_schema["properties"]["python_implementation"]["const"],
+            "CPython",
+        )
+        self.assertEqual(
+            reference_schema["properties"]["platform_system"]["const"],
+            "Linux",
+        )
+        self.assertIn(
+            "huggingface_hub_package_file_count",
+            reference_schema["required"],
+        )
+        self.assertIn(
+            "huggingface_hub_package_receipt_sha256",
+            reference_schema["required"],
+        )
 
-    def test_receipt_binds_request_endpoint_repository_revision_and_complete_environment(self) -> None:
+    def test_receipt_binds_request_endpoint_repository_revision_complete_environment_and_hub_content(self) -> None:
         request = self._request()
         receipt = self._receipt(request)
         verified = verify_preparation_receipt(
@@ -66,10 +84,21 @@ class CapturePreparationReceiptTests(unittest.TestCase):
         self.assertEqual(receipt["hub_endpoint"], CANONICAL_HF_ENDPOINT)
         self.assertEqual(receipt["reference_environment"]["distribution_count"], 28)
         self.assertEqual(receipt["reference_environment"]["python_version"], "3.11.16")
-        self.assertRegex(receipt["reference_environment"]["environment_receipt_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            receipt["reference_environment"]["huggingface_hub_package_file_count"],
+            137,
+        )
+        self.assertEqual(
+            receipt["reference_environment"]["huggingface_hub_package_receipt_sha256"],
+            "7" * 64,
+        )
+        self.assertRegex(
+            receipt["reference_environment"]["environment_receipt_sha256"],
+            r"^[0-9a-f]{64}$",
+        )
         self.assertRegex(receipt["preparation_receipt_sha256"], r"^[0-9a-f]{64}$")
 
-    def test_receipt_rejects_request_endpoint_or_environment_tampering(self) -> None:
+    def test_receipt_rejects_request_endpoint_environment_or_hub_content_tampering(self) -> None:
         request = self._request()
         receipt = self._receipt(request)
 
@@ -110,6 +139,31 @@ class CapturePreparationReceiptTests(unittest.TestCase):
         with self.assertRaisesRegex(CaptureContractError, "Python 3.11"):
             verify_preparation_receipt(
                 tampered_environment,
+                request=request,
+                experiment_id="EXP-TEST-001",
+            )
+
+        tampered_hub = json.loads(json.dumps(receipt))
+        tampered_hub["reference_environment"][
+            "huggingface_hub_package_receipt_sha256"
+        ] = "not-a-digest"
+        tampered_hub["reference_environment"]["environment_receipt_sha256"] = sha256_json(
+            {
+                key: value
+                for key, value in tampered_hub["reference_environment"].items()
+                if key != "environment_receipt_sha256"
+            }
+        )
+        tampered_hub["preparation_receipt_sha256"] = sha256_json(
+            {
+                key: value
+                for key, value in tampered_hub.items()
+                if key != "preparation_receipt_sha256"
+            }
+        )
+        with self.assertRaisesRegex(CaptureContractError, "package provenance receipt_sha256"):
+            verify_preparation_receipt(
+                tampered_hub,
                 request=request,
                 experiment_id="EXP-TEST-001",
             )
