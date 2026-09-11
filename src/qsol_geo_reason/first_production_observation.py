@@ -183,8 +183,14 @@ def _isolated_prepare_hub_evidence(request: Mapping[str, Any]) -> dict[str, Any]
 
 
 def _isolated_prepare_tree_receipts(request: Mapping[str, Any]) -> dict[str, str]:
-    """Compatibility surface returning only the two request-ready tree receipts."""
+    """Return request-ready tree receipts after binding the worker's Hub package bytes."""
     evidence = _isolated_prepare_hub_evidence(request)
+    reference_environment = _core.verify_current_reference_environment()
+    for field in _HUB_PACKAGE_FIELDS:
+        if evidence[field] != reference_environment[field]:
+            raise CaptureContractError(
+                "isolated Hub package provenance does not match the authenticated reference environment receipt"
+            )
     return {field: evidence[field] for field in _core.TREE_FIELDS}
 
 
@@ -260,13 +266,7 @@ def prepare(
 
     reference_environment = _core.verify_current_reference_environment()
     template = _core._load_template(preparation_repository_commit)
-    hub_evidence = _core.prepare_hub_evidence(template)
-    for field in _HUB_PACKAGE_FIELDS:
-        if hub_evidence[field] != reference_environment[field]:
-            raise CaptureContractError(
-                "isolated Hub package provenance does not match the authenticated reference environment receipt"
-            )
-    receipts = {field: hub_evidence[field] for field in _core.TREE_FIELDS}
+    receipts = _core.prepare_tree_receipts(template)
     final_request = json.loads(json.dumps(template))
     final_request["model"].update(receipts)
     final_request = _core._assert_exact_experiment_request(
