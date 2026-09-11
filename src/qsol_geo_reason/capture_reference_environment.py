@@ -3,19 +3,22 @@ from __future__ import annotations
 
 import hashlib
 import importlib.metadata
+import importlib.util
 import platform
 import re
 import sys
+import types
 from pathlib import Path
 from typing import Any, Mapping
 
 from .canonical import sha256_json
 from .capture_common import CaptureContractError
+from .capture_package import _python_package_provenance
 
 
 ROOT = Path(__file__).resolve().parents[2]
 LOCK = ROOT / "constraints" / "capture-reference-py311.txt"
-REFERENCE_ENVIRONMENT_SCHEMA_VERSION = "1.0.0"
+REFERENCE_ENVIRONMENT_SCHEMA_VERSION = "1.1.0"
 REFERENCE_LANE = "capture-reference-py311-linux-x86_64-cpu"
 _BOOTSTRAP_OR_PROJECT = frozenset({"pip", "setuptools", "wheel", "qsol-geo-reason"})
 _RECEIPT_KEYS = frozenset(
@@ -30,6 +33,8 @@ _RECEIPT_KEYS = frozenset(
         "lock_sha256",
         "distribution_count",
         "distributions",
+        "huggingface_hub_package_file_count",
+        "huggingface_hub_package_receipt_sha256",
         "environment_receipt_sha256",
     }
 )
@@ -99,6 +104,44 @@ def _canonical_machine(value: str) -> str:
     return "x86_64" if lowered in {"x86_64", "amd64"} else lowered
 
 
+def _huggingface_hub_package_provenance() -> dict[str, Any]:
+    """Content-bind the importable Hub package tree without importing package code."""
+    try:
+        spec = importlib.util.find_spec("huggingface_hub")
+    except (ImportError, AttributeError, ValueError) as exc:
+        raise CaptureContractError(
+            "reference lane cannot locate the locked huggingface-hub package"
+        ) from exc
+    if spec is None or not isinstance(spec.origin, str) or not spec.origin.strip():
+        raise CaptureContractError(
+            "reference lane cannot locate the locked huggingface-hub package"
+        )
+    probe = types.SimpleNamespace(__file__=spec.origin)
+    return _python_package_provenance(probe, "Hugging Face Hub reference environment")
+
+
+def _validate_hub_package_provenance(
+    provenance: Mapping[str, Any],
+) -> tuple[int, str]:
+    if not isinstance(provenance, Mapping):
+        raise CaptureContractError("Hugging Face Hub package provenance must be an object")
+    count = provenance.get("file_count")
+    receipt = provenance.get("receipt_sha256")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise CaptureContractError(
+            "Hugging Face Hub package provenance file_count must be a positive integer"
+        )
+    if (
+        not isinstance(receipt, str)
+        or len(receipt) != 64
+        or any(ch not in "0123456789abcdef" for ch in receipt)
+    ):
+        raise CaptureContractError(
+            "Hugging Face Hub package provenance receipt_sha256 must be lowercase 64-hex"
+        )
+    return count, receipt
+
+
 def _require_reference_platform(
     *,
     python_version: tuple[int, int, int],
@@ -135,6 +178,7 @@ def _build_reference_environment_receipt_from_state(
     python_implementation: str,
     platform_system: str,
     platform_machine: str,
+    hub_package_provenance: Mapping[str, Any],
     lock_sha256: str | None = None,
 ) -> dict[str, Any]:
     version_text, machine = _require_reference_platform(
@@ -142,6 +186,9 @@ def _build_reference_environment_receipt_from_state(
         python_implementation=python_implementation,
         platform_system=platform_system,
         platform_machine=platform_machine,
+    )
+    hub_file_count, hub_receipt_sha256 = _validate_hub_package_provenance(
+        hub_package_provenance
     )
 
     missing = sorted(set(locked) - set(installed))
@@ -194,13 +241,15 @@ def _build_reference_environment_receipt_from_state(
         "lock_sha256": lock_sha256 if lock_sha256 is not None else _lock_sha256(),
         "distribution_count": len(distributions),
         "distributions": distributions,
+        "huggingface_hub_package_file_count": hub_file_count,
+        "huggingface_hub_package_receipt_sha256": hub_receipt_sha256,
     }
     payload["environment_receipt_sha256"] = sha256_json(payload)
     return payload
 
 
 def build_reference_environment_receipt() -> dict[str, Any]:
-    """Measure the exact interpreter and complete locked runtime used by this process."""
+    """Measure the exact interpreter, package tree, and locked runtime used here."""
     version = sys.version_info
     return _build_reference_environment_receipt_from_state(
         locked=_locked_versions(),
@@ -209,6 +258,7 @@ def build_reference_environment_receipt() -> dict[str, Any]:
         python_implementation=platform.python_implementation(),
         platform_system=platform.system(),
         platform_machine=platform.machine(),
+        hub_package_provenance=_huggingface_hub_package_provenance(),
         lock_sha256=_lock_sha256(),
     )
 
@@ -258,6 +308,12 @@ def verify_reference_environment_receipt(
     lock_sha = receipt["lock_sha256"]
     if lock_sha != _lock_sha256():
         raise CaptureContractError("reference environment lock_sha256 does not match the checked-in lock")
+    _validate_hub_package_provenance(
+        {
+            "file_count": receipt["huggingface_hub_package_file_count"],
+            "receipt_sha256": receipt["huggingface_hub_package_receipt_sha256"],
+        }
+    )
     observed_hash = receipt["environment_receipt_sha256"]
     if (
         not isinstance(observed_hash, str)
