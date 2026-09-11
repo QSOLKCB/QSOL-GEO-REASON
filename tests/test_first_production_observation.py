@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from qsol_geo_reason.capture_common import CaptureContractError
+from qsol_geo_reason.capture_common import (
+    CaptureBackendUnavailable,
+    CaptureContractError,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,6 +86,42 @@ class FirstProductionObservationTests(unittest.TestCase):
             self.assertFalse(output.exists())
             self.assertEqual(list(directory.glob(".request.json.tmp.*")), [])
 
+    def test_observe_snapshots_request_before_launching_workers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            original = self._materialized_request()
+            request_path = directory / "request.json"
+            request_path.write_text(json.dumps(original), encoding="utf-8")
+            output_root = directory / "observation"
+            seen_paths: list[Path] = []
+
+            def fake_run(path: Path, output: Path, revision: str | None) -> str:
+                seen_paths.append(path)
+                if len(seen_paths) == 1:
+                    changed = json.loads(json.dumps(original))
+                    changed["model"]["revision_tree_sha256"] = "9" * 64
+                    request_path.write_text(json.dumps(changed), encoding="utf-8")
+                return "a" * 64
+
+            verdict = {"replay_outcome": "byte_identical"}
+            with (
+                mock.patch.object(TOOL, "_run_capture", side_effect=fake_run),
+                mock.patch.object(TOOL, "build_replay_verdict", return_value=verdict),
+                mock.patch.object(TOOL, "verify_replay_verdict", return_value=verdict),
+            ):
+                observed, status = TOOL.observe(request_path, output_root, None)
+
+            self.assertEqual(status, 0)
+            self.assertEqual(observed, verdict)
+            self.assertEqual(len(seen_paths), 2)
+            self.assertEqual(seen_paths[0], seen_paths[1])
+            self.assertNotEqual(seen_paths[0], request_path)
+            snapshot = json.loads(
+                (output_root / "validated-request.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(snapshot, original)
+            self.assertNotEqual(json.loads(request_path.read_text(encoding="utf-8")), original)
+
     def test_failed_observation_is_preserved_without_blocking_retry_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
@@ -107,6 +149,37 @@ class FirstProductionObservationTests(unittest.TestCase):
             )
             self.assertEqual(marker["attempt_status"], "failed_before_replay_verdict")
             self.assertEqual(marker["completed_run_directories"], [])
+            self.assertTrue((failed[0] / "validated-request.json").is_file())
+
+    def test_prepare_missing_capture_dependency_uses_argparse_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "request.json"
+            stderr = io.StringIO()
+            with (
+                mock.patch.object(
+                    TOOL,
+                    "prepare_tree_receipts",
+                    side_effect=CaptureBackendUnavailable(
+                        "install qsol-geo-reason[capture]"
+                    ),
+                ),
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    [
+                        str(SCRIPT),
+                        "prepare",
+                        "--output",
+                        str(output),
+                    ],
+                ),
+                contextlib.redirect_stderr(stderr),
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    TOOL.main()
+            self.assertEqual(raised.exception.code, 2)
+            self.assertIn("install qsol-geo-reason[capture]", stderr.getvalue())
+            self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":
