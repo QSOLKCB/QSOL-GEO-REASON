@@ -129,7 +129,12 @@ class Phase2AProvenanceHardeningTests(unittest.TestCase):
 
     def test_experiment_uses_python311_frozen_reference_installation(self) -> None:
         document = EXPERIMENT_DOC.read_text(encoding="utf-8")
-        self.assertIn("python3.11 -m venv", document)
+        self.assertIn(
+            "python3.11 -m venv /tmp/qsol-geo-reason-capture-py311",
+            document,
+        )
+        self.assertNotIn("python3.11 -m venv .venv-capture-py311", document)
+        self.assertIn("outside the repository checkout", document)
         self.assertIn("constraints/capture-reference-py311.txt", document)
         self.assertIn("torch==2.2.2", document)
         self.assertIn("download.pytorch.org/whl/cpu", document)
