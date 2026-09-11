@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from qsol_geo_reason import capture_publish
 from qsol_geo_reason import first_production_observation as TOOL
 from qsol_geo_reason.capture_common import (
     CaptureBackendUnavailable,
@@ -95,10 +96,10 @@ class FirstProductionObservationTests(unittest.TestCase):
             base = Path(tmp)
             output_root = base / "level-a" / "level-b" / "observation"
             synced: list[Path] = []
-            with mock.patch.object(
-                TOOL,
-                "_fsync_directory",
-                side_effect=lambda path: synced.append(Path(path)),
+            recorder = lambda path: synced.append(Path(path))
+            with (
+                mock.patch.object(capture_publish, "_fsync_directory", side_effect=recorder),
+                mock.patch.object(TOOL, "_fsync_directory", side_effect=recorder),
             ):
                 TOOL._create_output_root_durable(output_root)
             self.assertTrue(output_root.is_dir())
