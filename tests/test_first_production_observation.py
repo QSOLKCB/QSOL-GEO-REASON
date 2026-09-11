@@ -3,13 +3,13 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from qsol_geo_reason import capture_publish
 from qsol_geo_reason import first_production_observation as TOOL
 from qsol_geo_reason.capture_common import (
     CaptureBackendUnavailable,
@@ -28,6 +28,24 @@ class FirstProductionObservationTests(unittest.TestCase):
         request["model"]["revision_tree_sha256"] = "1" * 64
         request["model"]["tokenizer_revision_tree_sha256"] = "2" * 64
         return TOOL._assert_exact_experiment_request(request, require_receipts=True)
+
+    def _write_preparation_receipt(
+        self,
+        request_path: Path,
+        request: dict,
+        repository_commit: str = "d" * 40,
+    ) -> Path:
+        receipt = TOOL.build_preparation_receipt(
+            request=request,
+            repository_commit=repository_commit,
+            experiment_id=TOOL.EXPERIMENT_ID,
+        )
+        path = TOOL._default_preparation_receipt_path(request_path)
+        path.write_text(
+            json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        return path
 
     def test_tools_entrypoint_contains_no_evidence_orchestration(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
@@ -65,19 +83,47 @@ class FirstProductionObservationTests(unittest.TestCase):
         with self.assertRaises(CaptureContractError):
             TOOL._assert_exact_experiment_request(final, require_receipts=True)
 
-    def test_prepare_writes_one_final_request_and_refuses_overwrite(self) -> None:
+    def test_prepare_binds_clean_revision_and_writes_request_plus_provenance(self) -> None:
         receipts = {
             "revision_tree_sha256": "a" * 64,
             "tokenizer_revision_tree_sha256": "b" * 64,
         }
+        repository_commit = "c" * 40
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "nested" / "final-request.json"
-            with mock.patch.object(TOOL, "prepare_tree_receipts", return_value=receipts):
+            with (
+                mock.patch.object(TOOL, "prepare_tree_receipts", return_value=receipts),
+                mock.patch.object(
+                    TOOL,
+                    "resolve_implementation_revision",
+                    return_value=repository_commit,
+                ) as resolver,
+            ):
                 request_sha256 = TOOL.prepare(output)
                 written = json.loads(output.read_text(encoding="utf-8"))
+                preparation_path = TOOL._default_preparation_receipt_path(output)
+                preparation = json.loads(preparation_path.read_text(encoding="utf-8"))
+                verified = TOOL.verify_preparation_receipt(
+                    preparation,
+                    request=written,
+                    experiment_id=TOOL.EXPERIMENT_ID,
+                )
+                self.assertEqual(verified, preparation)
+                self.assertEqual(
+                    preparation["preparation_repository_commit"], repository_commit
+                )
                 self.assertEqual(written["model"]["revision_tree_sha256"], "a" * 64)
-                self.assertEqual(written["model"]["tokenizer_revision_tree_sha256"], "b" * 64)
+                self.assertEqual(
+                    written["model"]["tokenizer_revision_tree_sha256"], "b" * 64
+                )
                 self.assertEqual(request_sha256, TOOL.sha256_json(written))
+                self.assertEqual(resolver.call_count, 2)
+                resolver.assert_has_calls(
+                    [
+                        mock.call(None, require_checkout=True),
+                        mock.call(repository_commit, require_checkout=True),
+                    ]
+                )
                 with self.assertRaises(CaptureContractError):
                     TOOL.prepare(output)
 
@@ -96,10 +142,16 @@ class FirstProductionObservationTests(unittest.TestCase):
             base = Path(tmp)
             output_root = base / "level-a" / "level-b" / "observation"
             synced: list[Path] = []
-            recorder = lambda path: synced.append(Path(path))
+
+            def record(path: Path) -> None:
+                synced.append(Path(path))
+
             with (
-                mock.patch.object(capture_publish, "_fsync_directory", side_effect=recorder),
-                mock.patch.object(TOOL, "_fsync_directory", side_effect=recorder),
+                mock.patch.object(TOOL, "_fsync_directory", side_effect=record),
+                mock.patch(
+                    "qsol_geo_reason.capture_publish._fsync_directory",
+                    side_effect=record,
+                ),
             ):
                 TOOL._create_output_root_durable(output_root)
             self.assertTrue(output_root.is_dir())
@@ -108,12 +160,68 @@ class FirstProductionObservationTests(unittest.TestCase):
                 [base, base / "level-a", base / "level-a" / "level-b"],
             )
 
-    def test_observe_snapshots_request_and_assigns_distinct_execution_ids(self) -> None:
+    def test_intermediate_capture_cli_is_isolated_from_python_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            request = root / "request.json"
+            request.write_text("{}", encoding="utf-8")
+            output = root / "run-a"
+            execution_receipt = root / "run-a-execution-receipt.json"
+            seen: dict[str, object] = {}
+
+            def fake_run(command, **kwargs):
+                seen["command"] = list(command)
+                seen["env"] = dict(kwargs["env"])
+                execution_receipt.write_text("{}\n", encoding="utf-8")
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout="a" * 64 + "\n",
+                    stderr="",
+                )
+
+            with (
+                mock.patch.object(TOOL.subprocess, "run", side_effect=fake_run),
+                mock.patch.dict(
+                    TOOL.os.environ,
+                    {
+                        "PYTHONPATH": "/tmp/adversarial",
+                        "PYTHONHOME": "/tmp/fake-home",
+                    },
+                    clear=False,
+                ),
+            ):
+                receipt = TOOL._run_capture(
+                    request,
+                    output,
+                    "f" * 40,
+                    "EXEC-A",
+                    execution_receipt,
+                )
+            self.assertEqual(receipt, "a" * 64)
+            command = seen["command"]
+            self.assertEqual(
+                command[:5],
+                [
+                    sys.executable,
+                    "-I",
+                    "-B",
+                    "-m",
+                    "qsol_geo_reason.capture_cli",
+                ],
+            )
+            environment = seen["env"]
+            self.assertFalse(
+                any(str(key).upper().startswith("PYTHON") for key in environment)
+            )
+
+    def test_observe_snapshots_request_preparation_and_assigns_distinct_execution_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             original = self._materialized_request()
             request_path = directory / "request.json"
             request_path.write_text(json.dumps(original), encoding="utf-8")
+            preparation_path = self._write_preparation_receipt(request_path, original)
             output_root = directory / "observation"
             seen_paths: list[Path] = []
             seen_revisions: list[str] = []
@@ -143,7 +251,12 @@ class FirstProductionObservationTests(unittest.TestCase):
                 mock.patch.object(TOOL, "build_replay_verdict", return_value=verdict),
                 mock.patch.object(TOOL, "verify_replay_verdict", return_value=verdict),
             ):
-                observed, status = TOOL.observe(request_path, output_root, None)
+                observed, status = TOOL.observe(
+                    request_path,
+                    output_root,
+                    None,
+                    preparation_path,
+                )
 
             resolver.assert_called_once_with(None, require_checkout=True)
             self.assertEqual(status, 0)
@@ -164,14 +277,44 @@ class FirstProductionObservationTests(unittest.TestCase):
             snapshot = json.loads(
                 (output_root / "validated-request.json").read_text(encoding="utf-8")
             )
+            archived_preparation = json.loads(
+                (output_root / "preparation-receipt.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(snapshot, original)
+            self.assertEqual(
+                archived_preparation,
+                json.loads(preparation_path.read_text(encoding="utf-8")),
+            )
             self.assertNotEqual(json.loads(request_path.read_text(encoding="utf-8")), original)
 
-    def test_failed_observation_preserves_revision_and_planned_execution_ids(self) -> None:
+    def test_observe_rejects_tampered_preparation_before_creating_attempt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
+            request = self._materialized_request()
             request_path = directory / "request.json"
-            request_path.write_text(json.dumps(self._materialized_request()), encoding="utf-8")
+            request_path.write_text(json.dumps(request), encoding="utf-8")
+            preparation_path = self._write_preparation_receipt(request_path, request)
+            preparation = json.loads(preparation_path.read_text(encoding="utf-8"))
+            preparation["request_sha256"] = "0" * 64
+            preparation_path.write_text(json.dumps(preparation), encoding="utf-8")
+            output_root = directory / "observation"
+            with self.assertRaisesRegex(
+                CaptureContractError, "request_sha256 does not match"
+            ):
+                TOOL.observe(request_path, output_root, None, preparation_path)
+            self.assertFalse(output_root.exists())
+
+    def test_failed_observation_preserves_both_phase_revisions_and_planned_execution_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            request = self._materialized_request()
+            request_path = directory / "request.json"
+            request_path.write_text(json.dumps(request), encoding="utf-8")
+            preparation_path = self._write_preparation_receipt(
+                request_path,
+                request,
+                repository_commit="c" * 40,
+            )
             output_root = directory / "missing-parent" / "observation"
             repository_commit = "e" * 40
             with (
@@ -187,7 +330,12 @@ class FirstProductionObservationTests(unittest.TestCase):
                 ) as run_capture,
             ):
                 with self.assertRaisesRegex(CaptureContractError, "incomplete evidence preserved"):
-                    TOOL.observe(request_path, output_root, None)
+                    TOOL.observe(
+                        request_path,
+                        output_root,
+                        None,
+                        preparation_path,
+                    )
             self.assertEqual(run_capture.call_count, 1)
             self.assertEqual(run_capture.call_args.args[2], repository_commit)
             self.assertFalse(output_root.exists())
@@ -197,6 +345,8 @@ class FirstProductionObservationTests(unittest.TestCase):
                 (failed[0] / "execution-failure.json").read_text(encoding="utf-8")
             )
             self.assertEqual(marker["repository_commit"], repository_commit)
+            self.assertEqual(marker["preparation_repository_commit"], "c" * 40)
+            self.assertRegex(marker["preparation_receipt_sha256"], r"^[0-9a-f]{64}$")
             self.assertEqual(marker["attempt_status"], "failed_before_replay_verdict")
             self.assertEqual(marker["completed_run_directories"], [])
             self.assertNotEqual(
@@ -204,12 +354,44 @@ class FirstProductionObservationTests(unittest.TestCase):
                 marker["planned_execution_ids"]["run-b"],
             )
             self.assertTrue((failed[0] / "validated-request.json").is_file())
+            self.assertTrue((failed[0] / "preparation-receipt.json").is_file())
+
+    def test_failure_rename_reports_new_path_even_if_parent_fsync_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            output_root = directory / "observation"
+            output_root.mkdir()
+            preparation = {
+                "preparation_repository_commit": "c" * 40,
+                "preparation_receipt_sha256": "d" * 64,
+            }
+            with (
+                mock.patch.object(TOOL, "_exclusive_write_json"),
+                mock.patch.object(
+                    TOOL,
+                    "_fsync_directory",
+                    side_effect=OSError("metadata sync failed"),
+                ),
+            ):
+                preserved = TOOL._preserve_failed_attempt(
+                    output_root,
+                    CaptureContractError("worker failed"),
+                    "e" * 40,
+                    {"run-a": "EXEC-A", "run-b": "EXEC-B"},
+                    preparation,
+                )
+            self.assertNotEqual(preserved, output_root)
+            self.assertFalse(output_root.exists())
+            self.assertTrue(preserved.exists())
+            self.assertTrue(preserved.name.startswith("observation.failed-"))
 
     def test_revision_resolution_failure_creates_no_attempt_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
+            request = self._materialized_request()
             request_path = directory / "request.json"
-            request_path.write_text(json.dumps(self._materialized_request()), encoding="utf-8")
+            request_path.write_text(json.dumps(request), encoding="utf-8")
+            preparation_path = self._write_preparation_receipt(request_path, request)
             output_root = directory / "observation"
             with mock.patch.object(
                 TOOL,
@@ -217,7 +399,7 @@ class FirstProductionObservationTests(unittest.TestCase):
                 side_effect=SourceIdentityError("checkout is dirty"),
             ):
                 with self.assertRaisesRegex(CaptureContractError, "unable to bind production observation"):
-                    TOOL.observe(request_path, output_root, None)
+                    TOOL.observe(request_path, output_root, None, preparation_path)
             self.assertFalse(output_root.exists())
 
     def test_prepare_missing_capture_dependency_uses_argparse_error(self) -> None:
@@ -225,6 +407,11 @@ class FirstProductionObservationTests(unittest.TestCase):
             output = Path(tmp) / "request.json"
             stderr = io.StringIO()
             with (
+                mock.patch.object(
+                    TOOL,
+                    "resolve_implementation_revision",
+                    return_value="f" * 40,
+                ),
                 mock.patch.object(
                     TOOL,
                     "prepare_tree_receipts",
@@ -237,6 +424,7 @@ class FirstProductionObservationTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, 2)
             self.assertIn("install qsol-geo-reason[capture]", stderr.getvalue())
             self.assertFalse(output.exists())
+            self.assertFalse(TOOL._default_preparation_receipt_path(output).exists())
 
 
 if __name__ == "__main__":

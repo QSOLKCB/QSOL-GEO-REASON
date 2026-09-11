@@ -50,7 +50,7 @@ They are intentionally not guessed or copied into the preregistered template. Th
 - `model.revision_tree_sha256`; and
 - `model.tokenizer_revision_tree_sha256`.
 
-`tools/run_first_production_observation.py` enforces that boundary by comparing the final request against the committed template after removing exactly those two fields.
+The authenticated package orchestrator enforces that boundary by comparing the final request against the committed template after removing exactly those two fields.
 
 ## Execution procedure
 
@@ -69,9 +69,20 @@ python tools/run_first_production_observation.py prepare \
   --output /tmp/GEO-CAP-001-EXP-001.request.json
 ```
 
-This warms the exact model/tokenizer commit, creates the authenticated QSOL Hub tree artifacts, injects their receipts into the frozen request, and prints the canonical request SHA-256. The final request is first written and fsynced to a sibling temporary file, then published with no-replace semantics, so a failed write cannot leave a partial destination that blocks a clean retry.
+Preparation authenticates the clean QSOL-GEO-REASON checkout **before** contacting the Hub, pins the canonical public Hugging Face endpoint, warms the exact model/tokenizer commit, creates the authenticated QSOL Hub tree artifacts, and injects their receipts into the frozen request. It then reauthenticates the same repository revision before publication.
 
-The final request is the request that must be preserved with the evidence bundle.
+A successful preparation publishes two immutable files:
+
+```text
+/tmp/GEO-CAP-001-EXP-001.request.json
+/tmp/GEO-CAP-001-EXP-001.request.preparation-receipt.json
+```
+
+The preparation receipt is governed by `schemas/capture-preparation-receipt.schema.json`. It records the clean repository commit that executed preparation, the canonical Hugging Face endpoint, the finalized request SHA-256, the frozen model/tokenizer repository and commit identities, both Hub tree receipts, and a self-hash. The final request is not considered a complete prepared input without this receipt.
+
+The preparation receipt is published first and the finalized request second, both with no-replace durable JSON publication. If request publication fails, the tool removes the just-created receipt when possible so an explicit retry is not blocked by an incomplete preparation.
+
+Preserve **both** preparation files together.
 
 ### 2. Offline dual observation and replay check
 
@@ -80,28 +91,40 @@ Disconnect network access if practical, or otherwise rely on the tool's forced H
 ```bash
 python tools/run_first_production_observation.py observe \
   --request /tmp/GEO-CAP-001-EXP-001.request.json \
+  --preparation-receipt /tmp/GEO-CAP-001-EXP-001.request.preparation-receipt.json \
   --output-root /tmp/GEO-CAP-001-EXP-001
 ```
 
-Before launching either worker, the runner validates the final request and publishes an immutable canonical snapshot named `validated-request.json`. Both workers consume that staged snapshot rather than reopening the caller's original request path. The replay verifier then requires each bundle's `capture-request.json` to equal the validated snapshot exactly, including both authenticated tree-receipt hashes.
+`--preparation-receipt` may be omitted when the canonical sidecar name above has not changed; the orchestrator derives it from `--request`.
 
-The canonical capture CLI launches a fresh isolated worker for each run. A successful experiment directory is:
+Before creating an observation attempt, the orchestrator verifies that the preparation receipt is self-consistent and matches the exact finalized request. It separately authenticates the clean repository revision that will execute the observation. The preparation revision and observation revision may therefore be reviewed independently if the checkout legitimately advanced between phases.
+
+The orchestrator publishes immutable snapshots named `validated-request.json` and `preparation-receipt.json` inside the experiment directory. Both capture subprocesses consume the staged request snapshot. The intermediate capture CLI is itself launched with CPython isolated mode (`-I -B`) and a Python-injection-stripped environment before it launches the already isolated canonical worker.
+
+Each physical replay execution receives a distinct occurrence identity. That identity lives in a separate worker-generated execution receipt and does **not** mutate the frozen scientific request, its preregistered `run_id`, or the three canonical bundle files.
+
+A successful experiment directory is:
 
 ```text
 GEO-CAP-001-EXP-001/
 ├── validated-request.json
+├── preparation-receipt.json
 ├── run-a/
 │   ├── capture-request.json
 │   ├── run-manifest.json
 │   └── captured-trajectory.json
+├── run-a-execution-receipt.json
 ├── run-b/
 │   ├── capture-request.json
 │   ├── run-manifest.json
 │   └── captured-trajectory.json
+├── run-b-execution-receipt.json
 └── replay-verdict.json
 ```
 
-Both observation bundles are independently verified with the canonical semantic verifier. `replay-verdict.json` is itself a machine-readable evidence artifact governed by `schemas/replay-verdict.schema.json` and the semantic verifier `qsol_geo_reason.capture_replay.verify_replay_verdict`. The verifier recomputes the validated-request artifact hash, every canonical bundle-file hash, manifest-receipt equality, trajectory-hash equality, repository-commit equality, and the resulting replay outcome before accepting the verdict.
+Both observation bundles are independently verified with the canonical semantic verifier. Each execution receipt is self-hashed and bound to its exact bundle, and `replay-verdict.json` binds both distinct execution identities and receipt-file hashes while evaluating deterministic replay from the three canonical scientific bundle files.
+
+`replay-verdict.json` is itself governed by `schemas/replay-verdict.schema.json` and the semantic verifier `qsol_geo_reason.capture_replay.verify_replay_verdict`. The verifier recomputes the validated-request artifact hash, every canonical bundle-file hash, execution-receipt binding, manifest-receipt equality, trajectory-hash equality, repository-commit equality, and the resulting replay outcome before accepting the verdict.
 
 A completed divergence is retained. The tool writes `replay_outcome: "diverged"` and exits nonzero rather than tuning the request, deleting the differing run, or silently weakening the determinism requirement.
 
@@ -110,6 +133,8 @@ If a worker, verifier, or filesystem operation fails **before** a replay verdict
 ```text
 GEO-CAP-001-EXP-001.failed-<pid>-<nonce>/
 ```
+
+The failure marker records both the preparation revision and the observation revision, together with the planned execution identities. If the directory rename succeeds but the subsequent parent-directory durability sync fails, the reported preserved path is still the renamed failure directory—the tool does not point the operator at the now-nonexistent original path.
 
 That preserves partial/failure evidence while freeing the requested `/tmp/GEO-CAP-001-EXP-001` path for an explicit retry. A failed-attempt directory is never a successful replay result and must not be substituted for the final experiment.
 

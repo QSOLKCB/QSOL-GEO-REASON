@@ -18,6 +18,10 @@ from typing import Any, Mapping
 from .canonical import canonical_json_bytes, sha256_json
 from .capture_common import CaptureBackendUnavailable, CaptureContractError
 from .capture_hub_tree import prepare_tree_receipts
+from .capture_preparation import (
+    build_preparation_receipt,
+    verify_preparation_receipt,
+)
 from .capture_publish import _ensure_parent_directory_durable, _fsync_directory
 from .capture_replay import REPLAY_BUNDLE_FILES, build_replay_verdict, verify_replay_verdict
 from .capture_validation import validate_capture_request
@@ -77,6 +81,16 @@ def _assert_exact_experiment_request(
     if any(present) and not all(present):
         raise CaptureContractError("Hub tree receipts must be present as a complete pair")
     return validated
+
+
+def _default_preparation_receipt_path(request_path: Path) -> Path:
+    """Return the canonical sidecar path emitted by ``prepare`` for one request path."""
+    request_path = Path(request_path)
+    if request_path.suffix == ".json":
+        return request_path.with_name(
+            f"{request_path.stem}.preparation-receipt.json"
+        )
+    return request_path.with_name(f"{request_path.name}.preparation-receipt.json")
 
 
 def _create_output_root_durable(output_root: Path) -> None:
@@ -153,8 +167,30 @@ def _exclusive_write_json(path: Path, value: Mapping[str, Any]) -> None:
             pass
 
 
-def prepare(output: Path) -> str:
-    """Online warm-up that materializes the final immutable production request."""
+def prepare(
+    output: Path,
+    implementation_revision: str | None = None,
+) -> str:
+    """Online warm-up with a clean-revision provenance receipt for the final request."""
+    preparation_receipt_path = _default_preparation_receipt_path(output)
+    if output.exists():
+        raise CaptureContractError(f"refusing to overwrite existing artifact {output}")
+    if preparation_receipt_path.exists():
+        raise CaptureContractError(
+            f"refusing to overwrite existing artifact {preparation_receipt_path}"
+        )
+
+    # Authenticate the package implementation before any trusted online Hub work.
+    try:
+        preparation_repository_commit = resolve_implementation_revision(
+            implementation_revision,
+            require_checkout=True,
+        )
+    except SourceIdentityError as exc:
+        raise CaptureContractError(
+            f"unable to bind online preparation to a clean repository revision: {exc}"
+        ) from exc
+
     template = _load_template()
     receipts = prepare_tree_receipts(template)
     final_request = json.loads(json.dumps(template))
@@ -162,12 +198,56 @@ def prepare(output: Path) -> str:
     final_request = _assert_exact_experiment_request(
         final_request, require_receipts=True
     )
-    _exclusive_write_json(output, final_request)
+
+    # Reauthenticate the same revision after the online operation before publishing
+    # provenance. This rejects a checkout that changed while preparation was running.
+    try:
+        preparation_repository_commit = resolve_implementation_revision(
+            preparation_repository_commit,
+            require_checkout=True,
+        )
+    except SourceIdentityError as exc:
+        raise CaptureContractError(
+            f"online preparation implementation changed before publication: {exc}"
+        ) from exc
+
+    preparation_receipt = build_preparation_receipt(
+        request=final_request,
+        repository_commit=preparation_repository_commit,
+        experiment_id=EXPERIMENT_ID,
+    )
+    verify_preparation_receipt(
+        preparation_receipt,
+        request=final_request,
+        experiment_id=EXPERIMENT_ID,
+    )
+
+    # Publish the provenance sidecar first. A completed preparation is represented by
+    # the request path; therefore a crash cannot expose the final request without its
+    # preparation receipt. If request publication then fails, remove the sidecar when
+    # possible so an explicit retry is not needlessly blocked.
+    _exclusive_write_json(preparation_receipt_path, preparation_receipt)
+    try:
+        _exclusive_write_json(output, final_request)
+    except BaseException:
+        try:
+            preparation_receipt_path.unlink(missing_ok=True)
+            _fsync_directory(preparation_receipt_path.parent)
+        except OSError:
+            pass
+        raise
     return sha256_json(final_request)
 
 
 def _offline_environment() -> dict[str, str]:
-    environment = os.environ.copy()
+    # The intermediate CLI is launched with -I, which ignores PYTHON* controls. Strip
+    # them as defense in depth so the child environment itself also records no Python
+    # path/config injection surface.
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().startswith("PYTHON")
+    }
     environment.update(
         {
             "HF_HUB_OFFLINE": "1",
@@ -185,8 +265,12 @@ def _run_capture(
     execution_id: str,
     execution_receipt_path: Path,
 ) -> str:
+    # The intermediate CLI is isolated too: do not let PYTHONPATH/user-site state
+    # choose a different qsol_geo_reason package than the authenticated orchestrator.
     command = [
         sys.executable,
+        "-I",
+        "-B",
         "-m",
         "qsol_geo_reason.capture_cli",
         str(request_path.resolve()),
@@ -244,12 +328,19 @@ def _preserve_failed_attempt(
     exc: BaseException,
     repository_commit: str,
     execution_ids: Mapping[str, str],
+    preparation_receipt: Mapping[str, Any],
 ) -> Path:
     marker = {
         "schema_version": "1.0.0",
         "protocol_id": "GEO-CAP-001",
         "experiment_id": EXPERIMENT_ID,
         "repository_commit": repository_commit,
+        "preparation_repository_commit": preparation_receipt[
+            "preparation_repository_commit"
+        ],
+        "preparation_receipt_sha256": preparation_receipt[
+            "preparation_receipt_sha256"
+        ],
         "planned_execution_ids": dict(execution_ids),
         "attempt_status": "failed_before_replay_verdict",
         "error_type": type(exc).__name__,
@@ -269,20 +360,37 @@ def _preserve_failed_attempt(
     )
     try:
         os.rename(output_root, failed_path)
-        _fsync_directory(failed_path.parent)
-        return failed_path
     except OSError:
         return output_root
+
+    # At this point the evidence has already moved. A later durability fsync failure
+    # must not make the operator look at the now-nonexistent original path.
+    try:
+        _fsync_directory(failed_path.parent)
+    except OSError:
+        return failed_path
+    return failed_path
 
 
 def observe(
     request_path: Path,
     output_root: Path,
     implementation_revision: str | None,
+    preparation_receipt_path: Path | None = None,
 ) -> tuple[dict[str, Any], int]:
-    """Run two offline canonical observations from one immutable request snapshot."""
+    """Run two offline canonical observations from one prepared immutable request."""
     request = _assert_exact_experiment_request(
         _read_json(request_path), require_receipts=True
+    )
+    source_preparation_receipt_path = (
+        Path(preparation_receipt_path)
+        if preparation_receipt_path is not None
+        else _default_preparation_receipt_path(request_path)
+    )
+    preparation_receipt = verify_preparation_receipt(
+        _read_json(source_preparation_receipt_path),
+        request=request,
+        experiment_id=EXPERIMENT_ID,
     )
     if output_root.exists():
         raise CaptureContractError(
@@ -310,10 +418,24 @@ def observe(
 
     try:
         validated_request_path = output_root / "validated-request.json"
+        archived_preparation_receipt_path = output_root / "preparation-receipt.json"
         _exclusive_write_json(validated_request_path, request)
+        _exclusive_write_json(
+            archived_preparation_receipt_path,
+            preparation_receipt,
+        )
         if _read_json(validated_request_path) != request:
             raise CaptureContractError(
                 "validated request snapshot changed immediately after publication"
+            )
+        archived_preparation_receipt = verify_preparation_receipt(
+            _read_json(archived_preparation_receipt_path),
+            request=request,
+            experiment_id=EXPERIMENT_ID,
+        )
+        if archived_preparation_receipt != preparation_receipt:
+            raise CaptureContractError(
+                "preparation receipt snapshot changed immediately after publication"
             )
 
         run_a = output_root / "run-a"
@@ -368,6 +490,7 @@ def observe(
             exc,
             repository_commit,
             execution_ids,
+            preparation_receipt,
         )
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
             raise
@@ -385,15 +508,33 @@ def main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     prepare_parser = subparsers.add_parser(
         "prepare",
-        help="ONLINE: warm exact canonical-Hub commits and write the final request with tree receipts",
+        help=(
+            "ONLINE: warm exact canonical-Hub commits and write the final request plus preparation provenance"
+        ),
     )
     prepare_parser.add_argument("--output", type=Path, required=True)
+    prepare_parser.add_argument(
+        "--implementation-revision",
+        default=os.environ.get("QSOL_GEO_REASON_IMPLEMENTATION_REVISION"),
+        help=(
+            "Optional immutable repository commit to bind preparation explicitly. "
+            "If omitted, preparation requires a clean Git checkout and binds HEAD."
+        ),
+    )
     observe_parser = subparsers.add_parser(
         "observe",
-        help="OFFLINE: execute the final request twice and record the replay verdict",
+        help="OFFLINE: execute the prepared request twice and record the replay verdict",
     )
     observe_parser.add_argument("--request", type=Path, required=True)
     observe_parser.add_argument("--output-root", type=Path, required=True)
+    observe_parser.add_argument(
+        "--preparation-receipt",
+        type=Path,
+        help=(
+            "Preparation provenance receipt emitted by prepare. If omitted, derive the "
+            "canonical sidecar path from --request."
+        ),
+    )
     observe_parser.add_argument(
         "--implementation-revision",
         default=os.environ.get("QSOL_GEO_REASON_IMPLEMENTATION_REVISION"),
@@ -405,13 +546,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "prepare":
-            request_sha256 = prepare(args.output)
+            request_sha256 = prepare(
+                args.output,
+                args.implementation_revision,
+            )
             print(request_sha256)
             return 0
         verdict, status = observe(
             args.request,
             args.output_root,
             args.implementation_revision,
+            args.preparation_receipt,
         )
         print(json.dumps(verdict, sort_keys=True, separators=(",", ":")))
         return status
