@@ -54,11 +54,20 @@ The authenticated package orchestrator enforces that boundary by comparing the f
 
 ## Execution procedure
 
-Install the pinned capture lane in a clean checkout:
+Use the frozen Python 3.11 capture-reference lane from a clean checkout. Create an isolated Python 3.11 environment, install the pinned CPU PyTorch build, then install the capture extra under the repository constraints:
 
 ```bash
-python -m pip install -e '.[capture]'
+python3.11 -m venv .venv-capture-py311
+. .venv-capture-py311/bin/activate
+python -m pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.2.2'
+python -m pip install \
+  -c constraints/capture-reference-py311.txt \
+  -e '.[capture]' \
+  'jsonschema==4.23.0'
+python --version  # must report Python 3.11.x
 ```
+
+`constraints/capture-reference-py311.txt` is the authoritative frozen dependency set for this reference lane. Do not substitute a different compatible dependency resolution and still describe the run as the selected reference environment.
 
 ### 1. Online trusted preparation
 

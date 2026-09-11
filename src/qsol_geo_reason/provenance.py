@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import marshal
 import os
+import stat
 import subprocess
 import sys
 import types
@@ -25,28 +27,124 @@ _GENERATED_TOP_LEVEL = {
 }
 _IMPORTABLE_PACKAGE_ROOT = ("src", "qsol_geo_reason")
 _BYTECODE_SUFFIXES = (".pyc", ".pyo")
+_LOADER_ENV_PREFIXES = ("LD_", "DYLD_", "_RLD_", "LDR_")
+_LOADER_ENV_NAMES = frozenset({"GLIBC_TUNABLES", "LIBPATH", "SHLIB_PATH"})
+_TRUSTED_GIT_BASELINE: tuple[Path, str] | None = None
 
 
 def source_repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _git_run(root: Path, *args: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-    """Run an identity-sensitive Git command with replacement objects disabled.
+def _system_git_candidates() -> tuple[Path, ...]:
+    if os.name == "nt":
+        return (
+            Path(r"C:\Program Files\Git\cmd\git.exe"),
+            Path(r"C:\Program Files\Git\bin\git.exe"),
+        )
+    return (
+        Path("/usr/bin/git"),
+        Path("/bin/git"),
+        Path("/run/current-system/sw/bin/git"),
+    )
 
-    Local ``refs/replace`` entries intentionally rewrite object lookup without changing
-    the named commit ID. They are useful for repository surgery but cannot participate
-    in canonical source identity: a clean replacement tree must never be attributed to
-    the unreplaced commit SHA. Every Git query in this module therefore shares the same
-    fail-closed environment rather than relying on individual callers to remember it.
-    """
-    environment = os.environ.copy()
-    environment["GIT_NO_REPLACE_OBJECTS"] = "1"
-    return subprocess.run(
-        ["git", "-C", str(root), *args],
-        env=environment,
+
+def _hash_trusted_git_executable(path: Path) -> tuple[Path, str]:
+    try:
+        resolved = Path(path).resolve(strict=True)
+        info = resolved.stat()
+    except OSError as exc:
+        raise SourceIdentityError(f"unable to resolve trusted Git executable {path}") from exc
+    if not stat.S_ISREG(info.st_mode) or not os.access(resolved, os.X_OK):
+        raise SourceIdentityError(
+            f"trusted Git executable is not an executable regular file: {resolved}"
+        )
+    if os.name == "posix" and (
+        info.st_uid != 0 or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        raise SourceIdentityError(
+            f"trusted Git executable is not root-owned and non-writable by group/other: {resolved}"
+        )
+    digest = hashlib.sha256()
+    try:
+        with resolved.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise SourceIdentityError(f"unable to hash trusted Git executable {resolved}") from exc
+    return resolved, digest.hexdigest()
+
+
+def _trusted_git_executable() -> Path:
+    """Return one fixed system Git executable and detect later replacement."""
+    global _TRUSTED_GIT_BASELINE
+    if _TRUSTED_GIT_BASELINE is None:
+        last_error: BaseException | None = None
+        for candidate in _system_git_candidates():
+            try:
+                _TRUSTED_GIT_BASELINE = _hash_trusted_git_executable(candidate)
+                break
+            except SourceIdentityError as exc:
+                last_error = exc
+        if _TRUSTED_GIT_BASELINE is None:
+            raise SourceIdentityError(
+                "canonical source identity requires a trusted system Git executable"
+            ) from last_error
+    path, expected_digest = _TRUSTED_GIT_BASELINE
+    observed_path, observed_digest = _hash_trusted_git_executable(path)
+    if observed_path != path or observed_digest != expected_digest:
+        raise SourceIdentityError(
+            "trusted Git executable changed after source-identity initialization"
+        )
+    return path
+
+
+def _trusted_git_environment() -> dict[str, str]:
+    """Return a Git environment without repository, config, or loader redirection."""
+    environment: dict[str, str] = {}
+    for key, value in os.environ.items():
+        upper = key.upper()
+        if upper == "PATH" or upper.startswith("GIT_"):
+            continue
+        if upper.startswith(_LOADER_ENV_PREFIXES) or upper in _LOADER_ENV_NAMES:
+            continue
+        environment[key] = value
+    if os.name == "nt":
+        trusted_path = os.pathsep.join(
+            (
+                r"C:\Program Files\Git\cmd",
+                r"C:\Program Files\Git\bin",
+                r"C:\Windows\System32",
+            )
+        )
+    else:
+        trusted_path = os.pathsep.join(
+            ("/usr/bin", "/bin", "/run/current-system/sw/bin")
+        )
+    environment.update(
+        {
+            "PATH": trusted_path,
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "LC_ALL": "C",
+        }
+    )
+    return environment
+
+
+def _git_run(root: Path, *args: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    """Run an identity-sensitive Git command through the fixed trusted executable."""
+    git = _trusted_git_executable()
+    completed = subprocess.run(
+        [str(git), "-C", str(root), *args],
+        env=_trusted_git_environment(),
         **kwargs,
     )
+    _trusted_git_executable()
+    return completed
 
 
 def _is_importable_package_bytecode(path: str) -> bool:
@@ -511,8 +609,9 @@ def git_source_revision(
     against the HEAD tree, authenticate Git-ignored package bytecode against that
     source, and bind already-loaded package callables to a fresh compilation of the
     same clean tracked bytes. The direct file hashes do not trust index
-    ``assume-unchanged`` or ``skip-worktree`` hints, and all Git object lookups ignore
-    local replacement refs.
+    ``assume-unchanged`` or ``skip-worktree`` hints, and all Git object lookups use a
+    fixed, content-stable system Git executable with replacement/config/loader
+    redirection disabled.
     """
     root = source_repo_root()
     try:

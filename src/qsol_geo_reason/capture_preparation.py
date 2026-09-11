@@ -119,10 +119,15 @@ def verify_preparation_receipt(
         raise CaptureContractError("preparation receipt schema_version is invalid")
     if receipt["protocol_id"] != CAPTURE_PROTOCOL_ID:
         raise CaptureContractError("preparation receipt protocol_id is invalid")
-    _require_git_sha(
-        receipt["preparation_repository_commit"],
+    observed_repository_commit = receipt["preparation_repository_commit"]
+    normalized_repository_commit = _require_git_sha(
+        observed_repository_commit,
         "preparation receipt repository_commit",
     )
+    if observed_repository_commit != normalized_repository_commit:
+        raise CaptureContractError(
+            "preparation receipt repository_commit must be canonical lowercase 40-hex"
+        )
     if receipt["hub_endpoint"] != CANONICAL_HF_ENDPOINT:
         raise CaptureContractError(
             "preparation receipt hub_endpoint is not the canonical Hugging Face endpoint"

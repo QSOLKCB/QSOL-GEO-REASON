@@ -1,35 +1,22 @@
 """Direct authentication for tracked non-package research artifacts."""
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 
-from .provenance import SourceIdentityError, source_repo_root
-
-
-_LOADER_ENV_PREFIXES = ("LD_", "DYLD_", "_RLD_", "LDR_")
-_LOADER_ENV_NAMES = frozenset({"GLIBC_TUNABLES", "LIBPATH", "SHLIB_PATH"})
-
-
-def _trusted_git_environment() -> dict[str, str]:
-    """Return a Git environment without repository or native-loader redirection knobs."""
-    environment: dict[str, str] = {}
-    for key, value in os.environ.items():
-        upper = key.upper()
-        if upper.startswith("GIT_"):
-            continue
-        if upper.startswith(_LOADER_ENV_PREFIXES) or upper in _LOADER_ENV_NAMES:
-            continue
-        environment[key] = value
-    environment.update({"GIT_NO_REPLACE_OBJECTS": "1", "LC_ALL": "C"})
-    return environment
+from .provenance import (
+    SourceIdentityError,
+    _trusted_git_environment,
+    _trusted_git_executable,
+    source_repo_root,
+)
 
 
 def _git(root: Path, *args: str, text: bool = True) -> subprocess.CompletedProcess:
+    git = _trusted_git_executable()
     try:
-        return subprocess.run(
-            ["git", "-C", str(root), *args],
+        completed = subprocess.run(
+            [str(git), "-C", str(root), *args],
             env=_trusted_git_environment(),
             check=True,
             capture_output=True,
@@ -40,6 +27,8 @@ def _git(root: Path, *args: str, text: bool = True) -> subprocess.CompletedProce
         raise SourceIdentityError(
             f"unable to authenticate tracked artifact with Git command: {' '.join(args)}"
         ) from exc
+    _trusted_git_executable()
+    return completed
 
 
 def authenticate_tracked_file_against_revision(
@@ -52,8 +41,9 @@ def authenticate_tracked_file_against_revision(
 
     This deliberately bypasses the Git index so ``assume-unchanged`` and
     ``skip-worktree`` cannot hide a modified preregistration artifact. Replacement
-    objects, alternate Git directories/object stores, config-injection variables, and
-    native-loader injection are also excluded from the identity-sensitive Git child.
+    objects, alternate Git directories/object stores, config-injection variables,
+    native-loader injection, and caller-controlled Git executable lookup are excluded
+    from the identity-sensitive Git child.
     """
     if (
         not isinstance(revision, str)
