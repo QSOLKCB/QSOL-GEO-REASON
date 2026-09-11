@@ -69,7 +69,7 @@ python tools/run_first_production_observation.py prepare \
   --output /tmp/GEO-CAP-001-EXP-001.request.json
 ```
 
-This warms the exact model/tokenizer commit, creates the authenticated QSOL Hub tree artifacts, injects their receipts into the frozen request, writes the final request without overwriting any existing artifact, and prints the canonical request SHA-256.
+This warms the exact model/tokenizer commit, creates the authenticated QSOL Hub tree artifacts, injects their receipts into the frozen request, and prints the canonical request SHA-256. The final request is first written and fsynced to a sibling temporary file, then published with no-replace semantics, so a failed write cannot leave a partial destination that blocks a clean retry.
 
 The final request is the request that must be preserved with the evidence bundle.
 
@@ -100,7 +100,15 @@ GEO-CAP-001-EXP-001/
 
 Both observation bundles are independently verified with the canonical semantic verifier. The replay verdict records byte-level equality for each canonical bundle file, manifest-receipt equality, trajectory-hash equality, and the observed replay outcome.
 
-A divergence is retained. The tool writes `replay_outcome: "diverged"` and exits nonzero rather than tuning the request, deleting the differing run, or silently weakening the determinism requirement.
+A completed divergence is retained. The tool writes `replay_outcome: "diverged"` and exits nonzero rather than tuning the request, deleting the differing run, or silently weakening the determinism requirement.
+
+If a worker, verifier, or filesystem operation fails **before** a replay verdict exists, the incomplete attempt is not erased. The runner writes `execution-failure.json` where possible and moves the whole attempt to a uniquely named sibling such as:
+
+```text
+GEO-CAP-001-EXP-001.failed-<pid>-<nonce>/
+```
+
+That preserves partial/failure evidence while freeing the requested `/tmp/GEO-CAP-001-EXP-001` path for an explicit retry. A failed-attempt directory is never a successful replay result and must not be substituted for the final experiment.
 
 ## Evidence boundary
 
