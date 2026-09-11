@@ -49,6 +49,26 @@ def _assert_fresh_worker_boundary() -> None:
         )
 
 
+def _assert_execution_receipt_outside_bundle(
+    output_dir: Path,
+    execution_receipt: Path | None,
+) -> None:
+    """Reject occurrence receipts that would mutate an immutable published bundle."""
+    if execution_receipt is None:
+        return
+    try:
+        bundle = Path(output_dir).resolve(strict=False)
+        receipt = Path(execution_receipt).resolve(strict=False)
+        receipt.relative_to(bundle)
+    except ValueError:
+        return
+    except OSError as exc:
+        raise RuntimeError("unable to resolve execution receipt publication path") from exc
+    raise RuntimeError(
+        "--execution-receipt must be outside --output-dir; canonical bundle directories are immutable"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("request", type=Path)
@@ -58,31 +78,39 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--execution-receipt", type=Path)
     args = parser.parse_args(argv)
 
+    # Establish all pre-import trust boundaries before any production dependency or
+    # canonical capture module is imported into this interpreter.
     try:
         _assert_fresh_worker_boundary()
         if (args.execution_id is None) != (args.execution_receipt is None):
             raise RuntimeError(
                 "canonical execution identity requires both --execution-id and --execution-receipt"
             )
-
-        # Import only after the worker boundary is established. In particular no
-        # Torch/Transformers/Hub code has executed in this interpreter before here.
-        from .capture import (
-            CaptureBackendUnavailable,
-            CaptureContractError,
-            HuggingFacePyTorchBackend,
-            execute_capture,
-            validate_capture_request,
-            write_capture_bundle,
+        _assert_execution_receipt_outside_bundle(
+            args.output_dir,
+            args.execution_receipt,
         )
-        from . import capture_execute
-        from .capture_execution import (
-            build_execution_receipt,
-            verify_execution_receipt,
-            write_execution_receipt,
-        )
-        from .provenance import SourceIdentityError
+    except RuntimeError as exc:
+        print(f"qsol-geo-capture worker: {exc}", file=sys.stderr)
+        return 2
 
+    from .capture import (
+        CaptureBackendUnavailable,
+        CaptureContractError,
+        HuggingFacePyTorchBackend,
+        execute_capture,
+        validate_capture_request,
+        write_capture_bundle,
+    )
+    from . import capture_execute
+    from .capture_execution import (
+        build_execution_receipt,
+        verify_execution_receipt,
+        write_execution_receipt,
+    )
+    from .provenance import SourceIdentityError
+
+    try:
         request = json.loads(args.request.read_text(encoding="utf-8"))
         validated = validate_capture_request(request)
         implementation_revision = capture_execute.resolve_implementation_revision(
@@ -97,26 +125,19 @@ def main(argv: list[str] | None = None) -> int:
             evidence_class="OBSERVATION",
         )
 
-        execution_receipt = None
+        # Publish the immutable scientific bundle first. The occurrence receipt is
+        # deliberately outside that directory and is built from the exact archived
+        # bytes after publication, so its *_file_sha256 fields are literal file hashes.
+        write_capture_bundle(args.output_dir, validated, manifest, trajectory)
         if args.execution_id is not None:
             execution_receipt = build_execution_receipt(
                 execution_id=args.execution_id,
-                request=validated,
-                manifest=manifest,
-                trajectory=trajectory,
+                bundle_dir=args.output_dir,
             )
             verify_execution_receipt(
                 execution_receipt,
-                request=validated,
-                manifest=manifest,
-                trajectory=trajectory,
+                bundle_dir=args.output_dir,
             )
-
-        # Publish the immutable scientific bundle first. If the separate occurrence
-        # receipt cannot then be durably published, this worker fails and the parent
-        # experiment preserves the attempt rather than accepting an identity-less run.
-        write_capture_bundle(args.output_dir, validated, manifest, trajectory)
-        if execution_receipt is not None:
             write_execution_receipt(args.execution_receipt, execution_receipt)
 
         print(manifest["manifest_sha256"])

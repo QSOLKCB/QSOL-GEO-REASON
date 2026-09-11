@@ -26,6 +26,7 @@ from .capture_publish import _ensure_parent_directory_durable, _fsync_directory
 from .capture_replay import REPLAY_BUNDLE_FILES, build_replay_verdict, verify_replay_verdict
 from .capture_validation import validate_capture_request
 from .provenance import SourceIdentityError, resolve_implementation_revision
+from .tracked_artifact import authenticate_tracked_file_against_revision
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -45,7 +46,14 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def _load_template() -> dict[str, Any]:
+def _load_template(repository_commit: str | None = None) -> dict[str, Any]:
+    if repository_commit is not None:
+        try:
+            authenticate_tracked_file_against_revision(TEMPLATE, repository_commit)
+        except SourceIdentityError as exc:
+            raise CaptureContractError(
+                f"frozen experiment template is not bound to repository revision {repository_commit}: {exc}"
+            ) from exc
     template = validate_capture_request(_read_json(TEMPLATE))
     model = template["model"]
     if any(field in model for field in TREE_FIELDS):
@@ -64,10 +72,13 @@ def _without_tree_receipts(request: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _assert_exact_experiment_request(
-    request: Mapping[str, Any], *, require_receipts: bool
+    request: Mapping[str, Any],
+    *,
+    require_receipts: bool,
+    repository_commit: str | None = None,
 ) -> dict[str, Any]:
     validated = validate_capture_request(request)
-    template = _load_template()
+    template = _load_template(repository_commit)
     if _without_tree_receipts(validated) != template:
         raise CaptureContractError(
             f"request does not match the frozen {EXPERIMENT_ID} experiment declaration"
@@ -180,7 +191,6 @@ def prepare(
             f"refusing to overwrite existing artifact {preparation_receipt_path}"
         )
 
-    # Authenticate the package implementation before any trusted online Hub work.
     try:
         preparation_repository_commit = resolve_implementation_revision(
             implementation_revision,
@@ -191,24 +201,30 @@ def prepare(
             f"unable to bind online preparation to a clean repository revision: {exc}"
         ) from exc
 
-    template = _load_template()
+    # The preregistered experiment declaration is outside src/, so authenticate its
+    # literal working-tree bytes against the same bound revision before trusting it.
+    template = _load_template(preparation_repository_commit)
     receipts = prepare_tree_receipts(template)
     final_request = json.loads(json.dumps(template))
     final_request["model"].update(receipts)
     final_request = _assert_exact_experiment_request(
-        final_request, require_receipts=True
+        final_request,
+        require_receipts=True,
+        repository_commit=preparation_repository_commit,
     )
 
-    # Reauthenticate the same revision after the online operation before publishing
-    # provenance. This rejects a checkout that changed while preparation was running.
     try:
         preparation_repository_commit = resolve_implementation_revision(
             preparation_repository_commit,
             require_checkout=True,
         )
+        authenticate_tracked_file_against_revision(
+            TEMPLATE,
+            preparation_repository_commit,
+        )
     except SourceIdentityError as exc:
         raise CaptureContractError(
-            f"online preparation implementation changed before publication: {exc}"
+            f"online preparation inputs changed before publication: {exc}"
         ) from exc
 
     preparation_receipt = build_preparation_receipt(
@@ -222,10 +238,6 @@ def prepare(
         experiment_id=EXPERIMENT_ID,
     )
 
-    # Publish the provenance sidecar first. A completed preparation is represented by
-    # the request path; therefore a crash cannot expose the final request without its
-    # preparation receipt. If request publication then fails, remove the sidecar when
-    # possible so an explicit retry is not needlessly blocked.
     _exclusive_write_json(preparation_receipt_path, preparation_receipt)
     try:
         _exclusive_write_json(output, final_request)
@@ -240,9 +252,6 @@ def prepare(
 
 
 def _offline_environment() -> dict[str, str]:
-    # The intermediate CLI is launched with -I, which ignores PYTHON* controls. Strip
-    # them as defense in depth so the child environment itself also records no Python
-    # path/config injection surface.
     environment = {
         key: value
         for key, value in os.environ.items()
@@ -265,8 +274,6 @@ def _run_capture(
     execution_id: str,
     execution_receipt_path: Path,
 ) -> str:
-    # The intermediate CLI is isolated too: do not let PYTHONPATH/user-site state
-    # choose a different qsol_geo_reason package than the authenticated orchestrator.
     command = [
         sys.executable,
         "-I",
@@ -362,9 +369,6 @@ def _preserve_failed_attempt(
         os.rename(output_root, failed_path)
     except OSError:
         return output_root
-
-    # At this point the evidence has already moved. A later durability fsync failure
-    # must not make the operator look at the now-nonexistent original path.
     try:
         _fsync_directory(failed_path.parent)
     except OSError:
@@ -379,8 +383,27 @@ def observe(
     preparation_receipt_path: Path | None = None,
 ) -> tuple[dict[str, Any], int]:
     """Run two offline canonical observations from one prepared immutable request."""
+    if output_root.exists():
+        raise CaptureContractError(
+            f"refusing to reuse output root {output_root}; observation evidence directories are immutable"
+        )
+
+    # Authenticate the executing package revision before accepting the external
+    # preregistration template as the definition of this experiment.
+    try:
+        repository_commit = resolve_implementation_revision(
+            implementation_revision,
+            require_checkout=True,
+        )
+    except SourceIdentityError as exc:
+        raise CaptureContractError(
+            f"unable to bind production observation to a clean repository revision: {exc}"
+        ) from exc
+
     request = _assert_exact_experiment_request(
-        _read_json(request_path), require_receipts=True
+        _read_json(request_path),
+        require_receipts=True,
+        repository_commit=repository_commit,
     )
     source_preparation_receipt_path = (
         Path(preparation_receipt_path)
@@ -392,22 +415,6 @@ def observe(
         request=request,
         experiment_id=EXPERIMENT_ID,
     )
-    if output_root.exists():
-        raise CaptureContractError(
-            f"refusing to reuse output root {output_root}; observation evidence directories are immutable"
-        )
-
-    # This function itself is part of the package tree authenticated by the resolver.
-    # The trust decision therefore no longer depends on executable logic under tools/.
-    try:
-        repository_commit = resolve_implementation_revision(
-            implementation_revision,
-            require_checkout=True,
-        )
-    except SourceIdentityError as exc:
-        raise CaptureContractError(
-            f"unable to bind production observation to a clean repository revision: {exc}"
-        ) from exc
 
     attempt_nonce = secrets.token_hex(16)
     execution_ids = {
@@ -460,6 +467,7 @@ def observe(
         verdict = build_replay_verdict(
             request=request,
             validated_request_path=validated_request_path,
+            preparation_receipt_path=archived_preparation_receipt_path,
             run_a_dir=run_a,
             run_b_dir=run_b,
             run_a_execution_receipt_path=run_a_execution_receipt,
@@ -475,6 +483,7 @@ def observe(
             persisted,
             request=request,
             validated_request_path=validated_request_path,
+            preparation_receipt_path=archived_preparation_receipt_path,
             run_a_dir=run_a,
             run_b_dir=run_b,
             run_a_execution_receipt_path=run_a_execution_receipt,

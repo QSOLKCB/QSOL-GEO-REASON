@@ -1,8 +1,8 @@
 """Per-execution provenance receipts for canonical GEO-CAP-001 capture bundles.
 
-A capture request may be frozen and replayed byte-for-byte.  ``run_id`` and
+A capture request may be frozen and replayed byte-for-byte. ``run_id`` and
 ``run_manifest_id`` therefore identify scientific/content state, not the physical
-occurrence of an execution.  This module adds a separate occurrence identity without
+occurrence of an execution. This module adds a separate occurrence identity without
 mutating the preregistered request or the three canonical bundle files.
 """
 from __future__ import annotations
@@ -17,7 +17,6 @@ from typing import Any, Mapping
 from .canonical import canonical_json_bytes, sha256_json
 from .capture_common import (
     CAPTURE_PROTOCOL_ID,
-    CAPTURE_SCHEMA_VERSION,
     CaptureContractError,
     _require_git_sha,
     _require_nonempty_string,
@@ -27,6 +26,11 @@ from .capture_verify import verify_capture_bundle
 
 EXECUTION_RECEIPT_SCHEMA_VERSION = "1.0.0"
 EXECUTION_RECEIPT_FILENAME = "execution-receipt.json"
+_BUNDLE_FILES = (
+    "capture-request.json",
+    "run-manifest.json",
+    "captured-trajectory.json",
+)
 _EXECUTION_RECEIPT_KEYS = frozenset(
     {
         "schema_version",
@@ -56,19 +60,47 @@ def _require_sha256(value: Any, where: str) -> str:
     return value
 
 
-def _canonical_file_sha256(value: Mapping[str, Any]) -> str:
-    payload = canonical_json_bytes(value) + b"\n"
-    return hashlib.sha256(payload).hexdigest()
+def _read_json_file(path: Path, where: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise CaptureContractError(f"unable to read {where} from {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise CaptureContractError(f"{where} must contain a JSON object")
+    return value
 
 
-def _receipt_payload(
-    *,
-    execution_id: str,
-    request: Mapping[str, Any],
-    manifest: Mapping[str, Any],
-    trajectory: Mapping[str, Any],
-) -> dict[str, Any]:
+def _sha256_file(path: Path, where: str) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise CaptureContractError(f"unable to hash {where} at {path}: {exc}") from exc
+
+
+def _load_published_bundle(
+    bundle_dir: Path,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, str]]:
+    """Load, semantically verify, and byte-hash one already-published bundle."""
+    directory = Path(bundle_dir)
+    request_path = directory / _BUNDLE_FILES[0]
+    manifest_path = directory / _BUNDLE_FILES[1]
+    trajectory_path = directory / _BUNDLE_FILES[2]
+    request = _read_json_file(request_path, "capture request")
+    manifest = _read_json_file(manifest_path, "run manifest")
+    trajectory = _read_json_file(trajectory_path, "captured trajectory")
     validated = verify_capture_bundle(request, manifest, trajectory)
+    receipts = {
+        "capture-request.json": _sha256_file(request_path, "capture-request.json"),
+        "run-manifest.json": _sha256_file(manifest_path, "run-manifest.json"),
+        "captured-trajectory.json": _sha256_file(
+            trajectory_path, "captured-trajectory.json"
+        ),
+    }
+    return validated, manifest, trajectory, receipts
+
+
+def _receipt_payload(*, execution_id: str, bundle_dir: Path) -> dict[str, Any]:
+    validated, manifest, trajectory, file_receipts = _load_published_bundle(bundle_dir)
     execution_id = _require_nonempty_string(execution_id, "execution_id")
     repository_commit = _require_git_sha(
         manifest.get("repository_commit"), "manifest.repository_commit"
@@ -89,37 +121,30 @@ def _receipt_payload(
         "trajectory_sha256": _require_sha256(
             trajectory.get("trajectory_sha256"), "trajectory.trajectory_sha256"
         ),
-        "capture_request_file_sha256": _canonical_file_sha256(validated),
-        "run_manifest_file_sha256": _canonical_file_sha256(manifest),
-        "captured_trajectory_file_sha256": _canonical_file_sha256(trajectory),
+        "capture_request_file_sha256": file_receipts["capture-request.json"],
+        "run_manifest_file_sha256": file_receipts["run-manifest.json"],
+        "captured_trajectory_file_sha256": file_receipts[
+            "captured-trajectory.json"
+        ],
     }
 
 
 def build_execution_receipt(
     *,
     execution_id: str,
-    request: Mapping[str, Any],
-    manifest: Mapping[str, Any],
-    trajectory: Mapping[str, Any],
+    bundle_dir: Path,
 ) -> dict[str, Any]:
-    """Build a self-hashed occurrence receipt bound to one verified bundle."""
-    payload = _receipt_payload(
-        execution_id=execution_id,
-        request=request,
-        manifest=manifest,
-        trajectory=trajectory,
-    )
+    """Build a self-hashed occurrence receipt from published bundle bytes."""
+    payload = _receipt_payload(execution_id=execution_id, bundle_dir=bundle_dir)
     return {**payload, "execution_receipt_sha256": sha256_json(payload)}
 
 
 def verify_execution_receipt(
     receipt: Mapping[str, Any],
     *,
-    request: Mapping[str, Any],
-    manifest: Mapping[str, Any],
-    trajectory: Mapping[str, Any],
+    bundle_dir: Path,
 ) -> dict[str, Any]:
-    """Fail closed on edited or cross-bundle execution occurrence metadata."""
+    """Fail closed on edited metadata or any mismatch with archived bundle bytes."""
     if not isinstance(receipt, dict):
         raise CaptureContractError("execution receipt must be an object")
     actual_keys = set(receipt)
@@ -138,16 +163,16 @@ def verify_execution_receipt(
         execution_id=_require_nonempty_string(
             receipt["execution_id"], "execution receipt execution_id"
         ),
-        request=request,
-        manifest=manifest,
-        trajectory=trajectory,
+        bundle_dir=bundle_dir,
     )
     observed_payload = {
-        key: receipt[key] for key in _EXECUTION_RECEIPT_KEYS if key != "execution_receipt_sha256"
+        key: receipt[key]
+        for key in _EXECUTION_RECEIPT_KEYS
+        if key != "execution_receipt_sha256"
     }
     if canonical_json_bytes(observed_payload) != canonical_json_bytes(expected_payload):
         raise CaptureContractError(
-            "execution receipt does not match the verified capture bundle"
+            "execution receipt does not match the verified archived capture bundle bytes"
         )
     receipt_sha = _require_sha256(
         receipt["execution_receipt_sha256"], "execution_receipt_sha256"
@@ -193,7 +218,9 @@ def write_execution_receipt(path: Path, receipt: Mapping[str, Any]) -> None:
                 path.unlink()
             except OSError:
                 pass
-        raise CaptureContractError(f"unable to persist execution receipt {path}: {exc}") from exc
+        raise CaptureContractError(
+            f"unable to persist execution receipt {path}: {exc}"
+        ) from exc
     finally:
         try:
             temporary.unlink(missing_ok=True)

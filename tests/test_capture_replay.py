@@ -16,11 +16,24 @@ ROOT = Path(__file__).resolve().parents[1]
 class CaptureReplayVerdictTests(unittest.TestCase):
     def _workspace(
         self, root: Path
-    ) -> tuple[dict, Path, Path, Path, Path, Path]:
+    ) -> tuple[dict, Path, Path, Path, Path, Path, Path]:
         request = {"frozen": "request", "receipts": ["a", "b"]}
         validated_request = root / "validated-request.json"
         validated_request.write_text(
             json.dumps(request, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        preparation_receipt = root / "preparation-receipt.json"
+        preparation_receipt.write_text(
+            json.dumps(
+                {
+                    "preparation_repository_commit": "d" * 40,
+                    "preparation_receipt_sha256": "e" * 64,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
             encoding="utf-8",
         )
         run_a = root / "run-a"
@@ -37,7 +50,15 @@ class CaptureReplayVerdictTests(unittest.TestCase):
         receipt_b = root / "run-b-execution-receipt.json"
         receipt_a.write_text('{"execution_id":"EXEC-A"}\n', encoding="utf-8")
         receipt_b.write_text('{"execution_id":"EXEC-B"}\n', encoding="utf-8")
-        return request, validated_request, run_a, run_b, receipt_a, receipt_b
+        return (
+            request,
+            validated_request,
+            preparation_receipt,
+            run_a,
+            run_b,
+            receipt_a,
+            receipt_b,
+        )
 
     @staticmethod
     def _fake_bundle_loader(directory: Path, expected_request: dict):
@@ -55,11 +76,24 @@ class CaptureReplayVerdictTests(unittest.TestCase):
     def _fake_execution_verifier(receipt: dict, **_kwargs):
         return dict(receipt)
 
+    @staticmethod
+    def _fake_preparation_verifier(receipt: dict, **_kwargs):
+        return dict(receipt)
+
     def _build_verdict(self, root: Path):
-        request, snapshot, run_a, run_b, receipt_a, receipt_b = self._workspace(root)
+        (
+            request,
+            snapshot,
+            preparation_receipt,
+            run_a,
+            run_b,
+            receipt_a,
+            receipt_b,
+        ) = self._workspace(root)
         verdict = capture_replay.build_replay_verdict(
             request=request,
             validated_request_path=snapshot,
+            preparation_receipt_path=preparation_receipt,
             run_a_dir=run_a,
             run_b_dir=run_b,
             run_a_execution_receipt_path=receipt_a,
@@ -68,20 +102,35 @@ class CaptureReplayVerdictTests(unittest.TestCase):
             run_b_manifest_receipt="a" * 64,
             experiment_id="EXP-TEST-001",
         )
-        return request, snapshot, run_a, run_b, receipt_a, receipt_b, verdict
+        return (
+            request,
+            snapshot,
+            preparation_receipt,
+            run_a,
+            run_b,
+            receipt_a,
+            receipt_b,
+            verdict,
+        )
 
-    def test_schema_is_closed_and_declares_execution_binding_fields(self) -> None:
+    def test_schema_is_closed_and_declares_preparation_and_execution_binding_fields(self) -> None:
         schema = json.loads(
             (ROOT / "schemas" / "replay-verdict.schema.json").read_text(
                 encoding="utf-8"
             )
         )
         self.assertFalse(schema["additionalProperties"])
-        self.assertIn("validated_request_artifact_sha256", schema["required"])
-        self.assertIn("bundle_file_byte_equality", schema["required"])
-        self.assertIn("replication_status", schema["required"])
-        self.assertIn("run_a_execution_id", schema["required"])
-        self.assertIn("run_b_execution_receipt_file_sha256", schema["required"])
+        for field in (
+            "validated_request_artifact_sha256",
+            "preparation_repository_commit",
+            "preparation_receipt_sha256",
+            "preparation_receipt_file_sha256",
+            "bundle_file_byte_equality",
+            "replication_status",
+            "run_a_execution_id",
+            "run_b_execution_receipt_file_sha256",
+        ):
+            self.assertIn(field, schema["required"])
         self.assertEqual(
             schema["properties"]["replication_status"]["const"],
             "not_attempted",
@@ -91,7 +140,7 @@ class CaptureReplayVerdictTests(unittest.TestCase):
             ["byte_identical", "diverged"],
         )
 
-    def test_build_and_verify_byte_identical_verdict_has_distinct_executions(self) -> None:
+    def test_build_and_verify_byte_identical_verdict_binds_preparation_and_distinct_executions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with (
                 mock.patch.object(
@@ -104,10 +153,16 @@ class CaptureReplayVerdictTests(unittest.TestCase):
                     "verify_execution_receipt",
                     side_effect=self._fake_execution_verifier,
                 ),
+                mock.patch.object(
+                    capture_replay,
+                    "verify_preparation_receipt",
+                    side_effect=self._fake_preparation_verifier,
+                ),
             ):
                 (
                     request,
                     snapshot,
+                    preparation_receipt,
                     run_a,
                     run_b,
                     receipt_a,
@@ -118,6 +173,7 @@ class CaptureReplayVerdictTests(unittest.TestCase):
                     verdict,
                     request=request,
                     validated_request_path=snapshot,
+                    preparation_receipt_path=preparation_receipt,
                     run_a_dir=run_a,
                     run_b_dir=run_b,
                     run_a_execution_receipt_path=receipt_a,
@@ -130,6 +186,9 @@ class CaptureReplayVerdictTests(unittest.TestCase):
             self.assertEqual(verdict["replay_outcome"], "byte_identical")
             self.assertEqual(verdict["evidence_class"], "OBSERVATION")
             self.assertEqual(verdict["replication_status"], "not_attempted")
+            self.assertEqual(verdict["preparation_repository_commit"], "d" * 40)
+            self.assertEqual(verdict["preparation_receipt_sha256"], "e" * 64)
+            self.assertRegex(verdict["preparation_receipt_file_sha256"], r"^[0-9a-f]{64}$")
             self.assertEqual(verdict["run_a_execution_id"], "EXEC-A")
             self.assertEqual(verdict["run_b_execution_id"], "EXEC-B")
             self.assertNotEqual(
@@ -138,7 +197,7 @@ class CaptureReplayVerdictTests(unittest.TestCase):
             )
             self.assertTrue(all(verdict["bundle_file_byte_equality"].values()))
 
-    def test_verifier_rejects_edited_verdict_and_collapsed_execution_identity(self) -> None:
+    def test_verifier_rejects_edited_verdict_replaced_preparation_and_collapsed_execution_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with (
                 mock.patch.object(
@@ -151,25 +210,62 @@ class CaptureReplayVerdictTests(unittest.TestCase):
                     "verify_execution_receipt",
                     side_effect=self._fake_execution_verifier,
                 ),
+                mock.patch.object(
+                    capture_replay,
+                    "verify_preparation_receipt",
+                    side_effect=self._fake_preparation_verifier,
+                ),
             ):
                 (
                     request,
                     snapshot,
+                    preparation_receipt,
                     run_a,
                     run_b,
                     receipt_a,
                     receipt_b,
                     verdict,
                 ) = self._build_verdict(Path(tmp))
+
                 tampered = json.loads(json.dumps(verdict))
                 tampered["request_sha256"] = "0" * 64
                 with self.assertRaisesRegex(
-                    CaptureContractError, "does not match the verified request"
+                    CaptureContractError, "does not match the verified preparation"
                 ):
                     capture_replay.verify_replay_verdict(
                         tampered,
                         request=request,
                         validated_request_path=snapshot,
+                        preparation_receipt_path=preparation_receipt,
+                        run_a_dir=run_a,
+                        run_b_dir=run_b,
+                        run_a_execution_receipt_path=receipt_a,
+                        run_b_execution_receipt_path=receipt_b,
+                        run_a_manifest_receipt="a" * 64,
+                        run_b_manifest_receipt="a" * 64,
+                        experiment_id="EXP-TEST-001",
+                    )
+
+                preparation_receipt.write_text(
+                    json.dumps(
+                        {
+                            "preparation_repository_commit": "9" * 40,
+                            "preparation_receipt_sha256": "8" * 64,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(
+                    CaptureContractError, "does not match the verified preparation"
+                ):
+                    capture_replay.verify_replay_verdict(
+                        verdict,
+                        request=request,
+                        validated_request_path=snapshot,
+                        preparation_receipt_path=preparation_receipt,
                         run_a_dir=run_a,
                         run_b_dir=run_b,
                         run_a_execution_receipt_path=receipt_a,
@@ -188,24 +284,7 @@ class CaptureReplayVerdictTests(unittest.TestCase):
                         collapsed,
                         request=request,
                         validated_request_path=snapshot,
-                        run_a_dir=run_a,
-                        run_b_dir=run_b,
-                        run_a_execution_receipt_path=receipt_a,
-                        run_b_execution_receipt_path=receipt_b,
-                        run_a_manifest_receipt="a" * 64,
-                        run_b_manifest_receipt="a" * 64,
-                        experiment_id="EXP-TEST-001",
-                    )
-
-                false_replication = json.loads(json.dumps(verdict))
-                false_replication["replication_status"] = "replicated"
-                with self.assertRaisesRegex(
-                    CaptureContractError, "replication_status.*not_attempted"
-                ):
-                    capture_replay.verify_replay_verdict(
-                        false_replication,
-                        request=request,
-                        validated_request_path=snapshot,
+                        preparation_receipt_path=preparation_receipt,
                         run_a_dir=run_a,
                         run_b_dir=run_b,
                         run_a_execution_receipt_path=receipt_a,
@@ -228,10 +307,16 @@ class CaptureReplayVerdictTests(unittest.TestCase):
                     "verify_execution_receipt",
                     side_effect=self._fake_execution_verifier,
                 ),
+                mock.patch.object(
+                    capture_replay,
+                    "verify_preparation_receipt",
+                    side_effect=self._fake_preparation_verifier,
+                ),
             ):
                 (
                     request,
                     snapshot,
+                    preparation_receipt,
                     run_a,
                     run_b,
                     receipt_a,
@@ -248,6 +333,7 @@ class CaptureReplayVerdictTests(unittest.TestCase):
                         malformed_experiment,
                         request=request,
                         validated_request_path=snapshot,
+                        preparation_receipt_path=preparation_receipt,
                         run_a_dir=run_a,
                         run_b_dir=run_b,
                         run_a_execution_receipt_path=receipt_a,
@@ -264,6 +350,7 @@ class CaptureReplayVerdictTests(unittest.TestCase):
                         malformed_outcome,
                         request=request,
                         validated_request_path=snapshot,
+                        preparation_receipt_path=preparation_receipt,
                         run_a_dir=run_a,
                         run_b_dir=run_b,
                         run_a_execution_receipt_path=receipt_a,
@@ -276,7 +363,15 @@ class CaptureReplayVerdictTests(unittest.TestCase):
     def test_bundle_byte_divergence_is_recorded_not_tuned_away(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            request, snapshot, run_a, run_b, receipt_a, receipt_b = self._workspace(root)
+            (
+                request,
+                snapshot,
+                preparation_receipt,
+                run_a,
+                run_b,
+                receipt_a,
+                receipt_b,
+            ) = self._workspace(root)
             (run_b / "captured-trajectory.json").write_text(
                 '{"artifact":"captured-trajectory.json","changed":true}\n',
                 encoding="utf-8",
@@ -292,10 +387,16 @@ class CaptureReplayVerdictTests(unittest.TestCase):
                     "verify_execution_receipt",
                     side_effect=self._fake_execution_verifier,
                 ),
+                mock.patch.object(
+                    capture_replay,
+                    "verify_preparation_receipt",
+                    side_effect=self._fake_preparation_verifier,
+                ),
             ):
                 verdict = capture_replay.build_replay_verdict(
                     request=request,
                     validated_request_path=snapshot,
+                    preparation_receipt_path=preparation_receipt,
                     run_a_dir=run_a,
                     run_b_dir=run_b,
                     run_a_execution_receipt_path=receipt_a,

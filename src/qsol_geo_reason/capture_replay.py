@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from .canonical import sha256_json
 from .capture_common import CaptureContractError
 from .capture_execution import verify_execution_receipt
+from .capture_preparation import verify_preparation_receipt
 from .capture_verify import verify_capture_bundle
 
 REPLAY_VERDICT_SCHEMA_VERSION = "1.0.0"
@@ -38,6 +39,9 @@ _VERDICT_KEYS = frozenset(
         "replication_status",
         "request_sha256",
         "validated_request_artifact_sha256",
+        "preparation_repository_commit",
+        "preparation_receipt_sha256",
+        "preparation_receipt_file_sha256",
         "run_a_execution_id",
         "run_b_execution_id",
         "run_a_execution_receipt_file_sha256",
@@ -174,12 +178,14 @@ def _actual_replay_state(
     *,
     request: Mapping[str, Any],
     validated_request_path: Path,
+    preparation_receipt_path: Path,
     run_a_dir: Path,
     run_b_dir: Path,
     run_a_execution_receipt_path: Path,
     run_b_execution_receipt_path: Path,
     run_a_manifest_receipt: str,
     run_b_manifest_receipt: str,
+    experiment_id: str,
 ) -> dict[str, Any]:
     snapshot = _read_json(validated_request_path)
     if snapshot != request:
@@ -188,12 +194,23 @@ def _actual_replay_state(
         )
     request_artifact_sha256 = _sha256_file(validated_request_path)
 
-    request_a, manifest_a, trajectory_a = _load_verified_observation_bundle(
-        run_a_dir, request
+    preparation_receipt = verify_preparation_receipt(
+        _read_json(preparation_receipt_path),
+        request=request,
+        experiment_id=experiment_id,
     )
-    request_b, manifest_b, trajectory_b = _load_verified_observation_bundle(
-        run_b_dir, request
+    preparation_repository_commit = _require_nonempty_string(
+        preparation_receipt.get("preparation_repository_commit"),
+        "preparation receipt repository commit",
     )
+    preparation_receipt_sha256 = _require_sha256(
+        preparation_receipt.get("preparation_receipt_sha256"),
+        "preparation_receipt_sha256",
+    )
+    preparation_receipt_file_sha256 = _sha256_file(preparation_receipt_path)
+
+    _, manifest_a, trajectory_a = _load_verified_observation_bundle(run_a_dir, request)
+    _, manifest_b, trajectory_b = _load_verified_observation_bundle(run_b_dir, request)
 
     manifest_a_sha = _require_sha256(
         manifest_a.get("manifest_sha256"), "run-a manifest.manifest_sha256"
@@ -201,36 +218,22 @@ def _actual_replay_state(
     manifest_b_sha = _require_sha256(
         manifest_b.get("manifest_sha256"), "run-b manifest.manifest_sha256"
     )
-    if (
-        _require_sha256(
-            run_a_manifest_receipt, "run-a CLI manifest receipt"
-        )
-        != manifest_a_sha
-    ):
+    if _require_sha256(run_a_manifest_receipt, "run-a CLI manifest receipt") != manifest_a_sha:
         raise CaptureContractError(
             "run-a CLI manifest receipt does not match run-manifest.json"
         )
-    if (
-        _require_sha256(
-            run_b_manifest_receipt, "run-b CLI manifest receipt"
-        )
-        != manifest_b_sha
-    ):
+    if _require_sha256(run_b_manifest_receipt, "run-b CLI manifest receipt") != manifest_b_sha:
         raise CaptureContractError(
             "run-b CLI manifest receipt does not match run-manifest.json"
         )
 
     execution_receipt_a = verify_execution_receipt(
         _read_json(run_a_execution_receipt_path),
-        request=request_a,
-        manifest=manifest_a,
-        trajectory=trajectory_a,
+        bundle_dir=run_a_dir,
     )
     execution_receipt_b = verify_execution_receipt(
         _read_json(run_b_execution_receipt_path),
-        request=request_b,
-        manifest=manifest_b,
-        trajectory=trajectory_b,
+        bundle_dir=run_b_dir,
     )
     execution_id_a = _require_nonempty_string(
         execution_receipt_a.get("execution_id"), "run-a execution_id"
@@ -264,6 +267,9 @@ def _actual_replay_state(
 
     return {
         "request_artifact_sha256": request_artifact_sha256,
+        "preparation_repository_commit": preparation_repository_commit,
+        "preparation_receipt_sha256": preparation_receipt_sha256,
+        "preparation_receipt_file_sha256": preparation_receipt_file_sha256,
         "execution_id_a": execution_id_a,
         "execution_id_b": execution_id_b,
         "execution_receipt_file_sha_a": execution_receipt_file_sha_a,
@@ -284,6 +290,7 @@ def build_replay_verdict(
     *,
     request: Mapping[str, Any],
     validated_request_path: Path,
+    preparation_receipt_path: Path,
     run_a_dir: Path,
     run_b_dir: Path,
     run_a_execution_receipt_path: Path,
@@ -292,17 +299,19 @@ def build_replay_verdict(
     run_b_manifest_receipt: str,
     experiment_id: str,
 ) -> dict[str, Any]:
-    """Construct a verdict solely from verified immutable request/bundle artifacts."""
+    """Construct a verdict solely from verified immutable evidence artifacts."""
     experiment_id = _require_nonempty_string(experiment_id, "experiment_id")
     state = _actual_replay_state(
         request=request,
         validated_request_path=validated_request_path,
+        preparation_receipt_path=preparation_receipt_path,
         run_a_dir=run_a_dir,
         run_b_dir=run_b_dir,
         run_a_execution_receipt_path=run_a_execution_receipt_path,
         run_b_execution_receipt_path=run_b_execution_receipt_path,
         run_a_manifest_receipt=run_a_manifest_receipt,
         run_b_manifest_receipt=run_b_manifest_receipt,
+        experiment_id=experiment_id,
     )
     outcome = state["outcome"]
     verdict: dict[str, Any] = {
@@ -313,6 +322,11 @@ def build_replay_verdict(
         "replication_status": REPLAY_REPLICATION_STATUS,
         "request_sha256": sha256_json(request),
         "validated_request_artifact_sha256": state["request_artifact_sha256"],
+        "preparation_repository_commit": state["preparation_repository_commit"],
+        "preparation_receipt_sha256": state["preparation_receipt_sha256"],
+        "preparation_receipt_file_sha256": state[
+            "preparation_receipt_file_sha256"
+        ],
         "run_a_execution_id": state["execution_id_a"],
         "run_b_execution_id": state["execution_id_b"],
         "run_a_execution_receipt_file_sha256": state[
@@ -336,6 +350,7 @@ def build_replay_verdict(
         verdict,
         request=request,
         validated_request_path=validated_request_path,
+        preparation_receipt_path=preparation_receipt_path,
         run_a_dir=run_a_dir,
         run_b_dir=run_b_dir,
         run_a_execution_receipt_path=run_a_execution_receipt_path,
@@ -352,6 +367,7 @@ def verify_replay_verdict(
     *,
     request: Mapping[str, Any],
     validated_request_path: Path,
+    preparation_receipt_path: Path,
     run_a_dir: Path,
     run_b_dir: Path,
     run_a_execution_receipt_path: Path,
@@ -360,7 +376,7 @@ def verify_replay_verdict(
     run_b_manifest_receipt: str,
     experiment_id: str,
 ) -> dict[str, Any]:
-    """Fail closed on malformed, edited, or cross-bundle-inconsistent replay evidence."""
+    """Fail closed on malformed, edited, or cross-artifact-inconsistent replay evidence."""
     if not isinstance(verdict, dict):
         raise CaptureContractError("replay verdict must be an object")
     _require_exact_keys(verdict, _VERDICT_KEYS, "replay verdict")
@@ -385,12 +401,22 @@ def verify_replay_verdict(
             "replay verdict replication_status must be not_attempted"
         )
 
-    request_sha = _require_sha256(
-        verdict["request_sha256"], "request_sha256"
-    )
+    request_sha = _require_sha256(verdict["request_sha256"], "request_sha256")
     request_artifact_sha = _require_sha256(
         verdict["validated_request_artifact_sha256"],
         "validated_request_artifact_sha256",
+    )
+    preparation_repository_commit = _require_nonempty_string(
+        verdict["preparation_repository_commit"],
+        "preparation_repository_commit",
+    )
+    preparation_receipt_sha = _require_sha256(
+        verdict["preparation_receipt_sha256"],
+        "preparation_receipt_sha256",
+    )
+    preparation_receipt_file_sha = _require_sha256(
+        verdict["preparation_receipt_file_sha256"],
+        "preparation_receipt_file_sha256",
     )
     execution_id_a = _require_nonempty_string(
         verdict["run_a_execution_id"], "run_a_execution_id"
@@ -445,16 +471,23 @@ def verify_replay_verdict(
     state = _actual_replay_state(
         request=request,
         validated_request_path=validated_request_path,
+        preparation_receipt_path=preparation_receipt_path,
         run_a_dir=run_a_dir,
         run_b_dir=run_b_dir,
         run_a_execution_receipt_path=run_a_execution_receipt_path,
         run_b_execution_receipt_path=run_b_execution_receipt_path,
         run_a_manifest_receipt=run_a_manifest_receipt,
         run_b_manifest_receipt=run_b_manifest_receipt,
+        experiment_id=experiment_id,
     )
     expected = {
         "request_sha256": sha256_json(request),
         "validated_request_artifact_sha256": state["request_artifact_sha256"],
+        "preparation_repository_commit": state["preparation_repository_commit"],
+        "preparation_receipt_sha256": state["preparation_receipt_sha256"],
+        "preparation_receipt_file_sha256": state[
+            "preparation_receipt_file_sha256"
+        ],
         "run_a_execution_id": state["execution_id_a"],
         "run_b_execution_id": state["execution_id_b"],
         "run_a_execution_receipt_file_sha256": state[
@@ -477,6 +510,9 @@ def verify_replay_verdict(
     observed = {
         "request_sha256": request_sha,
         "validated_request_artifact_sha256": request_artifact_sha,
+        "preparation_repository_commit": preparation_repository_commit,
+        "preparation_receipt_sha256": preparation_receipt_sha,
+        "preparation_receipt_file_sha256": preparation_receipt_file_sha,
         "run_a_execution_id": execution_id_a,
         "run_b_execution_id": execution_id_b,
         "run_a_execution_receipt_file_sha256": execution_receipt_file_sha_a,
@@ -494,7 +530,7 @@ def verify_replay_verdict(
     }
     if observed != expected:
         raise CaptureContractError(
-            "replay verdict does not match the verified request, execution receipts, and observation bundles"
+            "replay verdict does not match the verified preparation, execution receipts, and observation bundles"
         )
     return dict(verdict)
 

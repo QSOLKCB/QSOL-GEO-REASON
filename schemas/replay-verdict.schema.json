@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/QSOLKCB/QSOL-GEO-REASON/schemas/replay-verdict.schema.json",
   "title": "QSOL-GEO-REASON GEO-CAP-001 replay verdict",
-  "description": "Structural schema for the machine-readable result of a dual canonical GEO-CAP-001 observation replay. Canonical acceptance additionally requires qsol_geo_reason.capture_replay.verify_replay_verdict so hashes, execution receipts, and cross-bundle identities are recomputed from the evidence artifacts. Deterministic replay is not scientific replication, so replication_status remains not_attempted.",
+  "description": "Structural schema for the machine-readable result of a dual canonical GEO-CAP-001 observation replay. Canonical acceptance additionally requires qsol_geo_reason.capture_replay.verify_replay_verdict so preparation provenance, execution receipts, hashes, and cross-bundle identities are recomputed from the archived evidence artifacts. Deterministic replay is not scientific replication, so replication_status remains not_attempted.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -13,6 +13,9 @@
     "replication_status",
     "request_sha256",
     "validated_request_artifact_sha256",
+    "preparation_repository_commit",
+    "preparation_receipt_sha256",
+    "preparation_receipt_file_sha256",
     "run_a_execution_id",
     "run_b_execution_id",
     "run_a_execution_receipt_file_sha256",
@@ -36,6 +39,9 @@
     "replication_status": {"const": "not_attempted"},
     "request_sha256": {"$ref": "#/$defs/sha256"},
     "validated_request_artifact_sha256": {"$ref": "#/$defs/sha256"},
+    "preparation_repository_commit": {"$ref": "#/$defs/gitSha"},
+    "preparation_receipt_sha256": {"$ref": "#/$defs/sha256"},
+    "preparation_receipt_file_sha256": {"$ref": "#/$defs/sha256"},
     "run_a_execution_id": {"type": "string", "minLength": 1, "pattern": "\\S"},
     "run_b_execution_id": {"type": "string", "minLength": 1, "pattern": "\\S"},
     "run_a_execution_receipt_file_sha256": {"$ref": "#/$defs/sha256"},
@@ -58,6 +64,7 @@
   },
   "$defs": {
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "gitSha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "bundleReceipts": {
       "type": "object",
       "additionalProperties": false,

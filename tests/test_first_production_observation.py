@@ -23,6 +23,11 @@ SCRIPT = ROOT / "tools" / "run_first_production_observation.py"
 
 
 class FirstProductionObservationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        patcher = mock.patch.object(TOOL, "authenticate_tracked_file_against_revision")
+        self.addCleanup(patcher.stop)
+        self.template_auth = patcher.start()
+
     def _materialized_request(self) -> dict:
         request = TOOL._load_template()
         request["model"]["revision_tree_sha256"] = "1" * 64
@@ -83,7 +88,7 @@ class FirstProductionObservationTests(unittest.TestCase):
         with self.assertRaises(CaptureContractError):
             TOOL._assert_exact_experiment_request(final, require_receipts=True)
 
-    def test_prepare_binds_clean_revision_and_writes_request_plus_provenance(self) -> None:
+    def test_prepare_binds_clean_revision_template_and_writes_request_plus_provenance(self) -> None:
         receipts = {
             "revision_tree_sha256": "a" * 64,
             "tokenizer_revision_tree_sha256": "b" * 64,
@@ -123,6 +128,10 @@ class FirstProductionObservationTests(unittest.TestCase):
                         mock.call(None, require_checkout=True),
                         mock.call(repository_commit, require_checkout=True),
                     ]
+                )
+                self.assertEqual(self.template_auth.call_count, 3)
+                self.template_auth.assert_has_calls(
+                    [mock.call(TOOL.TEMPLATE, repository_commit)] * 3
                 )
                 with self.assertRaises(CaptureContractError):
                     TOOL.prepare(output)
@@ -215,7 +224,7 @@ class FirstProductionObservationTests(unittest.TestCase):
                 any(str(key).upper().startswith("PYTHON") for key in environment)
             )
 
-    def test_observe_snapshots_request_preparation_and_assigns_distinct_execution_ids(self) -> None:
+    def test_observe_authenticates_template_and_archives_preparation_into_verdict_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             original = self._materialized_request()
@@ -248,8 +257,8 @@ class FirstProductionObservationTests(unittest.TestCase):
                     return_value=repository_commit,
                 ) as resolver,
                 mock.patch.object(TOOL, "_run_capture", side_effect=fake_run),
-                mock.patch.object(TOOL, "build_replay_verdict", return_value=verdict),
-                mock.patch.object(TOOL, "verify_replay_verdict", return_value=verdict),
+                mock.patch.object(TOOL, "build_replay_verdict", return_value=verdict) as build,
+                mock.patch.object(TOOL, "verify_replay_verdict", return_value=verdict) as verify,
             ):
                 observed, status = TOOL.observe(
                     request_path,
@@ -259,6 +268,7 @@ class FirstProductionObservationTests(unittest.TestCase):
                 )
 
             resolver.assert_called_once_with(None, require_checkout=True)
+            self.template_auth.assert_called_once_with(TOOL.TEMPLATE, repository_commit)
             self.assertEqual(status, 0)
             self.assertEqual(observed, verdict)
             self.assertEqual(seen_paths[0], seen_paths[1])
@@ -274,11 +284,20 @@ class FirstProductionObservationTests(unittest.TestCase):
                     output_root / "run-b-execution-receipt.json",
                 ],
             )
+            archived_preparation_path = output_root / "preparation-receipt.json"
+            self.assertEqual(
+                build.call_args.kwargs["preparation_receipt_path"],
+                archived_preparation_path,
+            )
+            self.assertEqual(
+                verify.call_args.kwargs["preparation_receipt_path"],
+                archived_preparation_path,
+            )
             snapshot = json.loads(
                 (output_root / "validated-request.json").read_text(encoding="utf-8")
             )
             archived_preparation = json.loads(
-                (output_root / "preparation-receipt.json").read_text(encoding="utf-8")
+                archived_preparation_path.read_text(encoding="utf-8")
             )
             self.assertEqual(snapshot, original)
             self.assertEqual(

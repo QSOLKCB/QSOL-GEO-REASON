@@ -24,6 +24,20 @@ class CaptureExecutionReceiptTests(unittest.TestCase):
         trajectory = {"trajectory_sha256": "d" * 64}
         return request, manifest, trajectory
 
+    def _write_bundle(self, directory: Path):
+        request, manifest, trajectory = self._artifacts()
+        directory.mkdir()
+        for name, value in (
+            ("capture-request.json", request),
+            ("run-manifest.json", manifest),
+            ("captured-trajectory.json", trajectory),
+        ):
+            (directory / name).write_text(
+                json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+        return request, manifest, trajectory
+
     def test_schema_is_closed_and_binds_bundle_file_hashes(self) -> None:
         schema = json.loads(
             (ROOT / "schemas" / "capture-execution-receipt.schema.json").read_text(
@@ -40,54 +54,54 @@ class CaptureExecutionReceiptTests(unittest.TestCase):
         ):
             self.assertIn(field, schema["required"])
 
-    def test_receipt_is_self_hashed_and_bundle_bound(self) -> None:
-        request, manifest, trajectory = self._artifacts()
-        with mock.patch.object(
-            capture_execution,
-            "verify_capture_bundle",
-            return_value=request,
-        ):
-            receipt = capture_execution.build_execution_receipt(
-                execution_id="EXEC-001",
-                request=request,
-                manifest=manifest,
-                trajectory=trajectory,
-            )
-            verified = capture_execution.verify_execution_receipt(
-                receipt,
-                request=request,
-                manifest=manifest,
-                trajectory=trajectory,
-            )
-            self.assertEqual(verified, receipt)
-
-            changed_manifest = dict(manifest)
-            changed_manifest["manifest_sha256"] = "e" * 64
-            with self.assertRaisesRegex(
-                CaptureContractError, "does not match the verified capture bundle"
+    def test_receipt_is_self_hashed_and_bound_to_published_file_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = Path(tmp) / "run-a"
+            request, manifest, _trajectory = self._write_bundle(bundle)
+            with mock.patch.object(
+                capture_execution,
+                "verify_capture_bundle",
+                return_value=request,
             ):
-                capture_execution.verify_execution_receipt(
-                    receipt,
-                    request=request,
-                    manifest=changed_manifest,
-                    trajectory=trajectory,
+                receipt = capture_execution.build_execution_receipt(
+                    execution_id="EXEC-001",
+                    bundle_dir=bundle,
                 )
+                verified = capture_execution.verify_execution_receipt(
+                    receipt,
+                    bundle_dir=bundle,
+                )
+                self.assertEqual(verified, receipt)
+
+                # Same parsed JSON object, different archived bytes: the exact-file
+                # receipt must fail even though semantic content remains unchanged.
+                (bundle / "run-manifest.json").write_text(
+                    json.dumps(manifest, sort_keys=True, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(
+                    CaptureContractError, "archived capture bundle bytes"
+                ):
+                    capture_execution.verify_execution_receipt(
+                        receipt,
+                        bundle_dir=bundle,
+                    )
 
     def test_execution_receipt_publication_is_no_replace(self) -> None:
-        request, manifest, trajectory = self._artifacts()
-        with mock.patch.object(
-            capture_execution,
-            "verify_capture_bundle",
-            return_value=request,
-        ):
-            receipt = capture_execution.build_execution_receipt(
-                execution_id="EXEC-001",
-                request=request,
-                manifest=manifest,
-                trajectory=trajectory,
-            )
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "nested" / "execution-receipt.json"
+            root = Path(tmp)
+            bundle = root / "run-a"
+            request, _manifest, _trajectory = self._write_bundle(bundle)
+            with mock.patch.object(
+                capture_execution,
+                "verify_capture_bundle",
+                return_value=request,
+            ):
+                receipt = capture_execution.build_execution_receipt(
+                    execution_id="EXEC-001",
+                    bundle_dir=bundle,
+                )
+            path = root / "nested" / "execution-receipt.json"
             capture_execution.write_execution_receipt(path, receipt)
             self.assertTrue(path.is_file())
             with self.assertRaisesRegex(CaptureContractError, "refusing to overwrite"):
