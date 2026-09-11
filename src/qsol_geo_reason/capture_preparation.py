@@ -14,7 +14,7 @@ from .capture_hub_tree import CANONICAL_HF_ENDPOINT
 from .capture_reference_environment import verify_reference_environment_receipt
 from .capture_validation import validate_capture_request
 
-PREPARATION_RECEIPT_SCHEMA_VERSION = "1.1.0"
+PREPARATION_RECEIPT_SCHEMA_VERSION = "1.2.0"
 _TREE_FIELDS = ("revision_tree_sha256", "tokenizer_revision_tree_sha256")
 _PREPARATION_RECEIPT_KEYS = frozenset(
     {
