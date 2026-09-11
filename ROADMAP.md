@@ -110,13 +110,13 @@ If later work discovers a mathematical defect in the frozen specification, prese
 
 ### Phase 2A — Canonical hidden-state capture
 
-**Status:** **instrument implementation introduced in PR #4 under `GEO-CAP-001`; empirical evidence gate remains open until a real frozen local-model capture is executed and reviewed.**
+**Status:** **instrument implementation introduced in PR #4 under `GEO-CAP-001`; `GEO-CAP-001-EXP-001` now freezes the first real model/request and its authenticated prepare/offline replay procedure. The empirical evidence gate remains open until that request is actually executed and the resulting artifacts are reviewed.**
 
 Start with the simplest sufficiently transparent local capture path before introducing serving optimization.
 
-- [ ] Select an initial fully local Hugging Face-compatible model small enough for routine workstation runs.
-- [ ] Freeze the selected production model identifier and immutable revision/hash.
-- [ ] Freeze the selected production tokenizer identifier and immutable revision/hash.
+- [x] Select an initial fully local Hugging Face-compatible model small enough for routine workstation runs: `Qwen/Qwen2.5-0.5B`.
+- [x] Freeze the selected production model identifier and immutable revision/hash: `060db6499f32faf8b98477b0a26969ef7d8b9987`.
+- [x] Freeze the selected production tokenizer identifier and immutable revision/hash to the same repository revision.
 - [x] Define the canonical reference backend as a direct local Hugging Face/PyTorch replay path in `GEO-CAP-001`.
 - [x] Require full 40-hex Hugging Face model/tokenizer commit identities for canonical production requests.
 - [x] Require `local_files_only=true`, `trust_remote_code=false`, and no quantization in the canonical capture lane.
@@ -134,16 +134,21 @@ Start with the simplest sufficiently transparent local capture path before intro
 - [x] Record per-vector SHA-256, trajectory SHA-256, request SHA-256, run-manifest identity, and manifest SHA-256.
 - [x] Add a software-only deterministic capture-contract fixture for CI without shipping or downloading model weights.
 - [x] Label that test-double fixture `SIMULATION` and forbid interpreting it as a model observation.
-- [ ] Execute the first production `GEO-CAP-001` local-model capture under a frozen request.
+- [x] Freeze `GEO-CAP-001-EXP-001` model, text, segmentation, layers, pooling, CPU float32 backend, seed, and determinism policy before observation.
+- [x] Add a trusted online materialization step that may add only the two authenticated Hub tree receipts to the frozen request.
+- [x] Add an offline dual-observation replay runner that verifies both canonical bundles, preserves divergence, and writes a separate replay verdict without mutating either bundle.
+- [ ] Execute the first production `GEO-CAP-001` local-model capture under the frozen `GEO-CAP-001-EXP-001` request.
 - [ ] Verify deterministic replay for the selected backend where the backend permits it.
 - [ ] Explicitly record irreducible nondeterminism if deterministic replay cannot be established.
 - [ ] Freeze and review the first production capture evidence artifact.
 
 **Evidence gate:** capture provenance is sufficient to identify exactly what vector each trajectory point represents **and an actual frozen local-model capture artifact exists**.
 
-**Claim ceiling:** `OBSERVATION` only after an actual model run is performed. Code, schemas, and fake-backend fixtures do not create empirical evidence.
+**Claim ceiling:** `OBSERVATION` only after an actual model run is performed. Code, schemas, preregistration, and fake-backend fixtures do not create empirical evidence.
 
 **Protocol:** `protocols/GEO-CAP-001.md`.
+
+**First production experiment:** `experiments/GEO-CAP-001-EXP-001.md`.
 
 ### Phase 2B — Serving-equivalence study
 
