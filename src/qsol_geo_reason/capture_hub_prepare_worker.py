@@ -75,7 +75,12 @@ def main() -> int:
             "Hugging Face Hub package changed during trusted online preparation"
         )
 
-    print(json.dumps(receipts, sort_keys=True, separators=(",", ":")))
+    evidence = {
+        **receipts,
+        "huggingface_hub_package_file_count": before["file_count"],
+        "huggingface_hub_package_receipt_sha256": before["receipt_sha256"],
+    }
+    print(json.dumps(evidence, sort_keys=True, separators=(",", ":")))
     return 0
 
 
