@@ -106,6 +106,22 @@ def _default_preparation_receipt_path(request_path: Path) -> Path:
 
 def _create_output_root_durable(output_root: Path) -> None:
     """Create one immutable observation root and durably publish its directory entry."""
+    try:
+        resolved_root = ROOT.resolve(strict=True)
+        resolved_output_root = Path(output_root).resolve(strict=False)
+    except OSError as exc:
+        raise CaptureContractError(
+            f"unable to resolve observation output root trust boundary: {exc}"
+        ) from exc
+    try:
+        resolved_output_root.relative_to(resolved_root)
+    except ValueError:
+        pass
+    else:
+        raise CaptureContractError(
+            f"observation output root must be outside the source checkout: {output_root}"
+        )
+
     _ensure_parent_directory_durable(output_root.parent)
     try:
         output_root.mkdir()
