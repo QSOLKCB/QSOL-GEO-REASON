@@ -21,6 +21,11 @@ _EXTERNAL_CAPTURE_PREFIXES = (
     "tokenizers",
     "safetensors",
 )
+_CANONICAL_BUNDLE_FILES = (
+    "capture-request.json",
+    "run-manifest.json",
+    "captured-trajectory.json",
+)
 
 
 def _assert_fresh_worker_boundary() -> None:
@@ -85,6 +90,17 @@ def _assert_execution_identity(
         raise RuntimeError("--execution-id must be a non-empty string")
 
 
+def _complete_bundle_present(output_dir: Path) -> bool:
+    """Return whether the immutable canonical three-file bundle is already published."""
+    directory = Path(output_dir)
+    try:
+        return directory.is_dir() and all(
+            (directory / name).is_file() for name in _CANONICAL_BUNDLE_FILES
+        )
+    except OSError:
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("request", type=Path)
@@ -137,6 +153,8 @@ def main(argv: list[str] | None = None) -> int:
     from .provenance import SourceIdentityError
 
     bundle_published = False
+    bundle_publication_started = False
+    bundle_existed_before_publication = False
     try:
         request = json.loads(args.request.read_text(encoding="utf-8"))
         validated = validate_capture_request(request)
@@ -155,6 +173,8 @@ def main(argv: list[str] | None = None) -> int:
         # Publish the immutable scientific bundle first. The occurrence receipt name
         # has already been durably reserved outside that directory, so a pre-existing
         # or unwritable destination cannot strand a provenance-less successful bundle.
+        bundle_existed_before_publication = args.output_dir.exists()
+        bundle_publication_started = True
         write_capture_bundle(args.output_dir, validated, manifest, trajectory)
         bundle_published = True
         if args.execution_id is not None:
@@ -184,6 +204,19 @@ def main(argv: list[str] | None = None) -> int:
         OSError,
         RuntimeError,
     ) as exc:
+        # write_capture_bundle() atomically renames its fully fsynced staging
+        # directory before the final parent-directory fsync. If that final fsync
+        # fails, the call raises even though the immutable bundle directory already
+        # exists. Preserve the occurrence-receipt reservation in that state rather
+        # than deleting the only reserved provenance path. A path that already
+        # existed before this publication attempt is never attributed to this run.
+        if (
+            not bundle_published
+            and bundle_publication_started
+            and not bundle_existed_before_publication
+            and _complete_bundle_present(args.output_dir)
+        ):
+            bundle_published = True
         if receipt_reservation is not None and not bundle_published:
             release_execution_receipt_reservation(receipt_reservation)
         print(f"qsol-geo-capture worker: {exc}", file=sys.stderr)
