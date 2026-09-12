@@ -69,6 +69,19 @@ def _assert_execution_receipt_outside_bundle(
     )
 
 
+def _assert_execution_identity(
+    execution_id: str | None,
+    execution_receipt: Path | None,
+) -> None:
+    """Validate occurrence identity before reservation, imports, or model work."""
+    if (execution_id is None) != (execution_receipt is None):
+        raise RuntimeError(
+            "canonical execution identity requires both --execution-id and --execution-receipt"
+        )
+    if execution_id is not None and not execution_id.strip():
+        raise RuntimeError("--execution-id must be a non-empty string")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("request", type=Path)
@@ -84,10 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     # dependency or model backend is imported into this interpreter.
     try:
         _assert_fresh_worker_boundary()
-        if (args.execution_id is None) != (args.execution_receipt is None):
-            raise RuntimeError(
-                "canonical execution identity requires both --execution-id and --execution-receipt"
-            )
+        _assert_execution_identity(args.execution_id, args.execution_receipt)
         _assert_execution_receipt_outside_bundle(
             args.output_dir,
             args.execution_receipt,
