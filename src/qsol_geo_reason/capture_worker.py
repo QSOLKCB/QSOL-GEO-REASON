@@ -1,9 +1,9 @@
 """Fresh-process worker for canonical GEO-CAP-001 OBSERVATION capture.
 
 This module is intentionally internal. ``qsol-geo-capture`` launches it with
-CPython isolated mode (``-I``) and bytecode writes disabled (``-B``), after removing
-Python/loader injection environment variables. The worker then imports the canonical
-backend stack and performs one offline observation.
+CPython isolated/no-site mode (``-I -S``) and bytecode writes disabled (``-B``), after
+removing Python/loader injection environment variables. The worker then imports the
+canonical backend stack and performs one offline observation.
 """
 from __future__ import annotations
 
@@ -30,10 +30,13 @@ def _assert_fresh_worker_boundary() -> None:
         )
     if (
         not sys.flags.isolated
+        or not sys.flags.no_site
         or not sys.flags.no_user_site
         or not sys.flags.ignore_environment
     ):
-        raise RuntimeError("canonical capture worker requires CPython isolated mode (-I)")
+        raise RuntimeError(
+            "canonical capture worker requires CPython isolated no-site mode (-I -S)"
+        )
     contaminated = sorted(
         name
         for name in sys.modules
