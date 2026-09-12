@@ -25,6 +25,7 @@ from .capture_preparation import (
 from .capture_publish import _ensure_parent_directory_durable, _fsync_directory
 from .capture_replay import REPLAY_BUNDLE_FILES, build_replay_verdict, verify_replay_verdict
 from .capture_validation import validate_capture_request
+from .no_site_subprocess import isolated_package_command
 from .provenance import SourceIdentityError, resolve_implementation_revision
 from .tracked_artifact import authenticate_tracked_file_against_revision
 
@@ -378,22 +379,20 @@ def _run_capture(
     execution_id: str,
     execution_receipt_path: Path,
 ) -> str:
-    command = [
-        sys.executable,
-        "-I",
-        "-B",
-        "-m",
+    command = isolated_package_command(
         "qsol_geo_reason.capture_cli",
-        str(request_path.resolve()),
-        "--output-dir",
-        str(output_dir.resolve()),
-        "--implementation-revision",
-        implementation_revision,
-        "--execution-id",
-        execution_id,
-        "--execution-receipt",
-        str(execution_receipt_path.resolve()),
-    ]
+        [
+            str(request_path.resolve()),
+            "--output-dir",
+            str(output_dir.resolve()),
+            "--implementation-revision",
+            implementation_revision,
+            "--execution-id",
+            execution_id,
+            "--execution-receipt",
+            str(execution_receipt_path.resolve()),
+        ],
+    )
     completed = subprocess.run(
         command,
         cwd=ROOT,
@@ -686,4 +685,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    print(
+        "first_production_observation_core is not an executable evidence boundary; "
+        "use tools/run_first_production_observation.py through the hardened facade",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
