@@ -11,18 +11,25 @@ from unittest import mock
 from qsol_geo_reason import first_production_observation as TOOL
 from qsol_geo_reason.capture_common import CaptureContractError
 from qsol_geo_reason import capture_hub_prepare_worker
-from reference_environment_fixture import reference_environment_receipt
+from reference_environment_fixture import (
+    hub_transport_package_provenance,
+    reference_environment_receipt,
+)
 
 
 class Phase2AProductionBoundaryHardeningTests(unittest.TestCase):
-    def test_isolated_hub_preparation_uses_no_site_child_sanitized_environment_and_returns_package_receipt(self) -> None:
-        seen: dict[str, object] = {}
-        evidence = {
+    def _worker_evidence(self) -> dict[str, object]:
+        return {
             "revision_tree_sha256": "a" * 64,
             "tokenizer_revision_tree_sha256": "b" * 64,
             "huggingface_hub_package_file_count": 137,
             "huggingface_hub_package_receipt_sha256": "7" * 64,
+            "hub_transport_package_provenance": hub_transport_package_provenance(),
         }
+
+    def test_isolated_hub_preparation_uses_no_site_child_sanitized_environment_and_returns_package_receipts(self) -> None:
+        seen: dict[str, object] = {}
+        evidence = self._worker_evidence()
 
         def fake_run(command, **kwargs):
             seen["command"] = list(command)
@@ -58,13 +65,8 @@ class Phase2AProductionBoundaryHardeningTests(unittest.TestCase):
         for key in hostile:
             self.assertNotIn(key, environment)
 
-    def test_hub_tree_compatibility_surface_binds_package_then_returns_only_request_fields(self) -> None:
-        evidence = {
-            "revision_tree_sha256": "a" * 64,
-            "tokenizer_revision_tree_sha256": "b" * 64,
-            "huggingface_hub_package_file_count": 137,
-            "huggingface_hub_package_receipt_sha256": "7" * 64,
-        }
+    def test_hub_tree_compatibility_surface_binds_package_and_transport_then_returns_only_request_fields(self) -> None:
+        evidence = self._worker_evidence()
 
         def fake_run(command, **kwargs):
             return subprocess.CompletedProcess(
@@ -91,13 +93,11 @@ class Phase2AProductionBoundaryHardeningTests(unittest.TestCase):
             },
         )
 
-    def test_hub_tree_compatibility_surface_rejects_worker_package_digest_drift(self) -> None:
-        evidence = {
-            "revision_tree_sha256": "a" * 64,
-            "tokenizer_revision_tree_sha256": "b" * 64,
-            "huggingface_hub_package_file_count": 137,
-            "huggingface_hub_package_receipt_sha256": "c" * 64,
-        }
+    def test_hub_tree_compatibility_surface_rejects_worker_transport_digest_drift(self) -> None:
+        evidence = self._worker_evidence()
+        transport = json.loads(json.dumps(evidence["hub_transport_package_provenance"]))
+        transport["requests"]["receipt_sha256"] = "d" * 64
+        evidence["hub_transport_package_provenance"] = transport
 
         def fake_run(command, **kwargs):
             return subprocess.CompletedProcess(
@@ -117,7 +117,7 @@ class Phase2AProductionBoundaryHardeningTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(
                 CaptureContractError,
-                "package provenance does not match",
+                "runtime provenance does not match",
             ):
                 TOOL.prepare_tree_receipts({"frozen": "request"})
 
@@ -127,15 +127,17 @@ class Phase2AProductionBoundaryHardeningTests(unittest.TestCase):
             with self.assertRaisesRegex(CaptureContractError, "absent before"):
                 capture_hub_prepare_worker._preimport_hub_package_provenance()
 
-    def test_hub_worker_source_binds_package_before_after_and_into_output(self) -> None:
+    def test_hub_worker_source_binds_hub_and_transport_before_after_and_into_output(self) -> None:
         source = inspect.getsource(capture_hub_prepare_worker)
         self.assertIn("sys.flags.no_site", source)
         self.assertIn('"sitecustomize" in sys.modules', source)
         self.assertIn("_preimport_hub_package_provenance()", source)
-        self.assertIn("after_import != before", source)
-        self.assertIn("after_work != before", source)
+        self.assertIn("_preimport_transport_package_provenance()", source)
+        self.assertIn("transport_after_import != transport_before", source)
+        self.assertIn("transport_after_work != transport_before", source)
         self.assertIn('"huggingface_hub_package_file_count"', source)
         self.assertIn('"huggingface_hub_package_receipt_sha256"', source)
+        self.assertIn('"hub_transport_package_provenance"', source)
         self.assertLess(
             source.index("before = _preimport_hub_package_provenance()"),
             source.index("import huggingface_hub"),
