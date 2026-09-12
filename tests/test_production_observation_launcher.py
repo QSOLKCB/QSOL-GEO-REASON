@@ -27,7 +27,26 @@ class ProductionObservationLauncherTests(unittest.TestCase):
         spec.loader.exec_module(module)
         return module
 
-    def test_launcher_execve_strips_python_and_native_loader_injection(self) -> None:
+    def test_launcher_requires_initial_isolated_no_site_interpreter(self) -> None:
+        launcher = self._load_launcher()
+        with mock.patch.object(
+            launcher.sys,
+            "flags",
+            type(
+                "Flags",
+                (),
+                {
+                    "isolated": 0,
+                    "no_site": 0,
+                    "no_user_site": 0,
+                    "ignore_environment": 0,
+                },
+            )(),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "python -I -S -B"):
+                launcher._assert_initial_launcher_boundary()
+
+    def test_launcher_execve_strips_injection_and_keeps_second_interpreter_no_site(self) -> None:
         launcher = self._load_launcher()
         seen: dict[str, object] = {}
 
@@ -52,6 +71,12 @@ class ProductionObservationLauncherTests(unittest.TestCase):
         }
         with (
             mock.patch.dict(launcher.os.environ, hostile, clear=True),
+            mock.patch.object(launcher, "_assert_initial_launcher_boundary"),
+            mock.patch.object(
+                launcher,
+                "_literal_site_package_paths",
+                return_value=["/trusted/site-packages"],
+            ),
             mock.patch.object(launcher.os, "execve", side_effect=fake_execve),
         ):
             with self.assertRaises(_ExecIntercept):
@@ -60,15 +85,19 @@ class ProductionObservationLauncherTests(unittest.TestCase):
         self.assertEqual(seen["executable"], sys.executable)
         argv = seen["argv"]
         self.assertEqual(
-            argv[:5],
+            argv[:6],
             [
                 sys.executable,
                 "-I",
+                "-S",
                 "-B",
-                "-m",
-                "qsol_geo_reason.first_production_observation",
+                "-c",
+                launcher._ORCHESTRATOR_BOOTSTRAP,
             ],
         )
+        self.assertIn(str((ROOT / "src").resolve()), argv)
+        self.assertIn("/trusted/site-packages", argv)
+        self.assertIn("--", argv)
         environment = seen["environment"]
         self.assertEqual(environment["QSOL_SAFE_SENTINEL"], "preserve-me")
         forbidden = {
