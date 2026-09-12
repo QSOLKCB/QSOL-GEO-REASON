@@ -80,7 +80,14 @@ class CaptureReferenceLockTests(unittest.TestCase):
                 "_installed_runtime_versions",
                 return_value=actual,
             ),
-            *patches,
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patches[4],
+            patches[5],
+            patches[6],
+            patches[7],
         ):
             with self.assertRaisesRegex(RuntimeError, "unexpected=.*surprise-package"):
                 verifier.verify_reference_environment()
@@ -141,7 +148,14 @@ class CaptureReferenceLockTests(unittest.TestCase):
         patches = _reference_platform_patches(verifier)
         with (
             mock.patch.object(verifier, "_installed_runtime_versions", return_value=dict(locked)),
-            *patches,
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patches[4],
+            patches[5],
+            patches[6],
+            patches[7],
         ):
             receipt = verifier.verify_reference_environment()
         self.assertEqual(receipt["distribution_count"], 28)
