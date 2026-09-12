@@ -2,9 +2,9 @@
 
 Canonical lock: constraints/capture-reference-py311.txt.
 Reject missing, mismatched, and unexpected runtime distributions as well as any
-interpreter/platform outside the selected CPython 3.11 Linux x86_64 lane. The receipt
-also content-binds the exact importable Hugging Face Hub package tree and the locked
-Requests/urllib3/certifi/charset-normalizer/idna transport chain.
+interpreter/platform outside the selected final CPython 3.11 Linux x86_64 lane. The
+receipt also content-binds the exact importable Hugging Face Hub package tree and the
+locked Requests/urllib3/certifi/charset-normalizer/idna transport chain.
 """
 from __future__ import annotations
 
@@ -40,6 +40,14 @@ def _current_python_version() -> tuple[int, int, int]:
     return value.major, value.minor, value.micro
 
 
+def _current_python_releaselevel() -> str:
+    return sys.version_info.releaselevel
+
+
+def _current_python_serial() -> int:
+    return sys.version_info.serial
+
+
 def _current_python_implementation() -> str:
     return platform.python_implementation()
 
@@ -63,6 +71,8 @@ def verify_reference_environment() -> dict[str, object]:
             platform_machine=_current_platform_machine(),
             hub_package_provenance=_current_hub_package_provenance(),
             hub_transport_package_provenance=_current_hub_transport_package_provenance(),
+            python_releaselevel=_current_python_releaselevel(),
+            python_serial=_current_python_serial(),
             lock_sha256=_reference._lock_sha256(),
         )
     except CaptureContractError as exc:
