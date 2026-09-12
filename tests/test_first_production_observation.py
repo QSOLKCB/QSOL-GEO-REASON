@@ -254,7 +254,7 @@ class FirstProductionObservationTests(unittest.TestCase):
                 [base, base / "level-a", base / "level-a" / "level-b"],
             )
 
-    def test_intermediate_capture_cli_is_isolated_from_python_environment(self) -> None:
+    def test_intermediate_capture_cli_is_isolated_no_site_and_python_env_stripped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             request = root / "request.json"
@@ -294,16 +294,9 @@ class FirstProductionObservationTests(unittest.TestCase):
                 )
             self.assertEqual(receipt, "a" * 64)
             command = seen["command"]
-            self.assertEqual(
-                command[:5],
-                [
-                    sys.executable,
-                    "-I",
-                    "-B",
-                    "-m",
-                    "qsol_geo_reason.capture_cli",
-                ],
-            )
+            self.assertEqual(command[:5], [sys.executable, "-I", "-S", "-B", "-c"])
+            self.assertIn("qsol_geo_reason.capture_cli", command[5])
+            self.assertIn("--", command)
             environment = seen["env"]
             self.assertFalse(
                 any(str(key).upper().startswith("PYTHON") for key in environment)
