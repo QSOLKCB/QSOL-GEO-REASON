@@ -16,6 +16,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+_ORCHESTRATOR_MODULE = "qsol_geo_reason.first_production_observation"
 _LOADER_ENV_PREFIXES = ("LD_", "DYLD_", "_RLD_", "LDR_")
 _LOADER_ENV_NAMES = frozenset({"GLIBC_TUNABLES", "LIBPATH", "SHLIB_PATH"})
 _TRANSPORT_ENV_NAMES = frozenset(
