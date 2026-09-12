@@ -5,7 +5,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from reference_environment_fixture import hub_package_provenance
+from reference_environment_fixture import (
+    hub_package_provenance,
+    hub_transport_package_provenance,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +34,11 @@ def _reference_platform_patches(verifier):
             verifier,
             "_current_hub_package_provenance",
             return_value=hub_package_provenance(),
+        ),
+        mock.patch.object(
+            verifier,
+            "_current_hub_transport_package_provenance",
+            return_value=hub_transport_package_provenance(),
         ),
     )
 
@@ -75,6 +83,7 @@ class CaptureReferenceLockTests(unittest.TestCase):
             patches[2],
             patches[3],
             patches[4],
+            patches[5],
         ):
             with self.assertRaisesRegex(RuntimeError, "unexpected=.*surprise-package"):
                 verifier.verify_reference_environment()
@@ -93,11 +102,16 @@ class CaptureReferenceLockTests(unittest.TestCase):
                 "_current_hub_package_provenance",
                 return_value=hub_package_provenance(),
             ),
+            mock.patch.object(
+                verifier,
+                "_current_hub_transport_package_provenance",
+                return_value=hub_transport_package_provenance(),
+            ),
         ):
             with self.assertRaisesRegex(RuntimeError, "requires Python 3.11"):
                 verifier.verify_reference_environment()
 
-    def test_reference_receipt_is_self_hashed_complete_and_content_binds_hub(self) -> None:
+    def test_reference_receipt_is_self_hashed_complete_and_content_binds_hub_transport(self) -> None:
         verifier = _load_verifier()
         locked = verifier._locked_versions()
         patches = _reference_platform_patches(verifier)
@@ -108,6 +122,7 @@ class CaptureReferenceLockTests(unittest.TestCase):
             patches[2],
             patches[3],
             patches[4],
+            patches[5],
         ):
             receipt = verifier.verify_reference_environment()
         self.assertEqual(receipt["distribution_count"], 28)
@@ -115,8 +130,30 @@ class CaptureReferenceLockTests(unittest.TestCase):
         self.assertEqual(receipt["platform_machine"], "x86_64")
         self.assertEqual(receipt["huggingface_hub_package_file_count"], 137)
         self.assertEqual(receipt["huggingface_hub_package_receipt_sha256"], "7" * 64)
+        self.assertEqual(
+            receipt["hub_transport_package_provenance"],
+            hub_transport_package_provenance(),
+        )
         self.assertRegex(receipt["environment_receipt_sha256"], r"^[0-9a-f]{64}$")
         self.assertEqual(len(receipt["distributions"]), 28)
+
+    def test_reference_receipt_rejects_missing_transport_package_provenance(self) -> None:
+        verifier = _load_verifier()
+        locked = verifier._locked_versions()
+        transport = hub_transport_package_provenance()
+        transport.pop("certifi")
+        with self.assertRaisesRegex(RuntimeError, "transport package provenance keys"):
+            verifier._reference._build_reference_environment_receipt_from_state(
+                locked=locked,
+                installed=dict(locked),
+                python_version=(3, 11, 16),
+                python_implementation="CPython",
+                platform_system="Linux",
+                platform_machine="x86_64",
+                hub_package_provenance=hub_package_provenance(),
+                hub_transport_package_provenance=transport,
+                lock_sha256=verifier._reference._lock_sha256(),
+            )
 
 
 if __name__ == "__main__":
