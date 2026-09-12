@@ -17,7 +17,10 @@ from typing import Any, Mapping
 
 from . import first_production_observation_core as _core
 from .capture_common import CaptureBackendUnavailable, CaptureContractError
-from .capture_reference_environment import verify_current_reference_environment
+from .capture_reference_environment import (
+    _validate_hub_transport_package_provenance,
+    verify_current_reference_environment,
+)
 from .provenance import SourceIdentityError
 from .runner_provenance import authenticate_tracked_tool_against_revision
 
@@ -47,7 +50,8 @@ _HUB_PACKAGE_FIELDS = (
     "huggingface_hub_package_file_count",
     "huggingface_hub_package_receipt_sha256",
 )
-_HUB_EVIDENCE_FIELDS = (*_core.TREE_FIELDS, *_HUB_PACKAGE_FIELDS)
+_HUB_TRANSPORT_FIELD = "hub_transport_package_provenance"
+_HUB_EVIDENCE_FIELDS = (*_core.TREE_FIELDS, *_HUB_PACKAGE_FIELDS, _HUB_TRANSPORT_FIELD)
 _HUB_BOOTSTRAP = (
     "import sys;"
     "src=sys.argv[1];"
@@ -94,14 +98,29 @@ def _hub_prepare_environment() -> dict[str, str]:
 
 
 def _literal_site_package_paths() -> list[str]:
+    """Locate interpreter package directories without executing site/.pth startup code."""
     paths: list[str] = []
-    for key in ("purelib", "platlib"):
-        value = sysconfig.get_paths().get(key)
-        if not isinstance(value, str) or not value.strip():
-            continue
-        candidate = Path(value).resolve(strict=False)
-        if candidate.is_dir() and str(candidate) not in paths:
-            paths.append(str(candidate))
+    executable = Path(sys.executable)
+    venv_root = executable.parent.parent
+    if (venv_root / "pyvenv.cfg").is_file():
+        if os.name == "nt":
+            candidates = [venv_root / "Lib" / "site-packages"]
+        else:
+            version = f"python{sys.version_info.major}.{sys.version_info.minor}"
+            candidates = [
+                venv_root / "lib" / version / "site-packages",
+                venv_root / "lib64" / version / "site-packages",
+            ]
+    else:
+        candidates = []
+        for key in ("purelib", "platlib"):
+            value = sysconfig.get_paths().get(key)
+            if isinstance(value, str) and value.strip():
+                candidates.append(Path(value))
+    for candidate in candidates:
+        resolved = candidate.resolve(strict=False)
+        if resolved.is_dir() and str(resolved) not in paths:
+            paths.append(str(resolved))
     if not paths:
         raise CaptureContractError(
             "unable to locate literal site-package directories for isolated Hub preparation"
@@ -179,17 +198,20 @@ def _isolated_prepare_hub_evidence(request: Mapping[str, Any]) -> dict[str, Any]
         )
     evidence["huggingface_hub_package_file_count"] = package_count
     evidence["huggingface_hub_package_receipt_sha256"] = package_receipt
+    evidence[_HUB_TRANSPORT_FIELD] = _validate_hub_transport_package_provenance(
+        value.get(_HUB_TRANSPORT_FIELD)
+    )
     return evidence
 
 
 def _isolated_prepare_tree_receipts(request: Mapping[str, Any]) -> dict[str, str]:
-    """Return request-ready tree receipts after binding the worker's Hub package bytes."""
+    """Return request-ready tree receipts after binding the worker's Hub runtime bytes."""
     evidence = _isolated_prepare_hub_evidence(request)
     reference_environment = _core.verify_current_reference_environment()
-    for field in _HUB_PACKAGE_FIELDS:
+    for field in (*_HUB_PACKAGE_FIELDS, _HUB_TRANSPORT_FIELD):
         if evidence[field] != reference_environment[field]:
             raise CaptureContractError(
-                "isolated Hub package provenance does not match the authenticated reference environment receipt"
+                "isolated Hub runtime provenance does not match the authenticated reference environment receipt"
             )
     return {field: evidence[field] for field in _core.TREE_FIELDS}
 
@@ -218,6 +240,23 @@ def _reauthenticate_revision(revision: str, where: str) -> None:
     _authenticate_external_inputs(revision)
 
 
+def _assert_preparation_output_outside_checkout(output: Path) -> None:
+    """Reject request/receipt publication that would dirty the authenticated checkout."""
+    try:
+        repository_root = _core.ROOT.resolve(strict=True)
+        candidate = Path(output).resolve(strict=False)
+        candidate.relative_to(repository_root)
+    except ValueError:
+        return
+    except OSError as exc:
+        raise CaptureContractError(
+            f"unable to resolve preparation output trust boundary: {exc}"
+        ) from exc
+    raise CaptureContractError(
+        f"preparation output must be outside the source checkout: {output}"
+    )
+
+
 def _recover_incomplete_preparation(
     output: Path,
     preparation_receipt_path: Path,
@@ -242,6 +281,7 @@ def prepare(
     implementation_revision: str | None = None,
 ) -> str:
     """Prepare the frozen request with launcher, runtime, and no-site Hub provenance."""
+    _assert_preparation_output_outside_checkout(output)
     preparation_receipt_path = _core._default_preparation_receipt_path(output)
     if output.exists():
         raise CaptureContractError(f"refusing to overwrite existing artifact {output}")
@@ -451,6 +491,7 @@ _core.authenticate_tracked_tool_against_revision = authenticate_tracked_tool_aga
 _core.verify_current_reference_environment = verify_current_reference_environment
 _core.prepare_hub_evidence = _isolated_prepare_hub_evidence
 _core.prepare_tree_receipts = _isolated_prepare_tree_receipts
+_core._assert_preparation_output_outside_checkout = _assert_preparation_output_outside_checkout
 _core._recover_incomplete_preparation = _recover_incomplete_preparation
 _core.prepare = prepare
 _core.observe = observe
