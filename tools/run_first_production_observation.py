@@ -1,17 +1,21 @@
 """Launch the authenticated GEO-CAP-001-EXP-001 package orchestrator.
 
-This file intentionally contains no evidence-producing logic. The isolated package
-module is inside ``src/qsol_geo_reason`` and is directly authenticated against Git HEAD
-before an OBSERVATION attempt is created. The launcher removes native/Python loader,
-Git-redirection, and network transport trust overrides before the authenticated
-interpreter starts.
+Canonical invocation is ``python -I -S -B tools/run_first_production_observation.py``.
+The first interpreter must already suppress Python startup customization; this launcher
+then removes native/Python loader, Git-redirection, and network transport trust
+overrides before execing a second ``-I -S -B`` interpreter. The second interpreter
+bootstraps only the checked-out ``src`` tree and literal interpreter package directories,
+without executing ``.pth`` files or ``sitecustomize``.
 """
 from __future__ import annotations
 
 import os
 import sys
+import sysconfig
+from pathlib import Path
 
 
+ROOT = Path(__file__).resolve().parents[1]
 _LOADER_ENV_PREFIXES = ("LD_", "DYLD_", "_RLD_", "LDR_")
 _LOADER_ENV_NAMES = frozenset({"GLIBC_TUNABLES", "LIBPATH", "SHLIB_PATH"})
 _TRANSPORT_ENV_NAMES = frozenset(
@@ -27,6 +31,18 @@ _TRANSPORT_ENV_NAMES = frozenset(
         "HF_HUB_DISABLE_SSL_VERIFY",
         "HF_HUB_DISABLE_SSL_VERIFICATION",
     }
+)
+_ORCHESTRATOR_BOOTSTRAP = (
+    "import sys;"
+    "src=sys.argv[1];"
+    "sep=sys.argv.index('--');"
+    "paths=sys.argv[2:sep];"
+    "args=sys.argv[sep+1:];"
+    "sys.path.insert(0,src);"
+    "[sys.path.append(p) for p in paths if p not in sys.path];"
+    "sys.argv=['qsol_geo_reason.first_production_observation',*args];"
+    "from qsol_geo_reason.first_production_observation import main;"
+    "raise SystemExit(main())"
 )
 
 
@@ -69,13 +85,66 @@ def _sanitized_orchestrator_environment() -> dict[str, str]:
     return environment
 
 
+def _literal_site_package_paths() -> list[str]:
+    """Locate package directories without importing site or executing .pth files."""
+    paths: list[str] = []
+    executable = Path(sys.executable)
+    venv_root = executable.parent.parent
+    if (venv_root / "pyvenv.cfg").is_file():
+        if os.name == "nt":
+            candidates = [venv_root / "Lib" / "site-packages"]
+        else:
+            version = f"python{sys.version_info.major}.{sys.version_info.minor}"
+            candidates = [
+                venv_root / "lib" / version / "site-packages",
+                venv_root / "lib64" / version / "site-packages",
+            ]
+    else:
+        candidates = []
+        for key in ("purelib", "platlib"):
+            value = sysconfig.get_paths().get(key)
+            if isinstance(value, str) and value.strip():
+                candidates.append(Path(value))
+    for candidate in candidates:
+        resolved = candidate.resolve(strict=False)
+        if resolved.is_dir() and str(resolved) not in paths:
+            paths.append(str(resolved))
+    if not paths:
+        raise RuntimeError(
+            "canonical production launcher cannot locate literal interpreter package directories"
+        )
+    return paths
+
+
+def _assert_initial_launcher_boundary() -> None:
+    if (
+        not sys.flags.isolated
+        or not sys.flags.no_site
+        or not sys.flags.no_user_site
+        or not sys.flags.ignore_environment
+    ):
+        raise RuntimeError(
+            "canonical production launcher must be invoked with: "
+            "python -I -S -B tools/run_first_production_observation.py ..."
+        )
+    if "sitecustomize" in sys.modules or "usercustomize" in sys.modules:
+        raise RuntimeError(
+            "canonical production launcher inherited a Python startup customization module"
+        )
+
+
 def main() -> int:
+    _assert_initial_launcher_boundary()
     argv = [
         sys.executable,
         "-I",
+        "-S",
         "-B",
-        "-m",
-        "qsol_geo_reason.first_production_observation",
+        "-c",
+        _ORCHESTRATOR_BOOTSTRAP,
+        str((ROOT / "src").resolve()),
+        *_literal_site_package_paths(),
+        "--",
         *sys.argv[1:],
     ]
     os.execve(
