@@ -199,17 +199,17 @@ python -m pip install -e '.[capture]'
 
 For the first production observation, do **not** edit the generic example request. The repository freezes `GEO-CAP-001-EXP-001` around `Qwen/Qwen2.5-0.5B` at immutable revision `060db6499f32faf8b98477b0a26969ef7d8b9987`, CPU float32 replay, required determinism, fixed text segmentation, sampled hidden-state indices `0, 6, 12, 18, 24`, and `step_mean` pooling.
 
-The trusted online preparation stage materializes only the authenticated Hub tree receipts:
+The production runner must be started with CPython isolated mode and site initialization disabled so `.pth`, `sitecustomize`, and `usercustomize` cannot execute before the launcher trust boundary. The trusted online preparation stage materializes only the authenticated Hub tree receipts:
 
 ```bash
-python tools/run_first_production_observation.py prepare \
+python -I -S -B tools/run_first_production_observation.py prepare \
   --output /tmp/GEO-CAP-001-EXP-001.request.json
 ```
 
 Then the empirical stage runs the exact final request twice under forced offline mode and records the replay result:
 
 ```bash
-python tools/run_first_production_observation.py observe \
+python -I -S -B tools/run_first_production_observation.py observe \
   --request /tmp/GEO-CAP-001-EXP-001.request.json \
   --output-root /tmp/GEO-CAP-001-EXP-001
 ```
