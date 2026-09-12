@@ -11,6 +11,16 @@ def hub_package_provenance() -> dict[str, object]:
     }
 
 
+def hub_transport_package_provenance() -> dict[str, dict[str, object]]:
+    return {
+        "requests": {"file_count": 24, "receipt_sha256": "8" * 64},
+        "urllib3": {"file_count": 41, "receipt_sha256": "9" * 64},
+        "certifi": {"file_count": 4, "receipt_sha256": "a" * 64},
+        "charset-normalizer": {"file_count": 18, "receipt_sha256": "b" * 64},
+        "idna": {"file_count": 12, "receipt_sha256": "c" * 64},
+    }
+
+
 def reference_environment_receipt() -> dict:
     locked = reference._locked_versions()
     return reference._build_reference_environment_receipt_from_state(
@@ -21,5 +31,6 @@ def reference_environment_receipt() -> dict:
         platform_system="Linux",
         platform_machine="x86_64",
         hub_package_provenance=hub_package_provenance(),
+        hub_transport_package_provenance=hub_transport_package_provenance(),
         lock_sha256=reference._lock_sha256(),
     )
