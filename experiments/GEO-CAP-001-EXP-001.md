@@ -74,20 +74,22 @@ python --version  # must report Python 3.11.x
 
 `constraints/capture-reference-py311.txt` is the authoritative complete resolved runtime lock for this Python 3.11 Linux x86_64 CPU reference lane. It pins the direct capture packages **and their transitive runtime closure**, including Torch dependencies, Transformers/Hugging Face dependencies, Requests/TLS dependencies, and the jsonschema validator closure. `tools/verify_capture_reference_environment.py` rejects a missing pin, version mismatch, unexpected non-bootstrap runtime distribution, non-CPython interpreter, non-Linux/x86_64 platform, or any interpreter outside Python 3.11. The `python --version` line is only a human-readable sanity check; the machine verifier enforces the interpreter requirement itself.
 
-The standalone verifier is a preflight, not the provenance authority. `prepare` independently measures the same complete closure and the exact CPython patch version, then stores the self-hashed result **embedded in the preparation receipt**. `observe` independently measures its live environment and requires exact equality with that embedded receipt before any observation attempt and again before replay-verdict publication. A different compatible dependency resolution or interpreter must not be described as the selected reference environment. Do not create the virtual environment inside the checkout: `prepare` requires the repository to remain clean and will reject source-relevant untracked files.
+The standalone verifier is a preflight, not the provenance authority. `prepare` independently measures the same complete closure and the exact CPython patch version, then stores the self-hashed result **embedded in the preparation receipt**. That receipt also content-binds the exact importable `huggingface_hub`, Requests, urllib3, certifi, charset-normalizer, and idna package trees used by the online preparation lane. `observe` independently measures its live environment and requires exact equality with that embedded receipt before any observation attempt and again before replay-verdict publication. A different compatible dependency resolution or interpreter must not be described as the selected reference environment. Do not create the virtual environment inside the checkout: `prepare` requires the repository to remain clean and will reject source-relevant untracked files.
+
+The canonical production launcher itself must start with CPython isolated mode **and** site initialization disabled. Do not replace the commands below with plain `python tools/run_first_production_observation.py ...`: executable `.pth` files, `sitecustomize`, or `usercustomize` would run before the launcher could establish its trust boundary. The launcher fails closed unless the initial interpreter was started with `-I -S`.
 
 ### 1. Online trusted preparation
 
-Run once while the machine is online:
+Run once while the machine is online. The prepared request and its sidecar must also remain **outside the source checkout**; the tool rejects checkout-contained output paths before revision resolution or Hub contact.
 
 ```bash
-python tools/run_first_production_observation.py prepare \
+python -I -S -B tools/run_first_production_observation.py prepare \
   --output /tmp/GEO-CAP-001-EXP-001.request.json
 ```
 
 Preparation authenticates the clean QSOL-GEO-REASON checkout **before** contacting the Hub. It also directly authenticates the launcher bytes and the reference lock against the same bound Git revision, so Git index hints such as `assume-unchanged` or `skip-worktree` cannot substitute either evidence-critical file.
 
-Canonical Hub work runs in a separate fresh CPython child with `-I -S -B`. Disabling `site` prevents automatic `sitecustomize`, `usercustomize`, and executable `.pth` processing. The child receives only the checked-out `src` tree plus literal interpreter site-package directories, requires `huggingface_hub` to be absent before import, content-hashes the package tree before import, verifies the same content immediately after import and again after Hub work, pins the canonical public Hugging Face endpoint, warms the exact model/tokenizer commit, creates the authenticated QSOL Hub tree artifacts, and returns only the two tree receipts. The parent then reauthenticates its repository revision, launcher, lock, template, and complete reference environment before publication.
+The initial launcher runs with `-I -S -B`, sanitizes Python/native-loader/Git/transport environment controls, then execs a second `-I -S -B` interpreter. The second interpreter adds only the checked-out `src` tree and literal interpreter package directories without processing `.pth` files. Canonical Hub work then runs in a separate fresh `-I -S -B` preparation child. The child requires `huggingface_hub` and the Requests/TLS transport chain to be absent before their authenticated imports, content-hashes `huggingface_hub`, Requests, urllib3, certifi, charset-normalizer, and idna before import, verifies the same package-tree receipts after import and again after Hub work, pins the canonical public Hugging Face endpoint, warms the exact model/tokenizer commit, and creates the authenticated QSOL Hub tree artifacts. The parent independently measures the same package trees as part of the reference-environment receipt and rejects the worker's tree receipts unless all package-content provenance matches exactly.
 
 A successful preparation publishes two immutable files:
 
@@ -96,7 +98,7 @@ A successful preparation publishes two immutable files:
 /tmp/GEO-CAP-001-EXP-001.request.preparation-receipt.json
 ```
 
-The preparation receipt is governed by `schemas/capture-preparation-receipt.schema.json`. It records the clean repository commit that executed preparation, the canonical Hugging Face endpoint, the finalized request SHA-256, the frozen model/tokenizer repository and commit identities, both Hub tree receipts, the complete self-hashed reference-environment receipt (CPython version, Linux/x86_64 lane, complete 28-distribution lock, and lock SHA-256), and its own self-hash. The final request is not considered a complete prepared input without this receipt.
+The preparation receipt is governed by `schemas/capture-preparation-receipt.schema.json`. It records the clean repository commit that executed preparation, the canonical Hugging Face endpoint, the finalized request SHA-256, the frozen model/tokenizer repository and commit identities, both Hub tree receipts, the complete self-hashed reference-environment receipt (CPython version, Linux/x86_64 lane, complete 28-distribution lock, lock SHA-256, exact `huggingface_hub` package receipt, and exact Requests/TLS transport-package receipts), and its own self-hash. The final request is not considered a complete prepared input without this receipt.
 
 The preparation receipt is published first and the finalized request second, both with no-replace durable JSON publication. The receipt is deliberately monotonic: if request publication fails, **the receipt is retained rather than deleted**. A receipt-only state is a defined recoverable state, and the next `prepare` can authenticate it and publish the missing request without contacting the Hub again. This also prevents a failing concurrent publisher from deleting provenance already used by another process to recover the request.
 
@@ -107,7 +109,7 @@ Preserve **both** preparation files together.
 Disconnect network access if practical, or otherwise rely on the tool's forced Hugging Face/Transformers offline environment, then run:
 
 ```bash
-python tools/run_first_production_observation.py observe \
+python -I -S -B tools/run_first_production_observation.py observe \
   --request /tmp/GEO-CAP-001-EXP-001.request.json \
   --preparation-receipt /tmp/GEO-CAP-001-EXP-001.request.preparation-receipt.json \
   --output-root /tmp/GEO-CAP-001-EXP-001
@@ -121,7 +123,7 @@ The preparation revision and observation revision may be reviewed independently 
 
 The orchestrator publishes immutable snapshots named `validated-request.json` and `preparation-receipt.json` inside the experiment directory. Both capture subprocesses consume the staged request snapshot. The intermediate capture CLI is itself launched with CPython isolated mode (`-I -B`) and a Python-injection-stripped environment before it launches the already isolated canonical worker.
 
-Each physical replay execution receives a distinct occurrence identity. That identity lives in a separate worker-generated execution receipt and does **not** mutate the frozen scientific request, its preregistered `run_id`, or the three canonical bundle files.
+Each physical replay execution receives a distinct occurrence identity. That identity lives in a separate worker-generated execution receipt and does **not** mutate the frozen scientific request, its preregistered `run_id`, or the three canonical bundle files. The execution identity is validated as a non-empty string before its receipt path is reserved, before production dependencies are imported, and before model work begins.
 
 A successful experiment directory is:
 
