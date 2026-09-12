@@ -2,7 +2,7 @@
 
 **Experimental research framework for measuring, perturbing, simulating, and eventually training geometric reasoning flows in local language-model representation spaces.**
 
-> Status: **Phase 1 is frozen in two immutable evidence layers: numerical kernel `v0.1.0` and Lean 4 formal layer `v0.2.0`. PR #4 begins Phase 2A canonical local hidden-state capture. The repository still makes no empirical geometric-reasoning claim about any language model.**
+> Status: **Phase 1 is frozen in two immutable evidence layers: numerical kernel `v0.1.0` and Lean 4 formal layer `v0.2.0`. PR #4 established the Phase 2A canonical local hidden-state capture instrument; `GEO-CAP-001-EXP-001` now freezes the first real model/request and replay procedure. No production observation has yet been executed, so the repository still makes no empirical geometric-reasoning claim about any language model.**
 
 ## Research question
 
@@ -52,6 +52,7 @@ The primary normative rules are [`INVARIANTS.md`](INVARIANTS.md) and [`SCIENTIFI
 | [`ROADMAP.md`](ROADMAP.md) | Human + AI | Staged research programme and current phase status |
 | [`protocols/GEO-SIM-001.md`](protocols/GEO-SIM-001.md) | Human + AI | Phase 1 synthetic conformance protocol |
 | [`protocols/GEO-CAP-001.md`](protocols/GEO-CAP-001.md) | Human + AI | Phase 2A canonical local hidden-state capture protocol |
+| [`experiments/GEO-CAP-001-EXP-001.md`](experiments/GEO-CAP-001-EXP-001.md) | Human + AI | First preregistered production observation and replay procedure |
 | [`RESEARCH-HYPOTHESIS-MAP.md`](RESEARCH-HYPOTHESIS-MAP.md) | Human + AI | Non-normative theory-to-test registry; sources are hypotheses, not evidence |
 | [`PHASE-1-REPORT.md`](PHASE-1-REPORT.md) | Human + AI | Frozen Phase 1 numerical evidence summary and hashes |
 
@@ -162,6 +163,8 @@ merge commit ec3312d…
 immutable v0.2.0 formal evidence layer
         ↓
 Phase 2A canonical hidden-state capture instrument
+        ↓
+GEO-CAP-001-EXP-001 first production request frozen; execution pending
 ```
 
 The sole release-grade cold proof authority is the manually dispatched `lean-isolated-audit / isolated-cold-trust` job. `lean-phase1` is a verified-cache regression/cache-maintenance lane: pull-request runs validate candidates, while relevant pushes to `main` and explicit maintenance dispatches may seed authenticated caches for later pull requests. Those cache-maintenance executions carry no competing cold-trust authority. The protected theorem audit imports the source-bound GeoReason object graph without executing project initializers and emits its completion record only after all twelve theorem-kind and axiom-allowlist checks pass.
@@ -194,22 +197,28 @@ Install optional model-capture dependencies with:
 python -m pip install -e '.[capture]'
 ```
 
-Then copy and edit the request template:
+For the first production observation, do **not** edit the generic example request. The repository freezes `GEO-CAP-001-EXP-001` around `Qwen/Qwen2.5-0.5B` at immutable revision `060db6499f32faf8b98477b0a26969ef7d8b9987`, CPU float32 replay, required determinism, fixed text segmentation, sampled hidden-state indices `0, 6, 12, 18, 24`, and `step_mean` pooling.
+
+The production runner must be started with CPython isolated mode and site initialization disabled so `.pth`, `sitecustomize`, and `usercustomize` cannot execute before the launcher trust boundary. The trusted online preparation stage materializes only the authenticated Hub tree receipts:
 
 ```bash
-cp examples/GEO-CAP-001.example.json /tmp/capture-request.json
+python -I -S -B tools/run_first_production_observation.py prepare \
+  --output /tmp/GEO-CAP-001-EXP-001.request.json
 ```
 
-Replace the placeholder zero revisions with the exact model and tokenizer commit identities already available locally, freeze the step segmentation, then run:
+Then the empirical stage runs the exact final request twice under forced offline mode and records the replay result:
 
 ```bash
-qsol-geo-capture /tmp/capture-request.json \
-  --output-dir /tmp/GEO-CAP-001-run
+python -I -S -B tools/run_first_production_observation.py observe \
+  --request /tmp/GEO-CAP-001-EXP-001.request.json \
+  --output-root /tmp/GEO-CAP-001-EXP-001
 ```
 
-The example request is not itself valid empirical evidence. Production model selection, first frozen capture, and replay evidence remain open roadmap items.
+See [`experiments/GEO-CAP-001-EXP-001.md`](experiments/GEO-CAP-001-EXP-001.md) for the frozen experiment and evidence boundary.
 
-CI exercises the capture contract with a deterministic fake backend. That fixture is explicitly `SIMULATION`; it cannot close an empirical Phase 2A milestone.
+The committed experiment is a preregistration, not an observation. Model/tokenizer selection and the capture definition are frozen; the actual production execution, replay outcome, and reviewed empirical artifact remain open roadmap items.
+
+CI exercises the capture contract with both software-only regressions and an offline synthetic production-backend integration fixture. Those checks validate the instrument; they do not substitute for the frozen real-model run and cannot close an empirical Phase 2A milestone.
 
 ## Evidence classes and replication
 
@@ -228,7 +237,7 @@ These are claim ceilings, not an automatic ladder.
 
 ## Non-claims
 
-Phase 1, its Lean proof layer, and the Phase 2A capture implementation do **not** claim that:
+Phase 1, its Lean proof layer, and the Phase 2A capture implementation/preregistration do **not** claim that:
 
 - latent or representation geometry is the mechanism of reasoning;
 - any LLM has yet been shown by this repository to produce the synthetic structures in the Phase 1 fixture;

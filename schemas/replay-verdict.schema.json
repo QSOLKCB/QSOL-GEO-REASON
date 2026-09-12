@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/QSOLKCB/QSOL-GEO-REASON/schemas/replay-verdict.schema.json",
+  "title": "QSOL-GEO-REASON GEO-CAP-001 replay verdict",
+  "description": "Structural schema for the machine-readable result of a dual canonical GEO-CAP-001 observation replay. Canonical acceptance additionally requires qsol_geo_reason.capture_replay.verify_replay_verdict so preparation provenance, execution receipts, hashes, and cross-bundle identities are recomputed from the archived evidence artifacts. Deterministic replay is not scientific replication, so replication_status remains not_attempted.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "protocol_id",
+    "experiment_id",
+    "evidence_class",
+    "replication_status",
+    "request_sha256",
+    "validated_request_artifact_sha256",
+    "preparation_repository_commit",
+    "preparation_receipt_sha256",
+    "preparation_receipt_file_sha256",
+    "run_a_execution_id",
+    "run_b_execution_id",
+    "run_a_execution_receipt_file_sha256",
+    "run_b_execution_receipt_file_sha256",
+    "run_a_manifest_receipt_sha256",
+    "run_b_manifest_receipt_sha256",
+    "run_a_bundle_file_sha256",
+    "run_b_bundle_file_sha256",
+    "bundle_file_byte_equality",
+    "manifest_receipts_equal",
+    "trajectory_sha256_equal",
+    "repository_commit_equal",
+    "replay_outcome",
+    "interpretation"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "protocol_id": {"const": "GEO-CAP-001"},
+    "experiment_id": {"type": "string", "minLength": 1, "pattern": "\\S"},
+    "evidence_class": {"const": "OBSERVATION"},
+    "replication_status": {"const": "not_attempted"},
+    "request_sha256": {"$ref": "#/$defs/sha256"},
+    "validated_request_artifact_sha256": {"$ref": "#/$defs/sha256"},
+    "preparation_repository_commit": {"$ref": "#/$defs/gitSha"},
+    "preparation_receipt_sha256": {"$ref": "#/$defs/sha256"},
+    "preparation_receipt_file_sha256": {"$ref": "#/$defs/sha256"},
+    "run_a_execution_id": {"type": "string", "minLength": 1, "pattern": "\\S"},
+    "run_b_execution_id": {"type": "string", "minLength": 1, "pattern": "\\S"},
+    "run_a_execution_receipt_file_sha256": {"$ref": "#/$defs/sha256"},
+    "run_b_execution_receipt_file_sha256": {"$ref": "#/$defs/sha256"},
+    "run_a_manifest_receipt_sha256": {"$ref": "#/$defs/sha256"},
+    "run_b_manifest_receipt_sha256": {"$ref": "#/$defs/sha256"},
+    "run_a_bundle_file_sha256": {"$ref": "#/$defs/bundleReceipts"},
+    "run_b_bundle_file_sha256": {"$ref": "#/$defs/bundleReceipts"},
+    "bundle_file_byte_equality": {"$ref": "#/$defs/bundleEquality"},
+    "manifest_receipts_equal": {"type": "boolean"},
+    "trajectory_sha256_equal": {"type": "boolean"},
+    "repository_commit_equal": {"type": "boolean"},
+    "replay_outcome": {"enum": ["byte_identical", "diverged"]},
+    "interpretation": {
+      "enum": [
+        "Deterministic replay established for the three canonical scientific bundle files; the separate execution receipts intentionally differ because they identify distinct executions.",
+        "Deterministic replay was not established. Preserve both observations and their execution receipts and investigate the recorded divergence; do not tune or discard it."
+      ]
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "gitSha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "bundleReceipts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capture-request.json", "run-manifest.json", "captured-trajectory.json"],
+      "properties": {
+        "capture-request.json": {"$ref": "#/$defs/sha256"},
+        "run-manifest.json": {"$ref": "#/$defs/sha256"},
+        "captured-trajectory.json": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "bundleEquality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capture-request.json", "run-manifest.json", "captured-trajectory.json"],
+      "properties": {
+        "capture-request.json": {"type": "boolean"},
+        "run-manifest.json": {"type": "boolean"},
+        "captured-trajectory.json": {"type": "boolean"}
+      }
+    }
+  }
+}

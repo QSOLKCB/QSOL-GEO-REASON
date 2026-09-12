@@ -13,7 +13,7 @@ Phase 1 is complete and frozen in two immutable releases:
 - `v0.1.0 — Phase 1 Mathematical Kernel`, commit `1b5ab8b4543b20cdb6d439f7ad215c08e698188f`, containing the frozen numerical/simulation evidence; and
 - `v0.2.0 — Phase 1 Lean 4 Formal Evidence Layer`, merge commit `ec3312dcc102d859819c764a881e2d020662e880`, containing the separate formal proof layer for all twelve frozen theorem targets.
 
-PR #4 begins Phase 2A by implementing `GEO-CAP-001`, the canonical local hidden-state capture instrument. Code, schemas, and software-only fixtures do **not** constitute an empirical local-model result. The first production model selection, frozen capture, and replay evidence remain open roadmap items.
+PR #4 implemented `GEO-CAP-001`, the canonical local hidden-state capture instrument. PR #5 preregisters `GEO-CAP-001-EXP-001`, freezing `Qwen/Qwen2.5-0.5B` at immutable revision `060db6499f32faf8b98477b0a26969ef7d8b9987` together with the first production request and dual-replay procedure. Model/tokenizer selection and request freezing are therefore complete; the actual production execution, replay result, and reviewed empirical artifact remain open. Code, schemas, preregistration, and software-only fixtures do **not** constitute an empirical local-model result.
 
 ## Read order for AI agents
 
@@ -244,6 +244,6 @@ The intended overall progression is:
 
 `contract -> exact math -> simulation -> formal proof -> canonical instrumentation -> serving-equivalence validation -> observational dataset -> perturbation -> cross-model replication -> geometric training intervention -> ablation / falsification -> release`
 
-Phase 1 numerical and formal evidence are complete and immutable. Phase 2A now builds the canonical capture instrument, while its empirical gate remains open until a real frozen local-model run exists.
+Phase 1 numerical and formal evidence are complete and immutable. The Phase 2A capture instrument is implemented and `GEO-CAP-001-EXP-001` now freezes the first production model/request plus the authenticated preparation and replay procedure. The empirical gate remains open until the real observation is executed, its replay behaviour is recorded, and the resulting evidence is reviewed and frozen.
 
 This is a research workflow, not a claim ladder, and replication remains orthogonal to evidence class.

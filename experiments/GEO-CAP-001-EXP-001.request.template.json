@@ -1,0 +1,64 @@
+{
+  "schema_version": "1.0.0",
+  "protocol_id": "GEO-CAP-001",
+  "run_id": "geo-cap-001-exp-001-qwen2p5-0p5b-cpu-f32",
+  "model": {
+    "identifier": "Qwen/Qwen2.5-0.5B",
+    "revision": "060db6499f32faf8b98477b0a26969ef7d8b9987",
+    "revision_kind": "hf_commit",
+    "tokenizer_identifier": "Qwen/Qwen2.5-0.5B",
+    "tokenizer_revision": "060db6499f32faf8b98477b0a26969ef7d8b9987",
+    "tokenizer_revision_kind": "hf_commit"
+  },
+  "backend": {
+    "name": "huggingface-pytorch",
+    "local_files_only": true,
+    "trust_remote_code": false,
+    "device": "cpu",
+    "dtype": "float32",
+    "quantization": "none"
+  },
+  "capture": {
+    "context_mode": "cumulative",
+    "phase": "replayed_prefix",
+    "layers": [0, 6, 12, 18, 24],
+    "pooling": {
+      "mode": "step_mean"
+    },
+    "prefix_text": "Reason only from the statements below. Do not add unstated premises.",
+    "step_joiner": "\n"
+  },
+  "determinism": {
+    "mode": "required",
+    "seed": 20260912
+  },
+  "generation_parameters": {
+    "generation_used": false,
+    "temperature": null,
+    "top_p": null,
+    "top_k": null
+  },
+  "steps": [
+    {
+      "step_id": "premise-1",
+      "text": "Every cedar is a tree."
+    },
+    {
+      "step_id": "premise-2",
+      "text": "Every tree is a plant."
+    },
+    {
+      "step_id": "premise-3",
+      "text": "Object A is a cedar."
+    },
+    {
+      "step_id": "inference-1",
+      "text": "Therefore, Object A is a tree."
+    },
+    {
+      "step_id": "conclusion",
+      "text": "Therefore, Object A is a plant."
+    }
+  ],
+  "notes": "GEO-CAP-001-EXP-001 first production instrument observation. This freezes model/tokenizer identity, replay text, segmentation, layers, pooling, CPU float32 backend, and determinism policy before observation. Trusted Hub tree receipts are intentionally absent from this template and must be materialized once by tools/run_first_production_observation.py prepare before offline capture. This is an instrument-validation observation, not a confirmatory reasoning-geometry hypothesis test and not mechanism evidence."
+}
