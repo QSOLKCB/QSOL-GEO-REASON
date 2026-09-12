@@ -24,18 +24,24 @@ class CaptureArchitectureRemediationTests(unittest.TestCase):
         self.assertIn("Single composition boundary", composition)
         self.assertIn("Historical ``capture_backend_round*`` modules", composition)
 
-    def test_canonical_cli_delegates_observation_to_isolated_worker(self):
+    def test_canonical_cli_delegates_observation_to_isolated_no_site_worker(self):
         cli = (ROOT / "src" / "qsol_geo_reason" / "capture_cli.py").read_text(
             encoding="utf-8"
         )
         worker = (ROOT / "src" / "qsol_geo_reason" / "capture_worker.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn('"-I"', cli)
-        self.assertIn('"-B"', cli)
+        bootstrap = (ROOT / "src" / "qsol_geo_reason" / "no_site_subprocess.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("isolated_package_command", cli)
         self.assertIn('"qsol_geo_reason.capture_worker"', cli)
+        self.assertIn('"-I"', bootstrap)
+        self.assertIn('"-S"', bootstrap)
+        self.assertIn('"-B"', bootstrap)
         self.assertIn('"HF_HUB_OFFLINE": "1"', cli)
         self.assertIn("sys.flags.isolated", worker)
+        self.assertIn("sys.flags.no_site", worker)
         self.assertIn("preloaded production dependencies", worker)
 
     def test_capture_reference_environment_is_frozen_and_real_backend_ci_exists(self):
@@ -78,6 +84,7 @@ class CaptureArchitectureRemediationTests(unittest.TestCase):
         self.assertIn("mismatched", verifier)
         self.assertIn("capture-reference-py311.txt", verifier)
         self.assertIn("Hugging Face Hub package tree", verifier)
+        self.assertIn("final CPython 3.11", verifier)
 
         integration = (
             ROOT / "tools" / "run_capture_production_integration.py"
