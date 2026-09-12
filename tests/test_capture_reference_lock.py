@@ -142,18 +142,25 @@ class CaptureReferenceLockTests(unittest.TestCase):
         locked = verifier._locked_versions()
         transport = hub_transport_package_provenance()
         transport.pop("certifi")
-        with self.assertRaisesRegex(RuntimeError, "transport package provenance keys"):
-            verifier._reference._build_reference_environment_receipt_from_state(
-                locked=locked,
-                installed=dict(locked),
-                python_version=(3, 11, 16),
-                python_implementation="CPython",
-                platform_system="Linux",
-                platform_machine="x86_64",
-                hub_package_provenance=hub_package_provenance(),
-                hub_transport_package_provenance=transport,
-                lock_sha256=verifier._reference._lock_sha256(),
-            )
+        with (
+            mock.patch.object(verifier, "_installed_runtime_versions", return_value=dict(locked)),
+            mock.patch.object(verifier, "_current_python_version", return_value=(3, 11, 16)),
+            mock.patch.object(verifier, "_current_python_implementation", return_value="CPython"),
+            mock.patch.object(verifier, "_current_platform_system", return_value="Linux"),
+            mock.patch.object(verifier, "_current_platform_machine", return_value="x86_64"),
+            mock.patch.object(
+                verifier,
+                "_current_hub_package_provenance",
+                return_value=hub_package_provenance(),
+            ),
+            mock.patch.object(
+                verifier,
+                "_current_hub_transport_package_provenance",
+                return_value=transport,
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "transport package provenance keys"):
+                verifier.verify_reference_environment()
 
 
 if __name__ == "__main__":
