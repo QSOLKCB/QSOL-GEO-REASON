@@ -1,6 +1,7 @@
 """No-site isolated worker for trusted canonical-Hub preparation."""
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import json
 import sys
@@ -9,25 +10,59 @@ from typing import Any
 
 from .capture_common import CaptureBackendUnavailable, CaptureContractError
 from .capture_package import _python_package_provenance
+from .capture_reference_environment import HUB_TRANSPORT_PACKAGE_IMPORTS
 
 
-def _preimport_hub_package_provenance() -> dict[str, Any]:
-    if "huggingface_hub" in sys.modules:
+def _preimport_package_provenance(import_name: str, where: str) -> dict[str, Any]:
+    if import_name in sys.modules:
         raise CaptureContractError(
-            "Hub preparation requires huggingface_hub to be absent before its authenticated import"
+            f"Hub preparation requires {import_name} to be absent before its authenticated import"
         )
     try:
-        spec = importlib.util.find_spec("huggingface_hub")
+        spec = importlib.util.find_spec(import_name)
     except (ImportError, AttributeError, ValueError) as exc:
         raise CaptureBackendUnavailable(
-            "Hub preparation requires the locked huggingface-hub distribution"
+            f"Hub preparation requires the locked {import_name} distribution"
         ) from exc
     if spec is None or not isinstance(spec.origin, str) or not spec.origin.strip():
         raise CaptureBackendUnavailable(
-            "Hub preparation cannot locate the locked huggingface-hub distribution"
+            f"Hub preparation cannot locate the locked {import_name} distribution"
         )
     probe = types.SimpleNamespace(__file__=spec.origin)
-    return _python_package_provenance(probe, "Hugging Face Hub preparation")
+    return _python_package_provenance(probe, where)
+
+
+def _preimport_hub_package_provenance() -> dict[str, Any]:
+    return _preimport_package_provenance(
+        "huggingface_hub",
+        "Hugging Face Hub preparation",
+    )
+
+
+def _preimport_transport_package_provenance() -> dict[str, dict[str, Any]]:
+    return {
+        canonical: _preimport_package_provenance(
+            import_name,
+            f"Hugging Face Hub transport dependency {canonical}",
+        )
+        for canonical, import_name in sorted(HUB_TRANSPORT_PACKAGE_IMPORTS.items())
+    }
+
+
+def _loaded_transport_package_provenance() -> dict[str, dict[str, Any]]:
+    observed: dict[str, dict[str, Any]] = {}
+    for canonical, import_name in sorted(HUB_TRANSPORT_PACKAGE_IMPORTS.items()):
+        try:
+            module = importlib.import_module(import_name)
+        except ImportError as exc:
+            raise CaptureBackendUnavailable(
+                f"Hub preparation requires the locked {import_name} distribution"
+            ) from exc
+        observed[canonical] = _python_package_provenance(
+            module,
+            f"Hugging Face Hub transport dependency {canonical}",
+        )
+    return observed
 
 
 def main() -> int:
@@ -41,6 +76,7 @@ def main() -> int:
         )
 
     before = _preimport_hub_package_provenance()
+    transport_before = _preimport_transport_package_provenance()
     try:
         import huggingface_hub
     except ImportError as exc:
@@ -54,6 +90,11 @@ def main() -> int:
     if after_import != before:
         raise CaptureContractError(
             "Hugging Face Hub package changed while establishing the no-site preparation boundary"
+        )
+    transport_after_import = _loaded_transport_package_provenance()
+    if transport_after_import != transport_before:
+        raise CaptureContractError(
+            "Hugging Face Hub transport package content changed while establishing the no-site preparation boundary"
         )
 
     from .capture_hub_tree import prepare_tree_receipts
@@ -74,11 +115,17 @@ def main() -> int:
         raise CaptureContractError(
             "Hugging Face Hub package changed during trusted online preparation"
         )
+    transport_after_work = _loaded_transport_package_provenance()
+    if transport_after_work != transport_before:
+        raise CaptureContractError(
+            "Hugging Face Hub transport package content changed during trusted online preparation"
+        )
 
     evidence = {
         **receipts,
         "huggingface_hub_package_file_count": before["file_count"],
         "huggingface_hub_package_receipt_sha256": before["receipt_sha256"],
+        "hub_transport_package_provenance": transport_before,
     }
     print(json.dumps(evidence, sort_keys=True, separators=(",", ":")))
     return 0
