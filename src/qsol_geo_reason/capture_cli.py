@@ -17,6 +17,7 @@ from .canonical import sha256_json
 from .capture_common import CaptureBackendUnavailable, CaptureContractError
 from .capture_hub_tree import prepare_tree_receipts
 from .capture_validation import validate_capture_request
+from .no_site_subprocess import isolated_package_command
 
 
 _LOADER_ENV_PREFIXES = ("LD_", "DYLD_", "_RLD_", "LDR_")
@@ -56,20 +57,15 @@ def _run_fresh_worker(
         raise CaptureContractError(
             "execution occurrence identity requires both execution_id and execution_receipt"
         )
-    command = [
-        sys.executable,
-        "-I",
-        "-B",
-        "-m",
-        "qsol_geo_reason.capture_worker",
+    worker_args = [
         str(request_path.resolve()),
         "--output-dir",
         str(output_dir.resolve()),
     ]
     if implementation_revision:
-        command.extend(["--implementation-revision", implementation_revision])
+        worker_args.extend(["--implementation-revision", implementation_revision])
     if execution_id is not None:
-        command.extend(
+        worker_args.extend(
             [
                 "--execution-id",
                 execution_id,
@@ -77,6 +73,10 @@ def _run_fresh_worker(
                 str(execution_receipt.resolve()),
             ]
         )
+    command = isolated_package_command(
+        "qsol_geo_reason.capture_worker",
+        worker_args,
+    )
     try:
         completed = subprocess.run(
             command,
