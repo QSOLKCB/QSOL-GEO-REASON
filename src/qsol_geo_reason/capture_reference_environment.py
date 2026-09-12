@@ -210,6 +210,8 @@ def _require_reference_platform(
     python_implementation: str,
     platform_system: str,
     platform_machine: str,
+    python_releaselevel: str = "final",
+    python_serial: int = 0,
 ) -> tuple[str, str]:
     if python_implementation != "CPython":
         raise CaptureContractError(
@@ -219,6 +221,12 @@ def _require_reference_platform(
         observed = ".".join(str(part) for part in python_version)
         raise CaptureContractError(
             f"reference lane requires Python 3.11, observed {observed}"
+        )
+    if python_releaselevel != "final" or python_serial != 0:
+        observed = ".".join(str(part) for part in python_version)
+        raise CaptureContractError(
+            "reference lane requires a final CPython release, observed "
+            f"{observed} {python_releaselevel}{python_serial}"
         )
     if platform_system != "Linux":
         raise CaptureContractError(
@@ -242,6 +250,8 @@ def _build_reference_environment_receipt_from_state(
     platform_machine: str,
     hub_package_provenance: Mapping[str, Any],
     hub_transport_package_provenance: Mapping[str, Any],
+    python_releaselevel: str = "final",
+    python_serial: int = 0,
     lock_sha256: str | None = None,
 ) -> dict[str, Any]:
     version_text, machine = _require_reference_platform(
@@ -249,6 +259,8 @@ def _build_reference_environment_receipt_from_state(
         python_implementation=python_implementation,
         platform_system=platform_system,
         platform_machine=platform_machine,
+        python_releaselevel=python_releaselevel,
+        python_serial=python_serial,
     )
     hub_file_count, hub_receipt_sha256 = _validate_hub_package_provenance(
         hub_package_provenance
@@ -316,7 +328,7 @@ def _build_reference_environment_receipt_from_state(
 
 
 def build_reference_environment_receipt() -> dict[str, Any]:
-    """Measure the exact interpreter, package trees, and locked runtime used here."""
+    """Measure the exact final interpreter, package trees, and locked runtime used here."""
     version = sys.version_info
     return _build_reference_environment_receipt_from_state(
         locked=_locked_versions(),
@@ -327,6 +339,8 @@ def build_reference_environment_receipt() -> dict[str, Any]:
         platform_machine=platform.machine(),
         hub_package_provenance=_huggingface_hub_package_provenance(),
         hub_transport_package_provenance=_hub_transport_package_provenance(),
+        python_releaselevel=version.releaselevel,
+        python_serial=version.serial,
         lock_sha256=_lock_sha256(),
     )
 
