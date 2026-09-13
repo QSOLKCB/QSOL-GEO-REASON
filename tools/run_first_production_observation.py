@@ -1,13 +1,16 @@
-"""Launch the authenticated GEO-CAP-001-EXP-001 package orchestrator.
+"""Second-stage authenticated launcher for GEO-CAP-001-EXP-001.
 
-Canonical invocation is ``python -I -S -B tools/run_first_production_observation.py``.
-The first interpreter must already suppress Python startup customization; this launcher
-then removes native/Python loader, Git-redirection, and network transport trust
-overrides before execing a second ``-I -S -B`` interpreter. Before either process
-imports ``qsol_geo_reason``, the launcher rejects import shadows/bytecode and directly
-authenticates every tracked package file against the bound Git revision independently
-of index flags. The second interpreter re-hashes the authenticated source manifest
-immediately before prepending ``src`` to ``sys.path``.
+Canonical production entry uses the authenticated Git-blob ``qsol_first_observation``
+bootstrap documented in ``experiments/GEO-CAP-001-EXP-001.md``. The working-tree
+launcher is not itself a trust root and must not be executed directly for evidence.
+When committed launcher bytes are executed by that bootstrap, this module first
+validates the original launcher pathname and its checkout-local ancestors without
+following symlinks. It then removes native/Python loader, Git-redirection, and network
+transport trust overrides before execing a second ``-I -S -B`` interpreter. Before
+either process imports ``qsol_geo_reason``, the launcher rejects import shadows/
+bytecode and directly authenticates every tracked package file against the bound Git
+revision independently of index flags. The second interpreter re-hashes the
+authenticated source manifest immediately before prepending ``src`` to ``sys.path``.
 """
 from __future__ import annotations
 
@@ -23,7 +26,42 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 
-ROOT = Path(__file__).resolve().parents[1]
+def _repository_root_from_launcher_path(path: str | os.PathLike[str]) -> Path:
+    """Derive the checkout root without following launcher or checkout-local symlinks."""
+    requested = Path(os.path.abspath(os.fspath(path)))
+    if (
+        requested.name != "run_first_production_observation.py"
+        or requested.parent.name != "tools"
+    ):
+        raise RuntimeError(
+            "canonical production launcher pathname is not tools/run_first_production_observation.py"
+        )
+
+    repository_root = requested.parent.parent
+    checks = (
+        (requested, stat.S_ISREG, "launcher file"),
+        (requested.parent, stat.S_ISDIR, "launcher tools directory"),
+        (repository_root, stat.S_ISDIR, "launcher repository root"),
+    )
+    for candidate, expected_type, label in checks:
+        try:
+            info = candidate.lstat()
+        except OSError as exc:
+            raise RuntimeError(
+                f"canonical production launcher cannot inspect {label}: {candidate}"
+            ) from exc
+        if stat.S_ISLNK(info.st_mode):
+            raise RuntimeError(
+                f"canonical production launcher rejects symlinked {label}: {candidate}"
+            )
+        if not expected_type(info.st_mode):
+            raise RuntimeError(
+                f"canonical production launcher requires a valid {label}: {candidate}"
+            )
+    return repository_root
+
+
+ROOT = _repository_root_from_launcher_path(__file__)
 _ORCHESTRATOR_MODULE = "qsol_geo_reason.first_production_observation"
 _LOADER_ENV_PREFIXES = ("LD_", "DYLD_", "_RLD_", "LDR_")
 _LOADER_ENV_NAMES = frozenset({"GLIBC_TUNABLES", "LIBPATH", "SHLIB_PATH"})
@@ -465,8 +503,8 @@ def _assert_initial_launcher_boundary() -> None:
         or not sys.flags.ignore_environment
     ):
         raise RuntimeError(
-            "canonical production launcher must be invoked with: "
-            "python -I -S -B tools/run_first_production_observation.py ..."
+            "canonical production launcher must be invoked through the authenticated Git-blob "
+            "qsol_first_observation bootstrap documented in GEO-CAP-001-EXP-001"
         )
     if "sitecustomize" in sys.modules or "usercustomize" in sys.modules:
         raise RuntimeError(
