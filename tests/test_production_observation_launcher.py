@@ -52,6 +52,10 @@ class ProductionObservationLauncherTests(unittest.TestCase):
     def test_launcher_execve_strips_injection_and_keeps_second_interpreter_no_site(self) -> None:
         launcher = self._load_launcher()
         seen: dict[str, object] = {}
+        revision = "a" * 40
+        launcher_digest = "b" * 64
+        git_digest = "c" * 64
+        source_manifest = {"__init__.py": "d" * 64}
 
         def fake_execve(executable, argv, environment):
             seen["executable"] = executable
@@ -79,6 +83,22 @@ class ProductionObservationLauncherTests(unittest.TestCase):
             mock.patch.object(launcher, "_assert_no_importable_python_shadows"),
             mock.patch.object(
                 launcher,
+                "_require_authenticated_bootstrap_identity",
+                return_value=(revision, launcher_digest),
+            ),
+            mock.patch.object(
+                launcher,
+                "_trusted_git_identity",
+                return_value=(Path("/usr/bin/git"), git_digest),
+            ),
+            mock.patch.object(launcher, "_authenticate_bootstrap_launcher_blob") as authenticate_blob,
+            mock.patch.object(
+                launcher,
+                "_authenticate_tracked_package_source",
+                return_value=(revision, source_manifest),
+            ) as authenticate_source,
+            mock.patch.object(
+                launcher,
                 "_literal_site_package_paths",
                 return_value=["/trusted/site-packages"],
             ),
@@ -87,6 +107,17 @@ class ProductionObservationLauncherTests(unittest.TestCase):
             with self.assertRaises(_ExecIntercept):
                 launcher.main()
 
+        authenticate_blob.assert_called_once_with(
+            revision=revision,
+            launcher_digest=launcher_digest,
+            git_path=Path("/usr/bin/git"),
+            git_digest=git_digest,
+        )
+        authenticate_source.assert_called_once_with(
+            git_path=Path("/usr/bin/git"),
+            git_digest=git_digest,
+            revision=revision,
+        )
         self.assertEqual(seen["executable"], sys.executable)
         argv = seen["argv"]
         self.assertEqual(
@@ -101,6 +132,7 @@ class ProductionObservationLauncherTests(unittest.TestCase):
             ],
         )
         self.assertIn(str((ROOT / "src").resolve()), argv)
+        self.assertIn(revision, argv)
         self.assertIn("/trusted/site-packages", argv)
         self.assertIn("--", argv)
         environment = seen["environment"]
