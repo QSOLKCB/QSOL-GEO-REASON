@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import secrets
+import stat
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -122,11 +123,30 @@ def _write_tree_artifact(
             os.link(temporary, destination)
         except FileExistsError:
             try:
+                before = destination.lstat()
+            except OSError as exc:
+                raise CaptureContractError(
+                    f"unable to inspect existing trusted {where} Hub tree artifact"
+                ) from exc
+            if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+                raise CaptureContractError(
+                    f"existing trusted {where} Hub tree artifact must be a regular non-symlink file"
+                )
+            try:
                 existing_bytes = destination.read_bytes()
+                after = destination.lstat()
             except OSError as exc:
                 raise CaptureContractError(
                     f"unable to verify existing trusted {where} Hub tree artifact"
                 ) from exc
+            if (
+                stat.S_ISLNK(after.st_mode)
+                or not stat.S_ISREG(after.st_mode)
+                or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+            ):
+                raise CaptureContractError(
+                    f"existing trusted {where} Hub tree artifact changed during verification"
+                )
             if existing_bytes != tree_bytes:
                 raise CaptureContractError(
                     f"existing trusted {where} Hub tree artifact for {commit} differs from newly observed metadata"
