@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 import unittest
@@ -19,16 +20,19 @@ class TrackedArtifactAuthenticationTests(unittest.TestCase):
         )
         return completed.stdout.strip()
 
-    def _fixture(self, root: Path) -> tuple[Path, str]:
+    def _fixture(self, root: Path) -> tuple[Path, Path, str]:
         self._git(root, "init", "-q")
         self._git(root, "config", "user.name", "QSOL Test")
         self._git(root, "config", "user.email", "qsol@example.invalid")
         template = root / "experiments" / "frozen.json"
+        decoy = root / "fixtures" / "decoy.json"
         template.parent.mkdir(parents=True)
+        decoy.parent.mkdir(parents=True)
         template.write_bytes(b'{"frozen":true}\n')
-        self._git(root, "add", "experiments/frozen.json")
+        decoy.write_bytes(b'{"fixture":true}\n')
+        self._git(root, "add", "experiments/frozen.json", "fixtures/decoy.json")
         self._git(root, "commit", "-qm", "freeze template")
-        return template, self._git(root, "rev-parse", "HEAD")
+        return template, decoy, self._git(root, "rev-parse", "HEAD")
 
     def _assert_index_hint_cannot_hide_change(self, hint: str) -> None:
         try:
@@ -43,7 +47,7 @@ class TrackedArtifactAuthenticationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            template, revision = self._fixture(root)
+            template, _decoy, revision = self._fixture(root)
             authenticated = authenticate_tracked_file_against_revision(
                 template,
                 revision,
@@ -70,6 +74,38 @@ class TrackedArtifactAuthenticationTests(unittest.TestCase):
 
     def test_skip_worktree_cannot_hide_modified_template_bytes(self) -> None:
         self._assert_index_hint_cannot_hide_change("--skip-worktree")
+
+    @unittest.skipIf(os.name == "nt", "symlink creation requires platform-specific privileges")
+    def test_skip_worktree_cannot_redirect_tracked_artifact_through_symlink(self) -> None:
+        try:
+            subprocess.run(
+                ["git", "--version"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest("git is unavailable")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template, decoy, revision = self._fixture(root)
+            self._git(root, "update-index", "--skip-worktree", "experiments/frozen.json")
+
+            template.unlink()
+            template.symlink_to(decoy.relative_to(template.parent), target_is_directory=False)
+            self.assertTrue(template.is_symlink())
+            self.assertEqual(self._git(root, "status", "--porcelain"), "")
+
+            with self.assertRaisesRegex(
+                SourceIdentityError,
+                "pathname must not be a symlink: experiments/frozen.json",
+            ):
+                authenticate_tracked_file_against_revision(
+                    template,
+                    revision,
+                    repo_root=root,
+                )
 
 
 if __name__ == "__main__":
