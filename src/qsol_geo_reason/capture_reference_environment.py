@@ -13,7 +13,11 @@ from typing import Any, Mapping
 
 from .canonical import sha256_json
 from .capture_common import CaptureContractError
-from .capture_package import _authenticate_package_bytecode, _python_package_provenance
+from .capture_package import (
+    _authenticate_package_bytecode,
+    _distribution_package_provenance,
+    _python_package_provenance,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -51,6 +55,11 @@ CAPTURE_TRANSITIVE_PACKAGE_IMPORTS = {
     "sympy": "sympy",
     "tqdm": "tqdm",
     "typing-extensions": "typing_extensions",
+}
+_PACKAGE_DISTRIBUTION_BY_IMPORT = {
+    "huggingface_hub": "huggingface-hub",
+    **{import_name: canonical for canonical, import_name in HUB_TRANSPORT_PACKAGE_IMPORTS.items()},
+    **{import_name: canonical for canonical, import_name in CAPTURE_TRANSITIVE_PACKAGE_IMPORTS.items()},
 }
 _RECEIPT_KEYS = frozenset(
     {
@@ -174,21 +183,17 @@ def _single_module_provenance_without_import(origin: Path, where: str) -> dict[s
 
 
 def _package_provenance_without_import(import_name: str, where: str) -> dict[str, Any]:
-    """Content-bind one importable package/module without executing its code."""
-    try:
-        spec = importlib.util.find_spec(import_name)
-    except (ImportError, AttributeError, ValueError) as exc:
+    """Content-bind the import surface and all distribution-owned runtime files."""
+    distribution_name = _PACKAGE_DISTRIBUTION_BY_IMPORT.get(import_name)
+    if distribution_name is None:
         raise CaptureContractError(
-            f"{where} cannot locate the locked {import_name} package"
-        ) from exc
-    if spec is None or not isinstance(spec.origin, str) or not spec.origin.strip():
-        raise CaptureContractError(
-            f"{where} cannot locate the locked {import_name} package"
+            f"{where} has no canonical distribution identity for import {import_name}"
         )
-    if spec.submodule_search_locations is None:
-        return _single_module_provenance_without_import(Path(spec.origin), where)
-    probe = types.SimpleNamespace(__file__=spec.origin)
-    return _python_package_provenance(probe, where)
+    return _distribution_package_provenance(
+        distribution_name,
+        import_name,
+        where,
+    )
 
 
 def _huggingface_hub_package_provenance() -> dict[str, Any]:
@@ -199,7 +204,7 @@ def _huggingface_hub_package_provenance() -> dict[str, Any]:
 
 
 def _hub_transport_package_provenance() -> dict[str, dict[str, Any]]:
-    """Content-bind the locked Requests/TLS package chain used for Hub transport."""
+    """Content-bind the locked Requests/TLS distribution payload used for Hub transport."""
     return {
         canonical: _package_provenance_without_import(
             import_name,
@@ -210,7 +215,7 @@ def _hub_transport_package_provenance() -> dict[str, dict[str, Any]]:
 
 
 def _capture_transitive_package_provenance() -> dict[str, dict[str, Any]]:
-    """Content-bind the locked executable transitive closure used by capture-time imports."""
+    """Content-bind the locked distribution-owned transitive closure used by capture-time imports."""
     return {
         canonical: _package_provenance_without_import(
             import_name,
@@ -427,7 +432,7 @@ def _build_reference_environment_receipt_from_state(
 
 
 def build_reference_environment_receipt() -> dict[str, Any]:
-    """Measure the exact final interpreter, package trees, and locked runtime used here."""
+    """Measure the exact final interpreter and distribution-owned runtime used here."""
     version = sys.version_info
     return _build_reference_environment_receipt_from_state(
         locked=_locked_versions(),
