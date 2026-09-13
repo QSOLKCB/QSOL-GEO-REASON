@@ -165,7 +165,7 @@ def _exclusive_write_json(path: Path, value: Mapping[str, Any]) -> None:
     except (TypeError, ValueError, UnicodeError) as exc:
         raise CaptureContractError(f"unable to canonicalize artifact {path}") from exc
     temporary = _unique_sibling(path, "tmp")
-    published = False
+    linked = False
     try:
         with temporary.open("xb") as handle:
             handle.write(payload)
@@ -177,17 +177,20 @@ def _exclusive_write_json(path: Path, value: Mapping[str, Any]) -> None:
             raise CaptureContractError(
                 f"refusing to overwrite existing artifact {path}"
             ) from exc
-        published = True
+        linked = True
         _fsync_directory(path.parent)
     except CaptureContractError:
         raise
     except OSError as exc:
-        if published:
-            try:
-                path.unlink()
-            except OSError:
-                pass
-        raise CaptureContractError(f"unable to persist {path}: {exc}") from exc
+        # Once the no-replace link succeeds, the immutable artifact is visible and
+        # may already have been consumed by a concurrent recovery process. Never
+        # unlink that shared name merely because the subsequent directory fsync failed;
+        # preserve it as the documented recoverable state and report the durability
+        # failure to the caller.
+        phase = " after no-replace publication" if linked else ""
+        raise CaptureContractError(
+            f"unable to persist {path}{phase}: {exc}"
+        ) from exc
     finally:
         try:
             temporary.unlink(missing_ok=True)
@@ -343,16 +346,10 @@ def prepare(
         experiment_id=EXPERIMENT_ID,
     )
 
+    # Receipt-first publication is monotonic. Once the sidecar name is linked, later
+    # request-publication failures leave that recoverable provenance in place.
     _exclusive_write_json(preparation_receipt_path, preparation_receipt)
-    try:
-        _exclusive_write_json(output, final_request)
-    except BaseException:
-        try:
-            preparation_receipt_path.unlink(missing_ok=True)
-            _fsync_directory(preparation_receipt_path.parent)
-        except OSError:
-            pass
-        raise
+    _exclusive_write_json(output, final_request)
     return sha256_json(final_request)
 
 
