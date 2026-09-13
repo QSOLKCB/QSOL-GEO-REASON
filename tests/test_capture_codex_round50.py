@@ -137,6 +137,34 @@ class CaptureRound50RegressionTests(unittest.TestCase):
                 [root, root / "level-1", root / "level-1" / "level-2"],
             )
 
+    def test_raced_parent_creation_fsyncs_the_containing_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parent = root / "shared-parent"
+            synced: list[Path] = []
+            real_mkdir = Path.mkdir
+
+            def concurrent_winner(path: Path, *args, **kwargs):
+                if Path(path) == parent:
+                    # Model another process winning after our exists() scan but
+                    # before our mkdir(). Its directory entry is not yet durable.
+                    real_mkdir(path, *args, **kwargs)
+                    raise FileExistsError
+                return real_mkdir(path, *args, **kwargs)
+
+            with (
+                patch.object(Path, "mkdir", autospec=True, side_effect=concurrent_winner),
+                patch.object(
+                    capture_publish,
+                    "_fsync_directory",
+                    side_effect=lambda path: synced.append(Path(path)),
+                ),
+            ):
+                capture_publish._ensure_parent_directory_durable(parent)
+
+            self.assertTrue(parent.is_dir())
+            self.assertEqual(synced, [root])
+
 
 if __name__ == "__main__":
     unittest.main()
