@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -98,9 +99,18 @@ def _write_tree_artifact(
     tree_dir = snapshot.parent.parent / "trees"
     _ensure_parent_directory_durable(tree_dir)
     destination = tree_dir / f"{commit.lower()}.json"
-    temporary = tree_dir / f".{commit.lower()}.{os.getpid()}.tmp"
+    # PID alone is not globally unique across containers/PID namespaces and can be
+    # reused after crashes. Add a cryptographic nonce so independent preparations
+    # sharing one Hub cache cannot select the same staging path in normal operation.
+    temporary = tree_dir / (
+        f".{commit.lower()}.{os.getpid()}.{secrets.token_hex(16)}.tmp"
+    )
+    temporary_created = False
     try:
         with temporary.open("xb") as handle:
+            # Record ownership only after exclusive creation succeeds. If open("xb")
+            # collides with an existing/stale file, this call must never unlink it.
+            temporary_created = True
             handle.write(tree_bytes)
             handle.flush()
             os.fsync(handle.fileno())
@@ -138,10 +148,11 @@ def _write_tree_artifact(
             f"unable to persist trusted {where} Hub tree artifact"
         ) from exc
     finally:
-        try:
-            temporary.unlink(missing_ok=True)
-        except OSError:
-            pass
+        if temporary_created:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     _cached_hub_commit_tree(
         snapshot.resolve(),
