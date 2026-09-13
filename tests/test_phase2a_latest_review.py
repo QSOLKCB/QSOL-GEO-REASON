@@ -12,6 +12,7 @@ from qsol_geo_reason.capture_common import CaptureContractError
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPERIMENT_DOC = ROOT / "experiments" / "GEO-CAP-001-EXP-001.md"
+README = ROOT / "README.md"
 
 
 class Phase2ALatestReviewTests(unittest.TestCase):
@@ -43,6 +44,20 @@ class Phase2ALatestReviewTests(unittest.TestCase):
         self.assertIn("HEAD:tools/run_first_production_observation.py", document)
         self.assertIn("cat-file", document)
         self.assertIn('exec(compile(src,str(path),"exec"),ns,ns)', document)
+        self.assertIn("qsol_first_observation prepare", document)
+        self.assertIn("qsol_first_observation observe", document)
+        self.assertNotIn(
+            "python -I -S -B tools/run_first_production_observation.py prepare",
+            document,
+        )
+        self.assertNotIn(
+            "python -I -S -B tools/run_first_production_observation.py observe",
+            document,
+        )
+
+    def test_readme_routes_production_commands_through_authenticated_bootstrap(self) -> None:
+        document = README.read_text(encoding="utf-8")
+        self.assertIn("authenticated Git-blob", document)
         self.assertIn("qsol_first_observation prepare", document)
         self.assertIn("qsol_first_observation observe", document)
         self.assertNotIn(
