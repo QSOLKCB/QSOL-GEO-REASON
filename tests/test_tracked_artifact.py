@@ -89,11 +89,11 @@ class TrackedArtifactAuthenticationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            template, decoy, revision = self._fixture(root)
+            template, _decoy, revision = self._fixture(root)
             self._git(root, "update-index", "--skip-worktree", "experiments/frozen.json")
 
             template.unlink()
-            template.symlink_to(decoy.relative_to(template.parent), target_is_directory=False)
+            template.symlink_to(Path("..") / "fixtures" / "decoy.json", target_is_directory=False)
             self.assertTrue(template.is_symlink())
             self.assertEqual(self._git(root, "status", "--porcelain"), "")
 
