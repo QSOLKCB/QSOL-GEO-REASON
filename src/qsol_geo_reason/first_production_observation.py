@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import sys
 import sysconfig
@@ -241,10 +242,43 @@ def _reauthenticate_revision(revision: str, where: str) -> None:
 
 
 def _assert_preparation_output_outside_checkout(output: Path) -> None:
-    """Reject request/receipt publication that would dirty the authenticated checkout."""
+    """Reject lexical, resolved, or symlinked request paths that threaten the checkout."""
     try:
         repository_root = _core.ROOT.resolve(strict=True)
-        candidate = Path(output).resolve(strict=False)
+        requested = Path(os.path.abspath(os.fspath(Path(output))))
+    except OSError as exc:
+        raise CaptureContractError(
+            f"unable to resolve preparation output trust boundary: {exc}"
+        ) from exc
+
+    # Preserve the caller's requested pathname identity before following symlinks. A
+    # dangling symlink inside the checkout can resolve to an external target while its
+    # derived preparation sidecar still lives inside the authenticated source tree.
+    try:
+        requested.relative_to(repository_root)
+    except ValueError:
+        pass
+    else:
+        raise CaptureContractError(
+            f"preparation output must be outside the source checkout: {output}"
+        )
+
+    try:
+        metadata = requested.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise CaptureContractError(
+            f"unable to inspect preparation output trust boundary: {exc}"
+        ) from exc
+    else:
+        if stat.S_ISLNK(metadata.st_mode):
+            raise CaptureContractError(
+                f"preparation output path must not be a symlink: {output}"
+            )
+
+    try:
+        candidate = requested.resolve(strict=False)
         candidate.relative_to(repository_root)
     except ValueError:
         return
