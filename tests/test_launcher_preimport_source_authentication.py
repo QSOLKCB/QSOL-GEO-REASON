@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -126,6 +127,67 @@ class LauncherPreimportSourceAuthenticationTests(unittest.TestCase):
             )
             self.assertFalse(marker.exists())
             self.assertEqual(canonical.read_text(encoding="utf-8"), malicious)
+
+    def test_authenticated_git_blob_bootstrap_never_executes_modified_working_launcher(self) -> None:
+        launcher = _load_launcher()
+        git, _ = launcher._trusted_git_identity()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tools = root / "tools"
+            tools.mkdir()
+            tracked_launcher = tools / "run_first_production_observation.py"
+            clean_marker = root / "committed-launcher-executed"
+            attacker_marker = root / "working-launcher-executed"
+            clean = (
+                "from pathlib import Path\n"
+                f"Path({str(clean_marker)!r}).write_text('committed', encoding='utf-8')\n"
+            )
+            malicious = (
+                "from pathlib import Path\n"
+                f"Path({str(attacker_marker)!r}).write_text('attacker', encoding='utf-8')\n"
+                f"Path(__file__).write_text({clean!r}, encoding='utf-8')\n"
+            )
+            tracked_launcher.write_text(clean, encoding="utf-8")
+            _git(git, root, "init", "-q")
+            _git(git, root, "config", "user.email", "qsol-test@example.invalid")
+            _git(git, root, "config", "user.name", "QSOL Test")
+            _git(git, root, "add", "tools/run_first_production_observation.py")
+            _git(git, root, "commit", "-qm", "launcher fixture")
+            _git(
+                git,
+                root,
+                "update-index",
+                "--skip-worktree",
+                "tools/run_first_production_observation.py",
+            )
+            tracked_launcher.write_text(malicious, encoding="utf-8")
+            self.assertEqual(_git(git, root, "status", "--porcelain"), "")
+
+            bootstrap = (
+                "import os,pathlib,subprocess,sys;"
+                "root=pathlib.Path(sys.argv[1]).resolve();"
+                "git=pathlib.Path(sys.argv[2]).resolve(strict=True);"
+                "path=root/'tools'/'run_first_production_observation.py';"
+                "env={'PATH':'/usr/bin:/bin','LC_ALL':'C','GIT_NO_REPLACE_OBJECTS':'1',"
+                "'GIT_CONFIG_NOSYSTEM':'1','GIT_CONFIG_GLOBAL':os.devnull,'GIT_OPTIONAL_LOCKS':'0'};"
+                "src=subprocess.run([str(git),'-C',str(root),'cat-file','blob',"
+                "'HEAD:tools/run_first_production_observation.py'],env=env,check=True,"
+                "capture_output=True).stdout;"
+                "ns={'__name__':'__main__','__file__':str(path),'__package__':None};"
+                "sys.argv=[str(path)];exec(compile(src,str(path),'exec'),ns,ns)"
+            )
+            completed = subprocess.run(
+                [sys.executable, "-I", "-S", "-B", "-c", bootstrap, str(root), str(git)],
+                cwd=root,
+                env={"PATH": os.environ.get("PATH", "")},
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertTrue(clean_marker.is_file())
+            self.assertFalse(attacker_marker.exists())
+            self.assertEqual(tracked_launcher.read_text(encoding="utf-8"), malicious)
 
 
 if __name__ == "__main__":
