@@ -276,6 +276,73 @@ def _recover_incomplete_preparation(
     return _core.sha256_json(final_request)
 
 
+def _preserve_failed_attempt(
+    output_root: Path,
+    exc: BaseException,
+    repository_commit: str,
+    execution_ids: Mapping[str, str],
+    preparation_receipt: Mapping[str, Any],
+    *,
+    replay_verdict_published: bool | None = None,
+) -> Path:
+    """Archive one failed attempt without misclassifying a published replay verdict."""
+    if replay_verdict_published is None:
+        try:
+            replay_verdict_published = (output_root / "replay-verdict.json").is_file()
+        except OSError:
+            replay_verdict_published = False
+    attempt_status = (
+        "failed_after_replay_verdict_publication"
+        if replay_verdict_published
+        else "failed_before_replay_verdict"
+    )
+    interpretation = (
+        "This directory records an attempt that failed after replay-verdict publication. "
+        "The published verdict is retained for audit, but orchestration did not return "
+        "cleanly; classify it separately from both pre-verdict failures and clean completed runs."
+        if replay_verdict_published
+        else (
+            "This directory records an incomplete production attempt. It is not a "
+            "successful replay result and must not be substituted for the final experiment."
+        )
+    )
+    marker = {
+        "schema_version": "1.0.0",
+        "protocol_id": "GEO-CAP-001",
+        "experiment_id": _core.EXPERIMENT_ID,
+        "repository_commit": repository_commit,
+        "preparation_repository_commit": preparation_receipt[
+            "preparation_repository_commit"
+        ],
+        "preparation_receipt_sha256": preparation_receipt[
+            "preparation_receipt_sha256"
+        ],
+        "planned_execution_ids": dict(execution_ids),
+        "attempt_status": attempt_status,
+        "replay_verdict_published": bool(replay_verdict_published),
+        "error_type": type(exc).__name__,
+        "error_message": str(exc),
+        "completed_run_directories": _core._completed_run_directories(output_root),
+        "interpretation": interpretation,
+    }
+    try:
+        _core._exclusive_write_json(output_root / "execution-failure.json", marker)
+    except CaptureContractError:
+        pass
+    failed_path = output_root.with_name(
+        f"{output_root.name}.failed-{os.getpid()}-{_core.secrets.token_hex(8)}"
+    )
+    try:
+        os.rename(output_root, failed_path)
+    except OSError:
+        return output_root
+    try:
+        _core._fsync_directory(failed_path.parent)
+    except OSError:
+        return failed_path
+    return failed_path
+
+
 def prepare(
     output: Path,
     implementation_revision: str | None = None,
@@ -390,6 +457,7 @@ def observe(
         "run-b": f"{_core.EXPERIMENT_ID}:{attempt_nonce}:run-b",
     }
     _core._create_output_root_durable(output_root)
+    replay_verdict_published = False
 
     try:
         validated_request_path = output_root / "validated-request.json"
@@ -452,6 +520,7 @@ def observe(
         )
         verdict_path = output_root / "replay-verdict.json"
         _core._exclusive_write_json(verdict_path, verdict)
+        replay_verdict_published = True
         persisted = _core._read_json(verdict_path)
         _core.verify_replay_verdict(
             persisted,
@@ -474,6 +543,7 @@ def observe(
             repository_commit,
             execution_ids,
             preparation_receipt,
+            replay_verdict_published=replay_verdict_published,
         )
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
             raise
@@ -493,6 +563,7 @@ _core.prepare_hub_evidence = _isolated_prepare_hub_evidence
 _core.prepare_tree_receipts = _isolated_prepare_tree_receipts
 _core._assert_preparation_output_outside_checkout = _assert_preparation_output_outside_checkout
 _core._recover_incomplete_preparation = _recover_incomplete_preparation
+_core._preserve_failed_attempt = _preserve_failed_attempt
 _core.prepare = prepare
 _core.observe = observe
 
