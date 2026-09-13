@@ -102,6 +102,33 @@ class HubTreeReceiptImmutabilityTests(unittest.TestCase):
             self.assertEqual(list(destination.parent.glob(f".{self.COMMIT}.*.tmp")), [])
             verifier.assert_not_called()
 
+    def test_existing_matching_symlinked_commit_tree_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = self._snapshot(root)
+            files = self._files()
+            tree_dir = snapshot.parent.parent / "trees"
+            tree_dir.mkdir()
+            destination = tree_dir / f"{self.COMMIT}.json"
+            target = root / "matching-tree-target.json"
+            expected_bytes = self._tree_bytes(files)
+            target.write_bytes(expected_bytes)
+            destination.symlink_to(target)
+
+            with (
+                mock.patch.object(HUB, "_cached_hub_commit_tree") as verifier,
+                self.assertRaisesRegex(
+                    CaptureContractError,
+                    "regular non-symlink file",
+                ),
+            ):
+                HUB._write_tree_artifact(snapshot, self.COMMIT, files, "model")
+
+            self.assertTrue(destination.is_symlink())
+            self.assertEqual(target.read_bytes(), expected_bytes)
+            self.assertEqual(list(tree_dir.glob(f".{self.COMMIT}.*.tmp")), [])
+            verifier.assert_not_called()
+
     def test_staging_name_collision_does_not_unlink_unowned_temp(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
