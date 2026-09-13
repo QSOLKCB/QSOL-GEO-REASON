@@ -29,8 +29,8 @@ jobs:
           -c constraints/capture-reference-py311.txt
           -e ".[capture]"
           "jsonschema==4.23.0"
-      - name: Verify complete runtime lock
-        run: python tools/verify_capture_reference_environment.py
+      - name: Verify complete runtime lock without source bytecode writes
+        run: python -B tools/verify_capture_reference_environment.py
       - name: Verify dependency consistency
         run: python -m pip check
       - name: Real offline production capture and deterministic replay
