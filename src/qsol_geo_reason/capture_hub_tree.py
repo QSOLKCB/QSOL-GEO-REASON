@@ -122,7 +122,10 @@ def _write_tree_artifact(
                     f"existing trusted {where} Hub tree artifact for {commit} differs from newly observed metadata"
                 )
             # Exact byte identity means another preparation already published the
-            # same evidence. Retain that immutable artifact rather than rewriting it.
+            # same evidence. The matching file may have been linked by a concurrent
+            # process that has not yet synced this directory entry, so sync the
+            # containing directory before this process freezes or returns the receipt.
+            _fsync_directory(tree_dir)
         else:
             # The file fsync makes the artifact bytes durable; syncing the containing
             # directory makes the new no-replace name durable before the receipt can
