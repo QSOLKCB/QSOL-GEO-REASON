@@ -54,12 +54,72 @@ class Phase2AShadowReceiptSymlinkRegressions(unittest.TestCase):
         self.assertIn("pyshadows=", bootstrap)
         self.assertLess(
             bootstrap.index("pyshadows="),
+            bootstrap.index("sys.path.insert(0,src)"),
+        )
+        self.assertLess(
+            bootstrap.index("pyshadows="),
             bootstrap.index("from qsol_geo_reason.first_production_observation"),
         )
         main_source = inspect.getsource(launcher.main)
         self.assertLess(
             main_source.index("_assert_no_importable_python_shadows()"),
             main_source.index("os.execve("),
+        )
+
+    def test_launcher_rejects_ignored_top_level_module_before_src_prepend(self) -> None:
+        launcher = _load_launcher()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_root = root / "src"
+            package = source_root / "qsol_geo_reason"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text("\n", encoding="utf-8")
+            hostile = source_root / "json.py"
+            hostile.write_text("raise RuntimeError('ignored top-level shadow executed')\n", encoding="utf-8")
+
+            with mock.patch.object(launcher, "ROOT", root):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "importable source shadows",
+                ):
+                    launcher._assert_no_importable_python_shadows()
+
+        bootstrap = launcher._ORCHESTRATOR_BOOTSTRAP
+        self.assertIn("topmods=", bootstrap)
+        self.assertLess(
+            bootstrap.index("topmods="),
+            bootstrap.index("sys.path.insert(0,src)"),
+        )
+
+    def test_launcher_rejects_sourceless_package_bytecode_before_src_prepend(self) -> None:
+        launcher = _load_launcher()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = root / "src" / "qsol_geo_reason"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text("\n", encoding="utf-8")
+            (package / "canonical.py").write_text("VALUE = 'tracked'\n", encoding="utf-8")
+            shadow = package / "canonical" / "__init__.pyc"
+            shadow.parent.mkdir()
+            shadow.write_bytes(b"sourceless-shadow")
+
+            with mock.patch.object(launcher, "ROOT", root):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "importable source shadows",
+                ):
+                    launcher._assert_no_importable_python_shadows()
+
+        bootstrap = launcher._ORCHESTRATOR_BOOTSTRAP
+        self.assertIn("bytecode=", bootstrap)
+        self.assertIn("pkgdirs=", bootstrap)
+        self.assertLess(
+            bootstrap.index("bytecode="),
+            bootstrap.index("sys.path.insert(0,src)"),
+        )
+        self.assertLess(
+            bootstrap.index("pkgdirs="),
+            bootstrap.index("sys.path.insert(0,src)"),
         )
 
     def test_linked_preparation_receipt_survives_parent_fsync_failure(self) -> None:
