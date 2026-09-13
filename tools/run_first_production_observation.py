@@ -3,12 +3,15 @@
 Canonical production entry uses the authenticated Git-blob ``qsol_first_observation``
 bootstrap documented in ``experiments/GEO-CAP-001-EXP-001.md``. The working-tree
 launcher is not itself a trust root and must not be executed directly for evidence.
-When committed launcher bytes are executed by that bootstrap, this module first
-validates the original launcher pathname and its checkout-local ancestors without
-following symlinks. It then removes native/Python loader, Git-redirection, and network
-transport trust overrides before execing a second ``-I -S -B`` interpreter. Before
-either process imports ``qsol_geo_reason``, the launcher rejects import shadows/
-bytecode and directly authenticates every tracked package file against the bound Git
+The bootstrap resolves one immutable commit before reading the launcher blob and
+injects both that commit and the exact launcher-blob SHA-256 into this committed
+program. This launcher reauthenticates that same blob, binds all tracked package
+source to the same commit, and forces that commit through the evidence-producing
+facade. It also validates the original launcher pathname and checkout-local ancestors
+without following symlinks, removes native/Python loader, Git-redirection, and network
+transport trust overrides, and execs a second ``-I -S -B`` interpreter. Before either
+process imports ``qsol_geo_reason``, the launcher rejects import shadows/bytecode and
+directly authenticates every tracked package file against the bootstrap-bound Git
 revision independently of index flags. The second interpreter re-hashes the
 authenticated source manifest immediately before prepending ``src`` to ``sys.path``.
 """
@@ -122,6 +125,7 @@ _BYTECODE_SUFFIXES = tuple(
     )
 )
 _PACKAGE_GIT_ROOT = "src/qsol_geo_reason"
+_LAUNCHER_GIT_PATH = "tools/run_first_production_observation.py"
 _ORCHESTRATOR_BOOTSTRAP = (
     "import hashlib,importlib.machinery,json,pathlib,sys;"
     "src=sys.argv[1];"
@@ -149,7 +153,7 @@ _ORCHESTRATOR_BOOTSTRAP = (
     "sourcebad and (_ for _ in ()).throw(RuntimeError('canonical production launcher rejects tracked package source that does not match bound revision '+revision+': '+','.join(sourcebad)));"
     "sys.path.insert(0,src);"
     "[sys.path.append(p) for p in paths if p not in sys.path];"
-    "sys.argv=['qsol_geo_reason.first_production_observation',*args];"
+    "sys.argv=['qsol_geo_reason.first_production_observation',*args,'--implementation-revision',revision];"
     "from qsol_geo_reason.first_production_observation import main;"
     "raise SystemExit(main())"
 )
@@ -271,6 +275,70 @@ def _git_identity_command(
             "trusted Git executable changed during pre-import source authentication"
         )
     return completed
+
+
+def _require_authenticated_bootstrap_identity() -> tuple[str, str]:
+    revision = globals().get("_QSOL_AUTHENTICATED_BOOTSTRAP_REVISION")
+    launcher_digest = globals().get("_QSOL_AUTHENTICATED_LAUNCHER_SHA256")
+    if (
+        not isinstance(revision, str)
+        or len(revision) != 40
+        or any(ch not in "0123456789abcdef" for ch in revision)
+    ):
+        raise RuntimeError(
+            "canonical production launcher requires the bootstrap-bound lowercase 40-hex revision"
+        )
+    if (
+        not isinstance(launcher_digest, str)
+        or len(launcher_digest) != 64
+        or any(ch not in "0123456789abcdef" for ch in launcher_digest)
+    ):
+        raise RuntimeError(
+            "canonical production launcher requires the bootstrap-bound launcher blob SHA-256"
+        )
+    return revision, launcher_digest
+
+
+def _authenticate_bootstrap_launcher_blob(
+    *,
+    revision: str,
+    launcher_digest: str,
+    git_path: Path,
+    git_digest: str,
+) -> None:
+    """Require the bytes already executing to be the launcher blob from the bound commit."""
+    try:
+        root = ROOT.resolve(strict=True)
+        bound = _git_identity_command(
+            root,
+            git_path,
+            git_digest,
+            "rev-parse",
+            "--verify",
+            f"{revision}^{{commit}}",
+            text=True,
+        ).stdout.strip()
+        if bound != revision:
+            raise RuntimeError(
+                "authenticated launcher bootstrap revision is not a stable Git commit"
+            )
+        committed = _git_identity_command(
+            root,
+            git_path,
+            git_digest,
+            "cat-file",
+            "blob",
+            f"{revision}:{_LAUNCHER_GIT_PATH}",
+            text=False,
+        ).stdout
+    except (OSError, process.CalledProcessError) as exc:
+        raise RuntimeError(
+            "canonical production launcher cannot authenticate its bootstrap-bound Git blob"
+        ) from exc
+    if hashlib.sha256(committed).hexdigest() != launcher_digest:
+        raise RuntimeError(
+            "canonical production launcher bytes do not match the bootstrap-bound launcher blob"
+        )
 
 
 def _authenticate_tracked_package_source(
@@ -516,10 +584,18 @@ def main() -> int:
     _assert_initial_launcher_boundary()
     _assert_no_importable_native_extensions()
     _assert_no_importable_python_shadows()
+    bootstrap_revision, bootstrap_launcher_digest = _require_authenticated_bootstrap_identity()
     git_path, git_digest = _trusted_git_identity()
+    _authenticate_bootstrap_launcher_blob(
+        revision=bootstrap_revision,
+        launcher_digest=bootstrap_launcher_digest,
+        git_path=git_path,
+        git_digest=git_digest,
+    )
     revision, source_manifest = _authenticate_tracked_package_source(
         git_path=git_path,
         git_digest=git_digest,
+        revision=bootstrap_revision,
     )
     argv = [
         sys.executable,
