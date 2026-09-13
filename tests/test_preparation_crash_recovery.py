@@ -101,6 +101,56 @@ class PreparationCrashRecoveryTests(unittest.TestCase):
             authenticated_paths = [call.args[0] for call in authenticate.call_args_list]
             self.assertIn(TOOL.REFERENCE_LOCK, authenticated_paths)
 
+    def test_receipt_only_recovery_rejects_symlinked_sidecar_before_hub_warmup(self) -> None:
+        recovery_commit = "f" * 40
+        _, receipt = self._prepared_request_and_receipt()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "final-request.json"
+            sidecar = TOOL._default_preparation_receipt_path(output)
+            target = root / "external-valid-receipt.json"
+            target.write_text(
+                json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            sidecar.symlink_to(target)
+
+            with (
+                mock.patch.object(
+                    TOOL,
+                    "resolve_implementation_revision",
+                    return_value=recovery_commit,
+                ),
+                mock.patch.object(
+                    TOOL,
+                    "authenticate_tracked_file_against_revision",
+                    return_value="experiments/GEO-CAP-001-EXP-001.request.template.json",
+                ),
+                mock.patch.object(
+                    TOOL,
+                    "authenticate_tracked_tool_against_revision",
+                    return_value="1" * 40,
+                ),
+                mock.patch.object(
+                    TOOL,
+                    "prepare_tree_receipts",
+                    side_effect=AssertionError("symlinked recovery must not contact the Hub"),
+                ) as warmup,
+            ):
+                with self.assertRaisesRegex(
+                    CaptureContractError,
+                    "regular non-symlink file",
+                ):
+                    TOOL.prepare(output)
+
+            self.assertFalse(warmup.called)
+            self.assertFalse(output.exists())
+            self.assertTrue(sidecar.is_symlink())
+            self.assertEqual(
+                json.loads(target.read_text(encoding="utf-8")),
+                receipt,
+            )
+
     def test_receipt_only_recovery_rejects_live_environment_drift_before_publication(self) -> None:
         recovery_commit = "f" * 40
         request, receipt = self._prepared_request_and_receipt()
