@@ -2,38 +2,34 @@
 from __future__ import annotations
 
 import importlib
-import importlib.util
 import json
 import sys
-import types
 from typing import Any
 
 from .capture_common import CaptureBackendUnavailable, CaptureContractError
-from .capture_package import _python_package_provenance
+from .capture_package import _distribution_package_provenance
 from .capture_reference_environment import HUB_TRANSPORT_PACKAGE_IMPORTS
 
 
-def _preimport_package_provenance(import_name: str, where: str) -> dict[str, Any]:
+def _preimport_package_provenance(
+    distribution_name: str,
+    import_name: str,
+    where: str,
+) -> dict[str, Any]:
     if import_name in sys.modules:
         raise CaptureContractError(
             f"Hub preparation requires {import_name} to be absent before its authenticated import"
         )
-    try:
-        spec = importlib.util.find_spec(import_name)
-    except (ImportError, AttributeError, ValueError) as exc:
-        raise CaptureBackendUnavailable(
-            f"Hub preparation requires the locked {import_name} distribution"
-        ) from exc
-    if spec is None or not isinstance(spec.origin, str) or not spec.origin.strip():
-        raise CaptureBackendUnavailable(
-            f"Hub preparation cannot locate the locked {import_name} distribution"
-        )
-    probe = types.SimpleNamespace(__file__=spec.origin)
-    return _python_package_provenance(probe, where)
+    return _distribution_package_provenance(
+        distribution_name,
+        import_name,
+        where,
+    )
 
 
 def _preimport_hub_package_provenance() -> dict[str, Any]:
     return _preimport_package_provenance(
+        "huggingface-hub",
         "huggingface_hub",
         "Hugging Face Hub preparation",
     )
@@ -42,6 +38,7 @@ def _preimport_hub_package_provenance() -> dict[str, Any]:
 def _preimport_transport_package_provenance() -> dict[str, dict[str, Any]]:
     return {
         canonical: _preimport_package_provenance(
+            canonical,
             import_name,
             f"Hugging Face Hub transport dependency {canonical}",
         )
@@ -58,9 +55,11 @@ def _loaded_transport_package_provenance() -> dict[str, dict[str, Any]]:
             raise CaptureBackendUnavailable(
                 f"Hub preparation requires the locked {import_name} distribution"
             ) from exc
-        observed[canonical] = _python_package_provenance(
-            module,
+        observed[canonical] = _distribution_package_provenance(
+            canonical,
+            import_name,
             f"Hugging Face Hub transport dependency {canonical}",
+            module=module,
         )
     return observed
 
@@ -83,18 +82,20 @@ def main() -> int:
         raise CaptureBackendUnavailable(
             "Hub preparation requires the locked huggingface-hub distribution"
         ) from exc
-    after_import = _python_package_provenance(
-        huggingface_hub,
+    after_import = _distribution_package_provenance(
+        "huggingface-hub",
+        "huggingface_hub",
         "Hugging Face Hub preparation",
+        module=huggingface_hub,
     )
     if after_import != before:
         raise CaptureContractError(
-            "Hugging Face Hub package changed while establishing the no-site preparation boundary"
+            "Hugging Face Hub distribution-owned runtime changed while establishing the no-site preparation boundary"
         )
     transport_after_import = _loaded_transport_package_provenance()
     if transport_after_import != transport_before:
         raise CaptureContractError(
-            "Hugging Face Hub transport package content changed while establishing the no-site preparation boundary"
+            "Hugging Face Hub transport distribution content changed while establishing the no-site preparation boundary"
         )
 
     from .capture_hub_tree import prepare_tree_receipts
@@ -107,18 +108,20 @@ def main() -> int:
         raise CaptureContractError("Hub preparation worker request must be a JSON object")
 
     receipts = prepare_tree_receipts(request)
-    after_work = _python_package_provenance(
-        huggingface_hub,
+    after_work = _distribution_package_provenance(
+        "huggingface-hub",
+        "huggingface_hub",
         "Hugging Face Hub preparation",
+        module=huggingface_hub,
     )
     if after_work != before:
         raise CaptureContractError(
-            "Hugging Face Hub package changed during trusted online preparation"
+            "Hugging Face Hub distribution-owned runtime changed during trusted online preparation"
         )
     transport_after_work = _loaded_transport_package_provenance()
     if transport_after_work != transport_before:
         raise CaptureContractError(
-            "Hugging Face Hub transport package content changed during trusted online preparation"
+            "Hugging Face Hub transport distribution content changed during trusted online preparation"
         )
 
     evidence = {
