@@ -4,16 +4,23 @@ Canonical invocation is ``python -I -S -B tools/run_first_production_observation
 The first interpreter must already suppress Python startup customization; this launcher
 then removes native/Python loader, Git-redirection, and network transport trust
 overrides before execing a second ``-I -S -B`` interpreter. Before either process
-imports ``qsol_geo_reason``, the source tree is checked for every importable artifact
-that could outrank authenticated modules when ``src`` is prepended to ``sys.path``.
+imports ``qsol_geo_reason``, the launcher rejects import shadows/bytecode and directly
+authenticates every tracked package file against the bound Git revision independently
+of index flags. The second interpreter re-hashes the authenticated source manifest
+immediately before prepending ``src`` to ``sys.path``.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.machinery
+import json
 import os
+import stat
+import subprocess
 import sys
 import sysconfig
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -76,11 +83,14 @@ _BYTECODE_SUFFIXES = tuple(
         reverse=True,
     )
 )
+_PACKAGE_GIT_ROOT = "src/qsol_geo_reason"
 _ORCHESTRATOR_BOOTSTRAP = (
-    "import importlib.machinery,pathlib,sys;"
+    "import hashlib,importlib.machinery,json,pathlib,sys;"
     "src=sys.argv[1];"
+    "revision=sys.argv[2];"
+    "source_manifest=json.loads(sys.argv[3]);"
     "sep=sys.argv.index('--');"
-    "paths=sys.argv[2:sep];"
+    "paths=sys.argv[4:sep];"
     "args=sys.argv[sep+1:];"
     "srcroot=pathlib.Path(src);"
     "pkg=srcroot/'qsol_geo_reason';"
@@ -96,6 +106,9 @@ _ORCHESTRATOR_BOOTSTRAP = (
     "pkgdirs=sorted(str(i) for p in pkg.rglob('*') if p.is_dir() and p.name!='__pycache__' for i in (p/('__init__'+s) for s in importsfx) if i.is_file());"
     "pyshadows=sorted(set(topmods+toppkgs+bytecode+pkgdirs));"
     "pyshadows and (_ for _ in ()).throw(RuntimeError('canonical production launcher rejects pure-Python package shadows and other importable source shadows before src is trusted: '+','.join(pyshadows)));"
+    "(not isinstance(source_manifest,dict) or not source_manifest) and (_ for _ in ()).throw(RuntimeError('canonical production launcher received an empty tracked-source manifest'));"
+    "sourcebad=sorted(rel for rel,digest in source_manifest.items() if ((p:=pkg.joinpath(*pathlib.PurePosixPath(rel).parts)).is_symlink() or not p.is_file() or hashlib.sha256(p.read_bytes()).hexdigest()!=digest));"
+    "sourcebad and (_ for _ in ()).throw(RuntimeError('canonical production launcher rejects tracked package source that does not match bound revision '+revision+': '+','.join(sourcebad)));"
     "sys.path.insert(0,src);"
     "[sys.path.append(p) for p in paths if p not in sys.path];"
     "sys.argv=['qsol_geo_reason.first_production_observation',*args];"
@@ -141,6 +154,194 @@ def _sanitized_orchestrator_environment() -> dict[str, str]:
         }
     )
     return environment
+
+
+def _system_git_candidates() -> tuple[Path, ...]:
+    if os.name == "nt":
+        return (
+            Path(r"C:\Program Files\Git\cmd\git.exe"),
+            Path(r"C:\Program Files\Git\bin\git.exe"),
+        )
+    return (
+        Path("/usr/bin/git"),
+        Path("/bin/git"),
+        Path("/run/current-system/sw/bin/git"),
+    )
+
+
+def _hash_trusted_git_executable(path: Path) -> tuple[Path, str]:
+    try:
+        resolved = Path(path).resolve(strict=True)
+        info = resolved.stat()
+    except OSError as exc:
+        raise RuntimeError(f"unable to resolve trusted Git executable {path}") from exc
+    if not stat.S_ISREG(info.st_mode) or not os.access(resolved, os.X_OK):
+        raise RuntimeError(
+            f"trusted Git executable is not an executable regular file: {resolved}"
+        )
+    if os.name == "posix" and (
+        info.st_uid != 0 or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        raise RuntimeError(
+            f"trusted Git executable is not root-owned and non-writable by group/other: {resolved}"
+        )
+    digest = hashlib.sha256()
+    try:
+        with resolved.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise RuntimeError(f"unable to hash trusted Git executable {resolved}") from exc
+    return resolved, digest.hexdigest()
+
+
+def _trusted_git_identity() -> tuple[Path, str]:
+    last_error: BaseException | None = None
+    for candidate in _system_git_candidates():
+        try:
+            return _hash_trusted_git_executable(candidate)
+        except RuntimeError as exc:
+            last_error = exc
+    raise RuntimeError(
+        "canonical production launcher requires a trusted system Git executable"
+    ) from last_error
+
+
+def _trusted_git_environment() -> dict[str, str]:
+    environment = _sanitized_orchestrator_environment()
+    environment["LC_ALL"] = "C"
+    return environment
+
+
+def _git_identity_command(
+    root: Path,
+    git_path: Path,
+    git_digest: str,
+    *args: str,
+    text: bool,
+) -> subprocess.CompletedProcess[Any]:
+    completed = subprocess.run(
+        [str(git_path), "-C", str(root), *args],
+        env=_trusted_git_environment(),
+        check=True,
+        capture_output=True,
+        text=text,
+    )
+    observed_path, observed_digest = _hash_trusted_git_executable(git_path)
+    if observed_path != git_path or observed_digest != git_digest:
+        raise RuntimeError(
+            "trusted Git executable changed during pre-import source authentication"
+        )
+    return completed
+
+
+def _authenticate_tracked_package_source(
+    *,
+    git_path: Path,
+    git_digest: str,
+    revision: str | None = None,
+) -> tuple[str, dict[str, str]]:
+    """Bind all tracked package bytes to a commit before importing the package."""
+    try:
+        root = ROOT.resolve(strict=True)
+        requested_revision = "HEAD" if revision is None else revision
+        bound_revision = _git_identity_command(
+            root,
+            git_path,
+            git_digest,
+            "rev-parse",
+            "--verify",
+            f"{requested_revision}^{{commit}}",
+            text=True,
+        ).stdout.strip()
+        if not bound_revision or len(bound_revision) != 40:
+            raise RuntimeError("canonical production launcher could not bind a 40-hex Git commit")
+        if revision is not None and bound_revision != revision:
+            raise RuntimeError(
+                "canonical production launcher Git revision changed during source authentication"
+            )
+
+        listing = _git_identity_command(
+            root,
+            git_path,
+            git_digest,
+            "ls-tree",
+            "-r",
+            "-z",
+            bound_revision,
+            "--",
+            _PACKAGE_GIT_ROOT,
+            text=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(
+            "canonical production launcher cannot enumerate tracked package source"
+        ) from exc
+
+    records = tuple(record for record in listing.split("\0") if record)
+    if not records:
+        raise RuntimeError("bound Git revision contains no tracked qsol_geo_reason package files")
+
+    manifest: dict[str, str] = {}
+    package_prefix = f"{_PACKAGE_GIT_ROOT}/"
+    for record in records:
+        try:
+            metadata, relative = record.split("\t", 1)
+            mode, object_type, object_id = metadata.split(" ", 2)
+        except ValueError as exc:
+            raise RuntimeError("malformed tracked package entry in bound Git revision") from exc
+        normalized = relative.replace("\\", "/")
+        if not normalized.startswith(package_prefix):
+            raise RuntimeError(
+                f"tracked package source escaped canonical package root: {relative}"
+            )
+        package_relative = normalized[len(package_prefix) :]
+        parts = PurePosixPath(package_relative).parts
+        if not parts or any(part in {"", ".", ".."} for part in parts):
+            raise RuntimeError(f"invalid tracked package path: {relative}")
+        if object_type != "blob" or mode not in {"100644", "100755"}:
+            raise RuntimeError(
+                f"canonical package source must be a regular tracked file: {relative}"
+            )
+
+        requested = root.joinpath(*PurePosixPath(normalized).parts)
+        try:
+            before = requested.lstat()
+        except OSError as exc:
+            raise RuntimeError(f"tracked package source is missing: {relative}") from exc
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            raise RuntimeError(f"tracked package source is not a regular file: {relative}")
+
+        try:
+            committed = _git_identity_command(
+                root,
+                git_path,
+                git_digest,
+                "cat-file",
+                "blob",
+                object_id,
+                text=False,
+            ).stdout
+            observed = requested.read_bytes()
+            after = requested.lstat()
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise RuntimeError(f"unable to authenticate tracked package source: {relative}") from exc
+        if (
+            stat.S_ISLNK(after.st_mode)
+            or not stat.S_ISREG(after.st_mode)
+            or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+        ):
+            raise RuntimeError(
+                f"tracked package source changed pathname identity during authentication: {relative}"
+            )
+        if observed != committed:
+            raise RuntimeError(
+                "canonical production launcher rejects tracked package source that does not match "
+                f"bound revision independently of index flags: {relative}"
+            )
+        manifest[package_relative] = hashlib.sha256(committed).hexdigest()
+
+    return bound_revision, manifest
 
 
 def _literal_site_package_paths() -> list[str]:
@@ -277,6 +478,11 @@ def main() -> int:
     _assert_initial_launcher_boundary()
     _assert_no_importable_native_extensions()
     _assert_no_importable_python_shadows()
+    git_path, git_digest = _trusted_git_identity()
+    revision, source_manifest = _authenticate_tracked_package_source(
+        git_path=git_path,
+        git_digest=git_digest,
+    )
     argv = [
         sys.executable,
         "-I",
@@ -285,6 +491,8 @@ def main() -> int:
         "-c",
         _ORCHESTRATOR_BOOTSTRAP,
         str((ROOT / "src").resolve()),
+        revision,
+        json.dumps(source_manifest, sort_keys=True, separators=(",", ":")),
         *_literal_site_package_paths(),
         "--",
         *sys.argv[1:],
