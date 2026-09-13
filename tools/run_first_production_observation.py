@@ -92,7 +92,7 @@ _ORCHESTRATOR_BOOTSTRAP = (
     "native and (_ for _ in ()).throw(RuntimeError('canonical production launcher rejects native extension artifacts in the qsol_geo_reason source tree: '+','.join(native)));"
     "topmods=sorted(str(p) for p in srcroot.iterdir() if p!=pkg and p.is_file() and p.name.lower().endswith(importsfx));"
     "toppkgs=sorted(str(i) for p in srcroot.iterdir() if p!=pkg and p.is_dir() for i in (p/('__init__'+s) for s in importsfx) if i.is_file());"
-    "bytecode=sorted(str(p) for p in pkg.rglob('*') if p.is_file() and '__pycache__' not in p.parts and p.name.lower().endswith(bytecodesfx));"
+    "bytecode=sorted(str(p) for p in pkg.rglob('*') if p.is_file() and p.name.lower().endswith(bytecodesfx));"
     "pkgdirs=sorted(str(i) for p in pkg.rglob('*') if p.is_dir() and p.name!='__pycache__' for i in (p/('__init__'+s) for s in importsfx) if i.is_file());"
     "pyshadows=sorted(set(topmods+toppkgs+bytecode+pkgdirs));"
     "pyshadows and (_ for _ in ()).throw(RuntimeError('canonical production launcher rejects pure-Python package shadows and other importable source shadows before src is trusted: '+','.join(pyshadows)));"
@@ -209,10 +209,10 @@ def _assert_no_importable_python_shadows() -> None:
 
     The canonical source layout has one top-level package (``qsol_geo_reason``) and
     that package is intentionally flat. Prepending ``src`` must therefore not expose
-    any other top-level module/package, any legacy/direct sourceless bytecode, or any
-    importable subpackage that could outrank a tracked sibling module. Cache-tagged
-    files inside ``__pycache__`` are excluded because FileFinder does not use them as
-    sourceless imports when the corresponding source path is absent.
+    any other top-level module/package, any package bytecode (including cache-tagged
+    ``__pycache__`` entries), or any importable subpackage that could execute before
+    the tracked source has been authenticated. ``-B`` disables bytecode writes only;
+    it does not prevent CPython from loading an existing valid cache-tagged ``.pyc``.
     """
     source_root = ROOT / "src"
     package_root = source_root / "qsol_geo_reason"
@@ -235,7 +235,6 @@ def _assert_no_importable_python_shadows() -> None:
             path
             for path in package_root.rglob("*")
             if path.is_file()
-            and "__pycache__" not in path.parts
             and path.name.lower().endswith(_BYTECODE_SUFFIXES)
         )
         for directory in package_root.rglob("*"):
