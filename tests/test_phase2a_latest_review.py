@@ -42,7 +42,7 @@ class Phase2ALatestReviewTests(unittest.TestCase):
         document = EXPERIMENT_DOC.read_text(encoding="utf-8")
         self.assertIn("HEAD:tools/run_first_production_observation.py", document)
         self.assertIn("cat-file", document)
-        self.assertIn("exec(compile(src,str(path),'exec'),ns,ns)", document)
+        self.assertIn('exec(compile(src,str(path),"exec"),ns,ns)', document)
         self.assertIn("qsol_first_observation prepare", document)
         self.assertIn("qsol_first_observation observe", document)
         self.assertNotIn(
