@@ -92,8 +92,8 @@ _ORCHESTRATOR_BOOTSTRAP = (
     "native and (_ for _ in ()).throw(RuntimeError('canonical production launcher rejects native extension artifacts in the qsol_geo_reason source tree: '+','.join(native)));"
     "topmods=sorted(str(p) for p in srcroot.iterdir() if p!=pkg and p.is_file() and p.name.lower().endswith(importsfx));"
     "toppkgs=sorted(str(i) for p in srcroot.iterdir() if p!=pkg and p.is_dir() for i in (p/('__init__'+s) for s in importsfx) if i.is_file());"
-    "bytecode=sorted(str(p) for p in pkg.rglob('*') if p.is_file() and p.name.lower().endswith(bytecodesfx));"
-    "pkgdirs=sorted(str(i) for p in pkg.rglob('*') if p.is_dir() for i in (p/('__init__'+s) for s in importsfx) if i.is_file());"
+    "bytecode=sorted(str(p) for p in pkg.rglob('*') if p.is_file() and '__pycache__' not in p.parts and p.name.lower().endswith(bytecodesfx));"
+    "pkgdirs=sorted(str(i) for p in pkg.rglob('*') if p.is_dir() and p.name!='__pycache__' for i in (p/('__init__'+s) for s in importsfx) if i.is_file());"
     "pyshadows=sorted(set(topmods+toppkgs+bytecode+pkgdirs));"
     "pyshadows and (_ for _ in ()).throw(RuntimeError('canonical production launcher rejects pure-Python package shadows and other importable source shadows before src is trusted: '+','.join(pyshadows)));"
     "sys.path.insert(0,src);"
@@ -209,9 +209,10 @@ def _assert_no_importable_python_shadows() -> None:
 
     The canonical source layout has one top-level package (``qsol_geo_reason``) and
     that package is intentionally flat. Prepending ``src`` must therefore not expose
-    any other top-level module/package, any sourceless bytecode, or any importable
-    subpackage that could outrank a tracked sibling module. This check deliberately
-    does not depend on Git ignore/index state because it runs before package imports.
+    any other top-level module/package, any legacy/direct sourceless bytecode, or any
+    importable subpackage that could outrank a tracked sibling module. Cache-tagged
+    files inside ``__pycache__`` are excluded because FileFinder does not use them as
+    sourceless imports when the corresponding source path is absent.
     """
     source_root = ROOT / "src"
     package_root = source_root / "qsol_geo_reason"
@@ -233,10 +234,12 @@ def _assert_no_importable_python_shadows() -> None:
         shadows.extend(
             path
             for path in package_root.rglob("*")
-            if path.is_file() and path.name.lower().endswith(_BYTECODE_SUFFIXES)
+            if path.is_file()
+            and "__pycache__" not in path.parts
+            and path.name.lower().endswith(_BYTECODE_SUFFIXES)
         )
         for directory in package_root.rglob("*"):
-            if directory.is_dir():
+            if directory.is_dir() and directory.name != "__pycache__":
                 shadows.extend(_package_init_artifacts(directory))
     except RuntimeError:
         raise
