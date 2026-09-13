@@ -112,7 +112,10 @@ class CaptureArchitectureRemediationTests(unittest.TestCase):
         )
         self.assertIn("qsol_first_observation prepare", threat_model)
         self.assertIn("qsol_first_observation observe", threat_model)
-        self.assertIn("HEAD:tools/run_first_production_observation.py", threat_model)
+        self.assertIn("HEAD^{commit}", threat_model)
+        self.assertIn("<that-commit>:tools/run_first_production_observation.py", threat_model)
+        self.assertIn("distribution-owned runtime", threat_model)
+        self.assertIn("numpy.libs", threat_model)
         self.assertNotIn(
             "canonical invocation requires `python -I -S -B tools/run_first_production_observation.py",
             threat_model,
