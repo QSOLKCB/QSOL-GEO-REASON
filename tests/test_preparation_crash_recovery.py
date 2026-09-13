@@ -64,6 +64,13 @@ class PreparationCrashRecoveryTests(unittest.TestCase):
                 ) as launcher_auth,
                 mock.patch.object(
                     TOOL,
+                    "verify_current_reference_environment",
+                    side_effect=lambda expected=None: dict(
+                        expected or reference_environment_receipt()
+                    ),
+                ) as environment_auth,
+                mock.patch.object(
+                    TOOL,
                     "prepare_tree_receipts",
                     side_effect=AssertionError("recovery must not contact the Hub"),
                 ) as warmup,
@@ -72,6 +79,7 @@ class PreparationCrashRecoveryTests(unittest.TestCase):
 
             self.assertFalse(warmup.called)
             self.assertGreaterEqual(launcher_auth.call_count, 2)
+            environment_auth.assert_called_once_with(receipt["reference_environment"])
             self.assertEqual(
                 json.loads(output.read_text(encoding="utf-8")),
                 request,
@@ -92,6 +100,62 @@ class PreparationCrashRecoveryTests(unittest.TestCase):
             self.assertIn(preparation_commit, authenticated_revisions)
             authenticated_paths = [call.args[0] for call in authenticate.call_args_list]
             self.assertIn(TOOL.REFERENCE_LOCK, authenticated_paths)
+
+    def test_receipt_only_recovery_rejects_live_environment_drift_before_publication(self) -> None:
+        recovery_commit = "f" * 40
+        request, receipt = self._prepared_request_and_receipt()
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "final-request.json"
+            sidecar = TOOL._default_preparation_receipt_path(output)
+            sidecar.write_text(
+                json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch.object(
+                    TOOL,
+                    "resolve_implementation_revision",
+                    return_value=recovery_commit,
+                ),
+                mock.patch.object(
+                    TOOL,
+                    "authenticate_tracked_file_against_revision",
+                    return_value="experiments/GEO-CAP-001-EXP-001.request.template.json",
+                ),
+                mock.patch.object(
+                    TOOL,
+                    "authenticate_tracked_tool_against_revision",
+                    return_value="1" * 40,
+                ),
+                mock.patch.object(
+                    TOOL,
+                    "verify_current_reference_environment",
+                    side_effect=CaptureContractError(
+                        "current reference environment does not match the preparation reference environment receipt"
+                    ),
+                ) as environment_auth,
+                mock.patch.object(
+                    TOOL,
+                    "prepare_tree_receipts",
+                    side_effect=AssertionError("recovery must not contact the Hub"),
+                ) as warmup,
+            ):
+                with self.assertRaisesRegex(
+                    CaptureContractError,
+                    "does not match the preparation reference environment receipt",
+                ):
+                    TOOL.prepare(output)
+
+            self.assertFalse(warmup.called)
+            environment_auth.assert_called_once_with(receipt["reference_environment"])
+            self.assertFalse(output.exists())
+            self.assertTrue(sidecar.exists())
+            self.assertEqual(
+                json.loads(sidecar.read_text(encoding="utf-8")),
+                receipt,
+            )
+            self.assertEqual(request["model"]["revision_tree_sha256"], "1" * 64)
 
     def test_malformed_receipt_only_state_fails_closed_without_hub_warmup(self) -> None:
         recovery_commit = "f" * 40
