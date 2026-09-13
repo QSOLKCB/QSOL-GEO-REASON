@@ -34,7 +34,24 @@ class CapturePreparationReceiptTests(unittest.TestCase):
             reference_environment_receipt=reference_environment_receipt(),
         )
 
-    def test_schema_is_closed_and_pins_endpoint_revision_reference_environment_and_hub_content(self) -> None:
+    @staticmethod
+    def _rehash(receipt: dict) -> None:
+        receipt["reference_environment"]["environment_receipt_sha256"] = sha256_json(
+            {
+                key: value
+                for key, value in receipt["reference_environment"].items()
+                if key != "environment_receipt_sha256"
+            }
+        )
+        receipt["preparation_receipt_sha256"] = sha256_json(
+            {
+                key: value
+                for key, value in receipt.items()
+                if key != "preparation_receipt_sha256"
+            }
+        )
+
+    def test_schema_is_closed_and_pins_endpoint_revision_reference_environment_and_package_content(self) -> None:
         schema = json.loads(
             (ROOT / "schemas" / "capture-preparation-receipt.schema.json").read_text(
                 encoding="utf-8"
@@ -54,7 +71,7 @@ class CapturePreparationReceiptTests(unittest.TestCase):
         self.assertIn("reference_environment", schema["required"])
         self.assertIn("preparation_receipt_sha256", schema["required"])
         reference_schema = schema["$defs"]["referenceEnvironment"]
-        self.assertEqual(reference_schema["properties"]["schema_version"]["const"], "1.2.0")
+        self.assertEqual(reference_schema["properties"]["schema_version"]["const"], "1.3.0")
         self.assertEqual(
             reference_schema["properties"]["python_implementation"]["const"],
             "CPython",
@@ -63,25 +80,23 @@ class CapturePreparationReceiptTests(unittest.TestCase):
             reference_schema["properties"]["platform_system"]["const"],
             "Linux",
         )
-        self.assertIn(
+        for field in (
             "huggingface_hub_package_file_count",
-            reference_schema["required"],
-        )
-        self.assertIn(
             "huggingface_hub_package_receipt_sha256",
-            reference_schema["required"],
-        )
-        self.assertIn(
             "hub_transport_package_provenance",
-            reference_schema["required"],
-        )
+            "capture_transitive_package_provenance",
+        ):
+            self.assertIn(field, reference_schema["required"])
         transport_schema = schema["$defs"]["hubTransportPackageProvenance"]
         self.assertEqual(
             set(transport_schema["required"]),
             {"requests", "urllib3", "certifi", "charset-normalizer", "idna"},
         )
+        transitive_schema = schema["$defs"]["captureTransitivePackageProvenance"]
+        for package in ("numpy", "regex", "pyyaml", "sympy", "typing-extensions"):
+            self.assertIn(package, transitive_schema["required"])
 
-    def test_receipt_binds_request_endpoint_repository_revision_complete_environment_and_hub_content(self) -> None:
+    def test_receipt_binds_request_endpoint_repository_revision_complete_environment_and_package_content(self) -> None:
         request = self._request()
         receipt = self._receipt(request)
         verified = verify_preparation_receipt(
@@ -106,13 +121,18 @@ class CapturePreparationReceiptTests(unittest.TestCase):
             set(receipt["reference_environment"]["hub_transport_package_provenance"]),
             {"requests", "urllib3", "certifi", "charset-normalizer", "idna"},
         )
+        for package in ("numpy", "regex", "pyyaml"):
+            self.assertIn(
+                package,
+                receipt["reference_environment"]["capture_transitive_package_provenance"],
+            )
         self.assertRegex(
             receipt["reference_environment"]["environment_receipt_sha256"],
             r"^[0-9a-f]{64}$",
         )
         self.assertRegex(receipt["preparation_receipt_sha256"], r"^[0-9a-f]{64}$")
 
-    def test_receipt_rejects_request_endpoint_environment_or_hub_content_tampering(self) -> None:
+    def test_receipt_rejects_request_endpoint_environment_or_package_content_tampering(self) -> None:
         request = self._request()
         receipt = self._receipt(request)
 
@@ -136,20 +156,7 @@ class CapturePreparationReceiptTests(unittest.TestCase):
 
         tampered_environment = json.loads(json.dumps(receipt))
         tampered_environment["reference_environment"]["python_version"] = "3.12.9"
-        tampered_environment["reference_environment"]["environment_receipt_sha256"] = sha256_json(
-            {
-                key: value
-                for key, value in tampered_environment["reference_environment"].items()
-                if key != "environment_receipt_sha256"
-            }
-        )
-        tampered_environment["preparation_receipt_sha256"] = sha256_json(
-            {
-                key: value
-                for key, value in tampered_environment.items()
-                if key != "preparation_receipt_sha256"
-            }
-        )
+        self._rehash(tampered_environment)
         with self.assertRaisesRegex(CaptureContractError, "Python 3.11"):
             verify_preparation_receipt(
                 tampered_environment,
@@ -161,20 +168,7 @@ class CapturePreparationReceiptTests(unittest.TestCase):
         tampered_hub["reference_environment"][
             "huggingface_hub_package_receipt_sha256"
         ] = "not-a-digest"
-        tampered_hub["reference_environment"]["environment_receipt_sha256"] = sha256_json(
-            {
-                key: value
-                for key, value in tampered_hub["reference_environment"].items()
-                if key != "environment_receipt_sha256"
-            }
-        )
-        tampered_hub["preparation_receipt_sha256"] = sha256_json(
-            {
-                key: value
-                for key, value in tampered_hub.items()
-                if key != "preparation_receipt_sha256"
-            }
-        )
+        self._rehash(tampered_hub)
         with self.assertRaisesRegex(CaptureContractError, "package provenance receipt_sha256"):
             verify_preparation_receipt(
                 tampered_hub,
@@ -186,23 +180,22 @@ class CapturePreparationReceiptTests(unittest.TestCase):
         tampered_transport["reference_environment"]["hub_transport_package_provenance"][
             "requests"
         ]["receipt_sha256"] = "not-a-digest"
-        tampered_transport["reference_environment"]["environment_receipt_sha256"] = sha256_json(
-            {
-                key: value
-                for key, value in tampered_transport["reference_environment"].items()
-                if key != "environment_receipt_sha256"
-            }
-        )
-        tampered_transport["preparation_receipt_sha256"] = sha256_json(
-            {
-                key: value
-                for key, value in tampered_transport.items()
-                if key != "preparation_receipt_sha256"
-            }
-        )
+        self._rehash(tampered_transport)
         with self.assertRaisesRegex(CaptureContractError, "transport dependency requests"):
             verify_preparation_receipt(
                 tampered_transport,
+                request=request,
+                experiment_id="EXP-TEST-001",
+            )
+
+        tampered_transitive = json.loads(json.dumps(receipt))
+        tampered_transitive["reference_environment"][
+            "capture_transitive_package_provenance"
+        ]["numpy"]["receipt_sha256"] = "not-a-digest"
+        self._rehash(tampered_transitive)
+        with self.assertRaisesRegex(CaptureContractError, "transitive dependency numpy"):
+            verify_preparation_receipt(
+                tampered_transitive,
                 request=request,
                 experiment_id="EXP-TEST-001",
             )
