@@ -251,9 +251,6 @@ def _assert_preparation_output_outside_checkout(output: Path) -> None:
             f"unable to resolve preparation output trust boundary: {exc}"
         ) from exc
 
-    # Preserve the caller's requested pathname identity before following symlinks. A
-    # dangling symlink inside the checkout can resolve to an external target while its
-    # derived preparation sidecar still lives inside the authenticated source tree.
     try:
         requested.relative_to(repository_root)
     except ValueError:
@@ -302,10 +299,6 @@ def _recover_incomplete_preparation(
         receipt,
         recovery_repository_commit=recovery_repository_commit,
     )
-    # Recovery remains part of the canonical preparation boundary. The sidecar has
-    # already been semantically verified by reconstruction, so now bind the live
-    # interpreter/package closure to the exact reference environment frozen in it
-    # before any recovered request can be published.
     _core.verify_current_reference_environment(receipt["reference_environment"])
     _reauthenticate_revision(
         recovery_repository_commit,
@@ -438,9 +431,6 @@ def prepare(
         experiment_id=_core.EXPERIMENT_ID,
     )
 
-    # Receipt-first publication is intentionally monotonic. Never delete this durable
-    # sidecar when request publication fails: another concurrent process may already
-    # have recovered it, and an unrecovered receipt-only state is itself restartable.
     _core._exclusive_write_json(preparation_receipt_path, preparation_receipt)
     _core._exclusive_write_json(output, final_request)
     return _core.sha256_json(final_request)
@@ -553,6 +543,8 @@ def observe(
             run_b_dir=run_b,
             run_a_execution_receipt_path=run_a_execution_receipt,
             run_b_execution_receipt_path=run_b_execution_receipt,
+            run_a_execution_id=execution_ids["run-a"],
+            run_b_execution_id=execution_ids["run-b"],
             run_a_manifest_receipt=manifest_a,
             run_b_manifest_receipt=manifest_b,
             experiment_id=_core.EXPERIMENT_ID,
@@ -570,6 +562,8 @@ def observe(
             run_b_dir=run_b,
             run_a_execution_receipt_path=run_a_execution_receipt,
             run_b_execution_receipt_path=run_b_execution_receipt,
+            run_a_execution_id=execution_ids["run-a"],
+            run_b_execution_id=execution_ids["run-b"],
             run_a_manifest_receipt=manifest_a,
             run_b_manifest_receipt=manifest_b,
             experiment_id=_core.EXPERIMENT_ID,
@@ -591,9 +585,6 @@ def observe(
         ) from exc
 
 
-# Keep one module identity for existing callers/tests while retaining the reviewed helper
-# implementation verbatim in the core module. All facade-owned dependencies are exposed
-# there so mock-based regressions patch the same globals used by the hardened functions.
 _core.LAUNCHER = LAUNCHER
 _core.REFERENCE_LOCK = REFERENCE_LOCK
 _core.authenticate_tracked_tool_against_revision = authenticate_tracked_tool_against_revision
@@ -608,8 +599,8 @@ _core.observe = observe
 
 if __name__ == "__main__":
     print(
-        "direct module execution is not an authenticated production boundary; use "
-        "python -I -S -B tools/run_first_production_observation.py ...",
+        "direct module execution is not an authenticated production boundary; use the "
+        "authenticated Git-blob production bootstrap documented in GEO-CAP-001-EXP-001",
         file=sys.stderr,
     )
     raise SystemExit(2)
