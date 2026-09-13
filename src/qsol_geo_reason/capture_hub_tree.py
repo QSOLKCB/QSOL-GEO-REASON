@@ -15,6 +15,7 @@ from typing import Any, Mapping
 
 from .capture_common import CaptureBackendUnavailable, CaptureContractError
 from .capture_provenance import _is_canonical_snapshot_path
+from .capture_publish import _ensure_parent_directory_durable, _fsync_directory
 from .capture_snapshot import _TREE_CACHE_FORMAT_VERSION, _cached_hub_commit_tree
 from .capture_validation import validate_capture_request
 
@@ -95,7 +96,7 @@ def _write_tree_artifact(
     )
     receipt = hashlib.sha256(tree_bytes).hexdigest()
     tree_dir = snapshot.parent.parent / "trees"
-    tree_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_parent_directory_durable(tree_dir)
     destination = tree_dir / f"{commit.lower()}.json"
     temporary = tree_dir / f".{commit.lower()}.{os.getpid()}.tmp"
     try:
@@ -104,6 +105,10 @@ def _write_tree_artifact(
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, destination)
+        # The file fsync makes the artifact bytes durable; syncing the containing
+        # directory makes the replacement/name durable before the receipt can be
+        # frozen into a preparation artifact.
+        _fsync_directory(tree_dir)
     except OSError as exc:
         try:
             temporary.unlink(missing_ok=True)
