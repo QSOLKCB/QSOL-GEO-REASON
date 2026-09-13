@@ -4,8 +4,9 @@ Canonical invocation is ``python -I -S -B tools/run_first_production_observation
 The first interpreter must already suppress Python startup customization; this launcher
 then removes native/Python loader, Git-redirection, and network transport trust
 overrides before execing a second ``-I -S -B`` interpreter. Before either process
-imports ``qsol_geo_reason``, the pure-Python source tree is checked for native extension
-artifacts that could shadow tracked modules under CPython's import precedence.
+imports ``qsol_geo_reason``, the source tree is checked for native extensions and
+pure-Python package-directory shadows that could outrank tracked modules under CPython's
+import precedence.
 """
 from __future__ import annotations
 
@@ -55,6 +56,8 @@ _ORCHESTRATOR_BOOTSTRAP = (
     "suffixes=tuple(sorted({s.lower() for s in (*importlib.machinery.EXTENSION_SUFFIXES,'.so','.pyd') if s},key=len,reverse=True));"
     "native=sorted(str(p) for p in pkg.rglob('*') if p.is_file() and p.name.lower().endswith(suffixes));"
     "native and (_ for _ in ()).throw(RuntimeError('canonical production launcher rejects native extension artifacts in the qsol_geo_reason source tree: '+','.join(native)));"
+    "pyshadows=sorted(str(p.with_suffix('')/'__init__.py') for p in pkg.rglob('*.py') if p.name!='__init__.py' and (p.with_suffix('')/'__init__.py').is_file());"
+    "pyshadows and (_ for _ in ()).throw(RuntimeError('canonical production launcher rejects pure-Python package shadows in the qsol_geo_reason source tree: '+','.join(pyshadows)));"
     "sys.path.insert(0,src);"
     "[sys.path.append(p) for p in paths if p not in sys.path];"
     "sys.argv=['qsol_geo_reason.first_production_observation',*args];"
@@ -155,6 +158,28 @@ def _assert_no_importable_native_extensions() -> None:
         )
 
 
+def _assert_no_importable_python_shadows() -> None:
+    """Reject package directories that can outrank sibling tracked ``foo.py`` modules."""
+    package_root = ROOT / "src" / "qsol_geo_reason"
+    try:
+        shadows = sorted(
+            source.with_suffix("") / "__init__.py"
+            for source in package_root.rglob("*.py")
+            if source.name != "__init__.py"
+            and (source.with_suffix("") / "__init__.py").is_file()
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            f"canonical production launcher cannot inspect pure-Python shadow boundary: {exc}"
+        ) from exc
+    if shadows:
+        rendered = ", ".join(str(path) for path in shadows)
+        raise RuntimeError(
+            "canonical production launcher rejects pure-Python package shadows in the "
+            f"qsol_geo_reason source tree: {rendered}"
+        )
+
+
 def _assert_initial_launcher_boundary() -> None:
     if (
         not sys.flags.isolated
@@ -175,6 +200,7 @@ def _assert_initial_launcher_boundary() -> None:
 def main() -> int:
     _assert_initial_launcher_boundary()
     _assert_no_importable_native_extensions()
+    _assert_no_importable_python_shadows()
     argv = [
         sys.executable,
         "-I",
