@@ -1,0 +1,100 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from qsol_geo_reason import capture_hub_tree as HUB
+from qsol_geo_reason.capture_common import CaptureContractError
+
+
+class HubTreeReceiptImmutabilityTests(unittest.TestCase):
+    COMMIT = "a" * 40
+
+    def _snapshot(self, root: Path) -> Path:
+        snapshot = root / "models--qsol--fixture" / "snapshots" / self.COMMIT
+        snapshot.mkdir(parents=True)
+        return snapshot
+
+    def _files(self, *, size: int = 1, blob: str = "b") -> dict[str, dict[str, object]]:
+        return {
+            "config.json": {
+                "size": size,
+                "blob_id": blob * 40,
+            }
+        }
+
+    def _tree_bytes(self, files: dict[str, dict[str, object]]) -> bytes:
+        return (
+            json.dumps(
+                {
+                    "format_version": HUB._TREE_CACHE_FORMAT_VERSION,
+                    "files": dict(sorted(files.items())),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+            + b"\n"
+        )
+
+    def test_existing_identical_commit_tree_is_retained(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = self._snapshot(root)
+            files = self._files()
+            destination = snapshot.parent.parent / "trees" / f"{self.COMMIT}.json"
+            destination.parent.mkdir()
+            expected_bytes = self._tree_bytes(files)
+            destination.write_bytes(expected_bytes)
+            before = destination.stat()
+
+            with mock.patch.object(HUB, "_cached_hub_commit_tree", return_value=files):
+                receipt = HUB._write_tree_artifact(snapshot, self.COMMIT, files, "model")
+
+            after = destination.stat()
+            self.assertEqual(destination.read_bytes(), expected_bytes)
+            self.assertEqual(receipt, hashlib.sha256(expected_bytes).hexdigest())
+            # A matching pre-existing artifact must be reused, not replaced.
+            self.assertEqual(after.st_ino, before.st_ino)
+            self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
+            self.assertEqual(list(destination.parent.glob(f".{self.COMMIT}.*.tmp")), [])
+
+    def test_existing_different_commit_tree_fails_closed_without_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = self._snapshot(root)
+            newly_observed = self._files()
+            destination = snapshot.parent.parent / "trees" / f"{self.COMMIT}.json"
+            destination.parent.mkdir()
+            preserved_bytes = self._tree_bytes(self._files(size=2, blob="c"))
+            destination.write_bytes(preserved_bytes)
+            before = destination.stat()
+
+            with (
+                mock.patch.object(HUB, "_cached_hub_commit_tree") as verifier,
+                self.assertRaisesRegex(
+                    CaptureContractError,
+                    "differs from newly observed metadata",
+                ),
+            ):
+                HUB._write_tree_artifact(
+                    snapshot,
+                    self.COMMIT,
+                    newly_observed,
+                    "model",
+                )
+
+            after = destination.stat()
+            self.assertEqual(destination.read_bytes(), preserved_bytes)
+            self.assertEqual(after.st_ino, before.st_ino)
+            self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
+            self.assertEqual(list(destination.parent.glob(f".{self.COMMIT}.*.tmp")), [])
+            verifier.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()
