@@ -80,6 +80,11 @@ def _ensure_parent_directory_durable(path: Path) -> None:
                 raise CaptureContractError(
                     "capture publication parent path was replaced by a non-directory"
                 )
+            # Another publisher may have created this exact directory after our
+            # existence scan but before mkdir(). Its containing-directory entry may
+            # still be unsynced, so make that raced-reuse path durable before any
+            # caller can publish evidence beneath it.
+            _fsync_directory(directory.parent)
         else:
             # The new child name lives in directory.parent; sync that directory
             # immediately so a crash cannot discard an ancestor needed to reach the
