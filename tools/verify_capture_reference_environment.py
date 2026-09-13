@@ -5,12 +5,22 @@ Reject missing, mismatched, and unexpected runtime distributions as well as any
 interpreter/platform outside the selected final CPython 3.11 Linux x86_64 lane. The
 receipt also content-binds the exact importable Hugging Face Hub package tree and the
 locked Requests/urllib3/certifi/charset-normalizer/idna transport chain.
+
+This verifier is intentionally bytecode-write-free. Canonical production rejects any
+``src/qsol_geo_reason`` bytecode before import, so the preflight must not dirty a clean
+checkout merely by importing the package it verifies. The documented invocation also
+uses ``python -B`` as defense in depth.
 """
 from __future__ import annotations
 
 import json
 import platform
 import sys
+
+# This must precede every qsol_geo_reason import. ``-B`` is also documented for the
+# operator/CI path, but keeping the script self-protecting prevents a plain invocation
+# from creating source-tree __pycache__ files that the production launcher must reject.
+sys.dont_write_bytecode = True
 
 from qsol_geo_reason import capture_reference_environment as _reference
 from qsol_geo_reason.capture_common import CaptureContractError
