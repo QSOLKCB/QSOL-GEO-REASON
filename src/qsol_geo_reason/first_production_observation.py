@@ -268,6 +268,11 @@ def _recover_incomplete_preparation(
         receipt,
         recovery_repository_commit=recovery_repository_commit,
     )
+    # Recovery remains part of the canonical preparation boundary. The sidecar has
+    # already been semantically verified by reconstruction, so now bind the live
+    # interpreter/package closure to the exact reference environment frozen in it
+    # before any recovered request can be published.
+    _core.verify_current_reference_environment(receipt["reference_environment"])
     _reauthenticate_revision(
         recovery_repository_commit,
         "incomplete preparation recovery inputs changed before publication",
