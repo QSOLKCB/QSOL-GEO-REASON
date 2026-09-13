@@ -14,6 +14,16 @@ from .capture_common import CaptureContractError
 from .capture_verify import verify_capture_bundle
 
 
+class CaptureBundlePublicationDurabilityError(CaptureContractError):
+    """The caller published ``output_dir`` but its final parent fsync failed.
+
+    This exception is deliberately distinct from ordinary publication failures so
+    callers can prove ownership of the published directory. Mere directory presence
+    is not sufficient because a concurrent publisher may have won the no-replace
+    rename instead.
+    """
+
+
 def _fsync_directory(path: Path) -> None:
     """Sync directory metadata where the platform exposes POSIX directory fsync.
 
@@ -182,7 +192,15 @@ def write_capture_bundle(output_dir: Path, request: Mapping[str, Any], manifest:
         _fsync_directory(parent)
         _rename_directory_noreplace(staging, output_dir)
         published = True
-        _fsync_directory(parent)
+        try:
+            _fsync_directory(parent)
+        except OSError as exc:
+            # The no-replace rename above succeeded in this process. Surface that
+            # ownership fact explicitly so callers never infer publication from
+            # directory presence, which is ambiguous under concurrent workers.
+            raise CaptureBundlePublicationDurabilityError(
+                "capture bundle was published but final parent-directory fsync failed"
+            ) from exc
     finally:
         if not published and staging.exists():
             shutil.rmtree(staging)
