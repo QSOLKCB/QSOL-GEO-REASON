@@ -3,12 +3,13 @@
 Canonical invocation is ``python -I -S -B tools/run_first_production_observation.py``.
 The first interpreter must already suppress Python startup customization; this launcher
 then removes native/Python loader, Git-redirection, and network transport trust
-overrides before execing a second ``-I -S -B`` interpreter. The second interpreter
-bootstraps only the checked-out ``src`` tree and literal interpreter package directories,
-without executing ``.pth`` files or ``sitecustomize``.
+overrides before execing a second ``-I -S -B`` interpreter. Before either process
+imports ``qsol_geo_reason``, the pure-Python source tree is checked for native extension
+artifacts that could shadow tracked modules under CPython's import precedence.
 """
 from __future__ import annotations
 
+import importlib.machinery
 import os
 import sys
 import sysconfig
@@ -33,12 +34,27 @@ _TRANSPORT_ENV_NAMES = frozenset(
         "HF_HUB_DISABLE_SSL_VERIFICATION",
     }
 )
+_NATIVE_EXTENSION_SUFFIXES = tuple(
+    sorted(
+        {
+            suffix.lower()
+            for suffix in (*importlib.machinery.EXTENSION_SUFFIXES, ".so", ".pyd")
+            if suffix
+        },
+        key=len,
+        reverse=True,
+    )
+)
 _ORCHESTRATOR_BOOTSTRAP = (
-    "import sys;"
+    "import importlib.machinery,pathlib,sys;"
     "src=sys.argv[1];"
     "sep=sys.argv.index('--');"
     "paths=sys.argv[2:sep];"
     "args=sys.argv[sep+1:];"
+    "pkg=pathlib.Path(src)/'qsol_geo_reason';"
+    "suffixes=tuple(sorted({s.lower() for s in (*importlib.machinery.EXTENSION_SUFFIXES,'.so','.pyd') if s},key=len,reverse=True));"
+    "native=sorted(str(p) for p in pkg.rglob('*') if p.is_file() and p.name.lower().endswith(suffixes));"
+    "native and (_ for _ in ()).throw(RuntimeError('canonical production launcher rejects native extension artifacts in the qsol_geo_reason source tree: '+','.join(native)));"
     "sys.path.insert(0,src);"
     "[sys.path.append(p) for p in paths if p not in sys.path];"
     "sys.argv=['qsol_geo_reason.first_production_observation',*args];"
@@ -117,6 +133,28 @@ def _literal_site_package_paths() -> list[str]:
     return paths
 
 
+def _assert_no_importable_native_extensions() -> None:
+    """Reject native modules that could shadow the tracked pure-Python package."""
+    package_root = ROOT / "src" / "qsol_geo_reason"
+    try:
+        native = sorted(
+            path
+            for path in package_root.rglob("*")
+            if path.is_file()
+            and path.name.lower().endswith(_NATIVE_EXTENSION_SUFFIXES)
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            f"canonical production launcher cannot inspect native-extension boundary: {exc}"
+        ) from exc
+    if native:
+        rendered = ", ".join(str(path) for path in native)
+        raise RuntimeError(
+            "canonical production launcher rejects native extension artifacts in the "
+            f"qsol_geo_reason source tree: {rendered}"
+        )
+
+
 def _assert_initial_launcher_boundary() -> None:
     if (
         not sys.flags.isolated
@@ -136,6 +174,7 @@ def _assert_initial_launcher_boundary() -> None:
 
 def main() -> int:
     _assert_initial_launcher_boundary()
+    _assert_no_importable_native_extensions()
     argv = [
         sys.executable,
         "-I",
