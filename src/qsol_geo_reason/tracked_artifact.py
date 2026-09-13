@@ -1,6 +1,7 @@
 """Direct authentication for tracked non-package research artifacts."""
 from __future__ import annotations
 
+import stat
 import subprocess
 from pathlib import Path
 
@@ -40,10 +41,13 @@ def authenticate_tracked_file_against_revision(
     """Require raw working-tree bytes to equal one regular tracked blob at ``revision``.
 
     This deliberately bypasses the Git index so ``assume-unchanged`` and
-    ``skip-worktree`` cannot hide a modified preregistration artifact. Replacement
-    objects, alternate Git directories/object stores, config-injection variables,
-    native-loader injection, and caller-controlled Git executable lookup are excluded
-    from the identity-sensitive Git child.
+    ``skip-worktree`` cannot hide a modified preregistration artifact. The requested
+    pathname itself is authoritative: symlink replacement is rejected before any Git
+    identity lookup, and the commit-tree path is derived from the unreplaced lexical
+    pathname rather than from its resolved target. Replacement objects, alternate Git
+    directories/object stores, config-injection variables, native-loader injection,
+    and caller-controlled Git executable lookup are excluded from the identity-sensitive
+    Git child.
     """
     if (
         not isinstance(revision, str)
@@ -55,13 +59,20 @@ def authenticate_tracked_file_against_revision(
     root = Path(repo_root) if repo_root is not None else source_repo_root()
     try:
         root = root.resolve(strict=True)
-        artifact = Path(path).resolve(strict=True)
-        relative = artifact.relative_to(root).as_posix()
+        requested = Path(path)
+        if not requested.is_absolute():
+            requested = requested.absolute()
+        relative = requested.relative_to(root).as_posix()
+        requested_stat = requested.lstat()
     except (OSError, ValueError) as exc:
         raise SourceIdentityError(
             "tracked artifact must be an existing file inside the executing repository"
         ) from exc
-    if not artifact.is_file():
+    if stat.S_ISLNK(requested_stat.st_mode):
+        raise SourceIdentityError(
+            f"tracked artifact pathname must not be a symlink: {relative}"
+        )
+    if not stat.S_ISREG(requested_stat.st_mode):
         raise SourceIdentityError("tracked artifact must be a regular working-tree file")
 
     resolved_commit = _git(root, "rev-parse", "--verify", f"{revision}^{{commit}}").stdout.strip()
@@ -86,9 +97,27 @@ def authenticate_tracked_file_against_revision(
 
     committed_bytes = _git(root, "cat-file", "blob", object_id, text=False).stdout
     try:
-        observed_bytes = artifact.read_bytes()
+        # Re-check immediately before reading so a symlink substitution between the
+        # initial pathname check and Git lookup cannot silently redirect authentication.
+        read_stat = requested.lstat()
+        if stat.S_ISLNK(read_stat.st_mode) or not stat.S_ISREG(read_stat.st_mode):
+            raise SourceIdentityError(
+                f"tracked artifact pathname changed type during authentication: {relative}"
+            )
+        observed_bytes = requested.read_bytes()
+        final_stat = requested.lstat()
+    except SourceIdentityError:
+        raise
     except OSError as exc:
         raise SourceIdentityError(f"unable to read tracked artifact bytes: {relative}") from exc
+    if (
+        stat.S_ISLNK(final_stat.st_mode)
+        or not stat.S_ISREG(final_stat.st_mode)
+        or (read_stat.st_dev, read_stat.st_ino) != (final_stat.st_dev, final_stat.st_ino)
+    ):
+        raise SourceIdentityError(
+            f"tracked artifact pathname changed during authentication: {relative}"
+        )
     if observed_bytes != committed_bytes:
         raise SourceIdentityError(
             "tracked artifact does not match the bound Git revision independently of index flags: "
