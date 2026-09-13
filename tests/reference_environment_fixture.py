@@ -21,6 +21,18 @@ def hub_transport_package_provenance() -> dict[str, dict[str, object]]:
     }
 
 
+def capture_transitive_package_provenance() -> dict[str, dict[str, object]]:
+    return {
+        canonical: {
+            "file_count": index + 1,
+            "receipt_sha256": f"{index + 1:064x}",
+        }
+        for index, canonical in enumerate(
+            sorted(reference.CAPTURE_TRANSITIVE_PACKAGE_IMPORTS)
+        )
+    }
+
+
 def reference_environment_receipt() -> dict:
     locked = reference._locked_versions()
     return reference._build_reference_environment_receipt_from_state(
@@ -32,5 +44,6 @@ def reference_environment_receipt() -> dict:
         platform_machine="x86_64",
         hub_package_provenance=hub_package_provenance(),
         hub_transport_package_provenance=hub_transport_package_provenance(),
+        capture_transitive_package_provenance=capture_transitive_package_provenance(),
         lock_sha256=reference._lock_sha256(),
     )
