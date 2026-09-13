@@ -196,17 +196,118 @@ def _find_one_distribution(distribution_name: str, where: str) -> importlib.meta
     return matches[0]
 
 
+def _runtime_path_identity(base: Path, path: Path, where: str) -> tuple[Path, str]:
+    """Resolve one runtime path beneath the distribution root without following a symlink leaf."""
+    try:
+        if path.is_symlink():
+            raise CaptureContractError(
+                f"{where} independently discovered runtime artifact must not be a symlink: {path}"
+            )
+        resolved = path.resolve(strict=True)
+        relative = resolved.relative_to(base)
+    except FileNotFoundError as exc:
+        raise CaptureContractError(f"{where} runtime artifact disappeared during enumeration: {path}") from exc
+    except ValueError as exc:
+        raise CaptureContractError(f"{where} runtime artifact escapes its distribution root: {path}") from exc
+    except OSError as exc:
+        raise CaptureContractError(f"unable to inspect {where} runtime artifact: {path}") from exc
+    key = relative.as_posix()
+    if not key or key.startswith("/") or "\\" in key or any(
+        part in {"", ".", ".."} for part in relative.parts
+    ):
+        raise CaptureContractError(f"{where} contains a noncanonical runtime path: {key!r}")
+    return resolved, key
+
+
+def _hash_independent_runtime_root(
+    root: Path,
+    base: Path,
+    where: str,
+    hashes: dict[str, str],
+) -> None:
+    """Hash one import/runtime root without consulting wheel RECORD ownership."""
+    if not root.exists() and not root.is_symlink():
+        return
+    resolved_root, root_key = _runtime_path_identity(base, root, where)
+    if resolved_root.is_file():
+        if resolved_root.suffix.lower() not in _BYTECODE_SUFFIXES:
+            hashes[root_key] = _hash_regular_file(resolved_root, where)
+        return
+    if not resolved_root.is_dir():
+        raise CaptureContractError(f"{where} runtime root is neither a file nor directory: {root}")
+    try:
+        paths = sorted(resolved_root.rglob("*"), key=lambda value: value.as_posix())
+    except OSError as exc:
+        raise CaptureContractError(f"unable to enumerate {where} runtime root: {root}") from exc
+    for path in paths:
+        resolved, key = _runtime_path_identity(base, path, where)
+        if resolved.is_dir():
+            continue
+        if resolved.suffix.lower() in _BYTECODE_SUFFIXES:
+            continue
+        hashes[key] = _hash_regular_file(resolved, where)
+
+
+def _independently_enumerated_runtime_hashes(
+    distribution: importlib.metadata.Distribution,
+    distribution_name: str,
+    import_name: str,
+    spec: Any,
+    where: str,
+) -> dict[str, str]:
+    """Discover import roots and conventional wheel sibling runtime roots without RECORD.
+
+    ``Distribution.files`` is normally backed by wheel ``RECORD`` and is therefore not
+    an independent authority: a locally edited RECORD can omit a patched native file.
+    This pass derives roots from the import spec plus deterministic wheel layout names
+    and walks the filesystem directly. The RECORD-derived inventory is checked against
+    this independently discovered set by ``_distribution_package_provenance``.
+    """
+    try:
+        base = Path(distribution.locate_file("")).resolve(strict=True)
+    except OSError as exc:
+        raise CaptureContractError(f"unable to resolve {where} distribution installation root") from exc
+
+    roots: set[Path] = set()
+    if spec.submodule_search_locations is None:
+        roots.add(Path(spec.origin))
+    else:
+        locations = tuple(spec.submodule_search_locations)
+        if not locations:
+            raise CaptureContractError(f"{where} import package exposes no search locations")
+        roots.update(Path(location) for location in locations)
+
+    observed_name = distribution.metadata.get("Name") or distribution_name
+    stems = {
+        import_name.split(".", 1)[0],
+        re.sub(r"[-.]+", "_", distribution_name),
+        re.sub(r"[-.]+", "_", observed_name),
+    }
+    for stem in tuple(stems):
+        if not stem or "/" in stem or "\\" in stem:
+            raise CaptureContractError(f"{where} has an invalid runtime stem {stem!r}")
+        roots.add(base / f"{stem}.libs")
+        roots.add(base / f"{stem}.data")
+
+    hashes: dict[str, str] = {}
+    for root in sorted(roots, key=lambda value: value.as_posix()):
+        _hash_independent_runtime_root(root, base, where, hashes)
+    if not hashes:
+        raise CaptureContractError(f"{where} independent runtime enumeration found no files")
+    return hashes
+
+
 def _distribution_owned_file_hashes(
     distribution: importlib.metadata.Distribution,
     where: str,
 ) -> dict[str, str]:
-    """Hash every runtime file owned by a distribution under its installation root.
+    """Hash every RECORD-owned runtime file beneath the distribution installation root.
 
-    Wheel RECORD ownership includes sibling native-library directories such as
-    ``numpy.libs`` that are executable inputs but are outside the import package
-    directory. Metadata directories and generated bytecode are excluded: metadata is
-    not executable runtime content, while executable bytecode is authenticated against
-    receipt-bound source by the import-surface provenance below.
+    This inventory remains useful for distributions that expose more than one import
+    surface, but it is not trusted for completeness. ``_distribution_package_provenance``
+    independently enumerates the active import roots and conventional sibling wheel
+    runtime directories, then requires RECORD to contain every independently observed
+    runtime file before this inventory may contribute to canonical evidence.
     """
     files = distribution.files
     if not files:
@@ -267,11 +368,12 @@ def _distribution_package_provenance(
     *,
     module: Any | None = None,
 ) -> dict[str, Any]:
-    """Bind both the import surface and the distribution-owned runtime payload.
+    """Bind the import surface and independently checked distribution runtime payload.
 
-    The distribution receipt covers files outside the import package (notably wheel
-    sibling ``*.libs`` native dependencies), while the import-surface receipt retains
-    the stricter Python bytecode/source authentication used by canonical capture.
+    RECORD-derived ownership covers the broad installed distribution, while an
+    independent filesystem walk covers the active import root and conventional sibling
+    ``*.libs``/``*.data`` wheel roots. RECORD is rejected if it omits anything found by
+    that independent walk, so editing RECORD cannot hide a patched NumPy native library.
     """
     try:
         spec = importlib.util.find_spec(import_name)
@@ -286,6 +388,25 @@ def _distribution_package_provenance(
 
     distribution = _find_one_distribution(distribution_name, where)
     owned_hashes = _distribution_owned_file_hashes(distribution, where)
+    independent_hashes = _independently_enumerated_runtime_hashes(
+        distribution,
+        distribution_name,
+        import_name,
+        spec,
+        where,
+    )
+    missing_from_inventory = sorted(set(independent_hashes) - set(owned_hashes))
+    if missing_from_inventory:
+        raise CaptureContractError(
+            f"{where} distribution file inventory omits independently discovered runtime files: "
+            + ",".join(missing_from_inventory)
+        )
+    for key, digest in independent_hashes.items():
+        if owned_hashes[key] != digest:
+            raise CaptureContractError(
+                f"{where} distribution inventory/runtime digest disagreement for {key}"
+            )
+
     try:
         base = Path(distribution.locate_file("")).resolve(strict=True)
         origin = Path(spec.origin).resolve(strict=True)
@@ -294,9 +415,9 @@ def _distribution_package_provenance(
         raise CaptureContractError(
             f"{where} import origin is not owned by the locked {distribution_name} distribution"
         ) from exc
-    if origin_key not in owned_hashes:
+    if origin_key not in independent_hashes or origin_key not in owned_hashes:
         raise CaptureContractError(
-            f"{where} import origin is absent from the locked distribution-owned runtime receipt"
+            f"{where} import origin is absent from the independently authenticated distribution runtime receipt"
         )
 
     if module is not None:
@@ -309,6 +430,7 @@ def _distribution_package_provenance(
 
     composite = {
         "distribution_owned_files": owned_hashes,
+        "independent_runtime_files": independent_hashes,
         "import_surface": import_receipt,
     }
     return {
