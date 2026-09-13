@@ -8,6 +8,7 @@ from unittest import mock
 from qsol_geo_reason import capture, capture_execute, capture_worker
 from qsol_geo_reason import execution_receipt_reservation
 from qsol_geo_reason.capture_common import CaptureContractError
+from qsol_geo_reason.capture_publish import CaptureBundlePublicationDurabilityError
 
 
 class CaptureWorkerExecutionReceiptBoundaryTests(unittest.TestCase):
@@ -29,6 +30,48 @@ class CaptureWorkerExecutionReceiptBoundaryTests(unittest.TestCase):
             bundle = Path(tmp) / "run-a"
             with self.assertRaisesRegex(RuntimeError, "outside --output-dir"):
                 capture_worker._assert_execution_receipt_outside_bundle(bundle, bundle)
+
+    def test_execution_receipt_must_not_contain_bundle_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            receipt = root / "evidence"
+            bundle = receipt / "run-a"
+            with self.assertRaisesRegex(RuntimeError, "must not contain --output-dir"):
+                capture_worker._assert_execution_receipt_outside_bundle(bundle, receipt)
+
+    def test_ancestor_receipt_path_is_rejected_before_reservation_or_backend_work(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            request = root / "request.json"
+            request.write_text("{}\n", encoding="utf-8")
+            receipt = root / "evidence"
+            output = receipt / "run-a"
+
+            with (
+                mock.patch.object(capture_worker, "_assert_fresh_worker_boundary"),
+                mock.patch.object(
+                    execution_receipt_reservation,
+                    "reserve_execution_receipt_destination",
+                ) as reserve,
+                mock.patch.object(capture, "HuggingFacePyTorchBackend") as backend,
+            ):
+                status = capture_worker.main(
+                    [
+                        str(request),
+                        "--output-dir",
+                        str(output),
+                        "--execution-id",
+                        "EXEC-A",
+                        "--execution-receipt",
+                        str(receipt),
+                    ]
+                )
+
+            self.assertEqual(status, 2)
+            reserve.assert_not_called()
+            backend.assert_not_called()
+            self.assertFalse(receipt.exists())
+            self.assertFalse(output.exists())
 
     def test_blank_execution_identity_is_rejected_before_reservation_or_capture(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -71,7 +114,9 @@ class CaptureWorkerExecutionReceiptBoundaryTests(unittest.TestCase):
                 directory.mkdir()
                 for name in capture_worker._CANONICAL_BUNDLE_FILES:
                     (directory / name).write_text("{}\n", encoding="utf-8")
-                raise OSError("parent directory fsync failed after rename")
+                raise CaptureBundlePublicationDurabilityError(
+                    "capture bundle was published but final parent-directory fsync failed"
+                )
 
             manifest = {"manifest_sha256": "a" * 64}
             with (
@@ -124,6 +169,77 @@ class CaptureWorkerExecutionReceiptBoundaryTests(unittest.TestCase):
             self.assertTrue(receipt.is_file())
             self.assertEqual(receipt.read_text(encoding="utf-8"), "reserved\n")
             release.assert_not_called()
+
+    def test_concurrent_loser_releases_reservation_when_other_worker_publishes_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            request = root / "request.json"
+            request.write_text("{}\n", encoding="utf-8")
+            output = root / "run-a"
+            receipt = root / "run-a-execution-receipt.json"
+            reservation = object()
+
+            def concurrent_winner_then_loser_fails(output_dir, _request, _manifest, _trajectory):
+                # Model another worker winning the no-replace rename after this
+                # worker started. The losing worker sees a complete bundle but did
+                # not publish it and therefore does not own that evidence.
+                directory = Path(output_dir)
+                directory.mkdir()
+                for name in capture_worker._CANONICAL_BUNDLE_FILES:
+                    (directory / name).write_text("{}\n", encoding="utf-8")
+                raise CaptureContractError(
+                    "output_dir already exists; canonical capture bundles are immutable publications"
+                )
+
+            manifest = {"manifest_sha256": "a" * 64}
+            with (
+                mock.patch.object(capture_worker, "_assert_fresh_worker_boundary"),
+                mock.patch.object(
+                    execution_receipt_reservation,
+                    "reserve_execution_receipt_destination",
+                    return_value=reservation,
+                ),
+                mock.patch.object(
+                    execution_receipt_reservation,
+                    "release_execution_receipt_reservation",
+                ) as release,
+                mock.patch.object(capture, "validate_capture_request", return_value={}),
+                mock.patch.object(
+                    capture_execute,
+                    "resolve_implementation_revision",
+                    return_value="f" * 40,
+                ),
+                mock.patch.object(
+                    capture,
+                    "HuggingFacePyTorchBackend",
+                    return_value=object(),
+                ),
+                mock.patch.object(
+                    capture,
+                    "execute_capture",
+                    return_value=(manifest, {}),
+                ),
+                mock.patch.object(
+                    capture,
+                    "write_capture_bundle",
+                    side_effect=concurrent_winner_then_loser_fails,
+                ),
+            ):
+                status = capture_worker.main(
+                    [
+                        str(request),
+                        "--output-dir",
+                        str(output),
+                        "--execution-id",
+                        "EXEC-LOSER",
+                        "--execution-receipt",
+                        str(receipt),
+                    ]
+                )
+
+            self.assertEqual(status, 2)
+            self.assertTrue(capture_worker._complete_bundle_present(output))
+            release.assert_called_once_with(reservation)
 
     def test_preexisting_bundle_still_releases_new_reservation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
