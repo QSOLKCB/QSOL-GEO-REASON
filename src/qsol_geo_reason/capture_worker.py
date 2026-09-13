@@ -61,19 +61,30 @@ def _assert_execution_receipt_outside_bundle(
     output_dir: Path,
     execution_receipt: Path | None,
 ) -> None:
-    """Reject occurrence receipts that would mutate an immutable published bundle."""
+    """Reject receipt/bundle layouts that overlap in either direction."""
     if execution_receipt is None:
         return
     try:
         bundle = Path(output_dir).resolve(strict=False)
         receipt = Path(execution_receipt).resolve(strict=False)
-        receipt.relative_to(bundle)
-    except ValueError:
-        return
     except OSError as exc:
         raise RuntimeError("unable to resolve execution receipt publication path") from exc
+
+    try:
+        receipt.relative_to(bundle)
+    except ValueError:
+        pass
+    else:
+        raise RuntimeError(
+            "--execution-receipt must be outside --output-dir and must not contain --output-dir; canonical bundle directories are immutable"
+        )
+
+    try:
+        bundle.relative_to(receipt)
+    except ValueError:
+        return
     raise RuntimeError(
-        "--execution-receipt must be outside --output-dir; canonical bundle directories are immutable"
+        "--execution-receipt must be outside --output-dir and must not contain --output-dir; canonical bundle directories are immutable"
     )
 
 
@@ -146,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
         build_execution_receipt,
         verify_execution_receipt,
     )
+    from .capture_publish import CaptureBundlePublicationDurabilityError
     from .execution_receipt_reservation import (
         commit_execution_receipt_reservation,
         release_execution_receipt_reservation,
@@ -153,8 +165,6 @@ def main(argv: list[str] | None = None) -> int:
     from .provenance import SourceIdentityError
 
     bundle_published = False
-    bundle_publication_started = False
-    bundle_existed_before_publication = False
     try:
         request = json.loads(args.request.read_text(encoding="utf-8"))
         validated = validate_capture_request(request)
@@ -173,8 +183,6 @@ def main(argv: list[str] | None = None) -> int:
         # Publish the immutable scientific bundle first. The occurrence receipt name
         # has already been durably reserved outside that directory, so a pre-existing
         # or unwritable destination cannot strand a provenance-less successful bundle.
-        bundle_existed_before_publication = args.output_dir.exists()
-        bundle_publication_started = True
         write_capture_bundle(args.output_dir, validated, manifest, trajectory)
         bundle_published = True
         if args.execution_id is not None:
@@ -204,18 +212,11 @@ def main(argv: list[str] | None = None) -> int:
         OSError,
         RuntimeError,
     ) as exc:
-        # write_capture_bundle() atomically renames its fully fsynced staging
-        # directory before the final parent-directory fsync. If that final fsync
-        # fails, the call raises even though the immutable bundle directory already
-        # exists. Preserve the occurrence-receipt reservation in that state rather
-        # than deleting the only reserved provenance path. A path that already
-        # existed before this publication attempt is never attributed to this run.
-        if (
-            not bundle_published
-            and bundle_publication_started
-            and not bundle_existed_before_publication
-            and _complete_bundle_present(args.output_dir)
-        ):
+        # Only the publisher can prove that its own no-replace rename succeeded.
+        # A concurrent loser may observe another worker's complete output directory,
+        # so directory presence is never used as ownership evidence. The publisher
+        # communicates the narrow post-rename/final-fsync failure explicitly.
+        if isinstance(exc, CaptureBundlePublicationDurabilityError):
             bundle_published = True
         if receipt_reservation is not None and not bundle_published:
             release_execution_receipt_reservation(receipt_reservation)
