@@ -16,7 +16,7 @@ import importlib.machinery
 import json
 import os
 import stat
-import subprocess
+import subprocess as process
 import sys
 import sysconfig
 from pathlib import Path, PurePosixPath
@@ -219,8 +219,8 @@ def _git_identity_command(
     git_digest: str,
     *args: str,
     text: bool,
-) -> subprocess.CompletedProcess[Any]:
-    completed = subprocess.run(
+) -> process.CompletedProcess[Any]:
+    completed = process.run(
         [str(git_path), "-C", str(root), *args],
         env=_trusted_git_environment(),
         check=True,
@@ -273,7 +273,7 @@ def _authenticate_tracked_package_source(
             _PACKAGE_GIT_ROOT,
             text=True,
         ).stdout
-    except (OSError, subprocess.CalledProcessError) as exc:
+    except (OSError, process.CalledProcessError) as exc:
         raise RuntimeError(
             "canonical production launcher cannot enumerate tracked package source"
         ) from exc
@@ -324,7 +324,7 @@ def _authenticate_tracked_package_source(
             ).stdout
             observed = requested.read_bytes()
             after = requested.lstat()
-        except (OSError, subprocess.CalledProcessError) as exc:
+        except (OSError, process.CalledProcessError) as exc:
             raise RuntimeError(f"unable to authenticate tracked package source: {relative}") from exc
         if (
             stat.S_ISLNK(after.st_mode)
