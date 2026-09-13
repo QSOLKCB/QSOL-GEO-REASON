@@ -171,6 +171,67 @@ class BootstrapRevisionAndDistributionRuntimeTests(unittest.TestCase):
             self.assertEqual(after["file_count"], 2)
             self.assertNotEqual(before["receipt_sha256"], after["receipt_sha256"])
 
+    def test_distribution_receipt_rejects_record_omission_of_sibling_native_library(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            site = Path(tmp)
+            numpy = site / "numpy"
+            numpy_libs = site / "numpy.libs"
+            metadata = site / "numpy-1.26.4.dist-info"
+            numpy.mkdir()
+            numpy_libs.mkdir()
+            metadata.mkdir()
+            init = numpy / "__init__.py"
+            init.write_text("VALUE = 1\n", encoding="utf-8")
+            native = numpy_libs / "libgfortran-fixture.so"
+            native.write_bytes(b"native-clean")
+            (metadata / "METADATA").write_text("Name: numpy\nVersion: 1.26.4\n", encoding="utf-8")
+
+            distribution = _FakeDistribution(
+                site,
+                [
+                    PurePosixPath("numpy/__init__.py"),
+                    PurePosixPath("numpy.libs/libgfortran-fixture.so"),
+                    PurePosixPath("numpy-1.26.4.dist-info/METADATA"),
+                ],
+            )
+            spec = types.SimpleNamespace(
+                origin=str(init),
+                submodule_search_locations=[str(numpy)],
+            )
+            with (
+                mock.patch.object(
+                    PACKAGE.importlib.metadata,
+                    "distributions",
+                    return_value=[distribution],
+                ),
+                mock.patch.object(
+                    PACKAGE.importlib.util,
+                    "find_spec",
+                    return_value=spec,
+                ),
+            ):
+                clean = PACKAGE._distribution_package_provenance(
+                    "numpy",
+                    "numpy",
+                    "NumPy RECORD test distribution",
+                )
+                self.assertEqual(clean["file_count"], 2)
+
+                distribution.files = [
+                    PurePosixPath("numpy/__init__.py"),
+                    PurePosixPath("numpy-1.26.4.dist-info/METADATA"),
+                ]
+                native.write_bytes(b"native-patched-after-record-omission")
+                with self.assertRaisesRegex(
+                    PACKAGE.CaptureContractError,
+                    "file inventory omits independently discovered runtime files.*numpy.libs/libgfortran-fixture.so",
+                ):
+                    PACKAGE._distribution_package_provenance(
+                        "numpy",
+                        "numpy",
+                        "NumPy RECORD test distribution",
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()
