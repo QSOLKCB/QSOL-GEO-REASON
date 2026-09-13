@@ -288,13 +288,60 @@ def _assert_preparation_output_outside_checkout(output: Path) -> None:
     )
 
 
+def _existing_regular_preparation_receipt(path: Path) -> bool:
+    """Return whether recovery sidecar exists, rejecting symlinks/non-regular files."""
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise CaptureContractError(
+            f"unable to inspect preparation receipt recovery artifact {path}: {exc}"
+        ) from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise CaptureContractError(
+            f"preparation receipt recovery artifact must be a regular non-symlink file: {path}"
+        )
+    return True
+
+
+def _read_regular_preparation_receipt(path: Path) -> Mapping[str, Any]:
+    """Read one recovery receipt while preserving the original pathname identity."""
+    try:
+        before = path.lstat()
+    except OSError as exc:
+        raise CaptureContractError(
+            f"unable to inspect preparation receipt recovery artifact {path}: {exc}"
+        ) from exc
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        raise CaptureContractError(
+            f"preparation receipt recovery artifact must be a regular non-symlink file: {path}"
+        )
+    receipt = _core._read_json(path)
+    try:
+        after = path.lstat()
+    except OSError as exc:
+        raise CaptureContractError(
+            f"preparation receipt recovery artifact changed during verification: {path}"
+        ) from exc
+    if (
+        stat.S_ISLNK(after.st_mode)
+        or not stat.S_ISREG(after.st_mode)
+        or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+    ):
+        raise CaptureContractError(
+            f"preparation receipt recovery artifact changed during verification: {path}"
+        )
+    return receipt
+
+
 def _recover_incomplete_preparation(
     output: Path,
     preparation_receipt_path: Path,
     *,
     recovery_repository_commit: str,
 ) -> str:
-    receipt = _core._read_json(preparation_receipt_path)
+    receipt = _read_regular_preparation_receipt(preparation_receipt_path)
     final_request = _core._reconstruct_request_from_preparation_receipt(
         receipt,
         recovery_repository_commit=recovery_repository_commit,
@@ -396,7 +443,7 @@ def prepare(
         ) from exc
     _authenticate_external_inputs(preparation_repository_commit)
 
-    if preparation_receipt_path.exists():
+    if _existing_regular_preparation_receipt(preparation_receipt_path):
         return _core._recover_incomplete_preparation(
             output,
             preparation_receipt_path,
