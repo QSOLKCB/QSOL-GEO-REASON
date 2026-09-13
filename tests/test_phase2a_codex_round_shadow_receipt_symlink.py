@@ -122,6 +122,21 @@ class Phase2AShadowReceiptSymlinkRegressions(unittest.TestCase):
             bootstrap.index("sys.path.insert(0,src)"),
         )
 
+    def test_launcher_allows_cache_tagged_bytecode_under_pycache(self) -> None:
+        launcher = _load_launcher()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = root / "src" / "qsol_geo_reason"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text("\n", encoding="utf-8")
+            (package / "canonical.py").write_text("VALUE = 'tracked'\n", encoding="utf-8")
+            cache = package / "__pycache__" / "canonical.cpython-311.pyc"
+            cache.parent.mkdir()
+            cache.write_bytes(b"ordinary-cache-tagged-bytecode")
+
+            with mock.patch.object(launcher, "ROOT", root):
+                launcher._assert_no_importable_python_shadows()
+
     def test_linked_preparation_receipt_survives_parent_fsync_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
