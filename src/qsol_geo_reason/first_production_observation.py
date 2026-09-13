@@ -497,6 +497,11 @@ _core.prepare = prepare
 _core.observe = observe
 
 if __name__ == "__main__":
-    raise SystemExit(_core.main())
+    print(
+        "direct module execution is not an authenticated production boundary; use "
+        "python -I -S -B tools/run_first_production_observation.py ...",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
 else:
     sys.modules[__name__] = _core
