@@ -107,7 +107,14 @@ class CaptureArchitectureRemediationTests(unittest.TestCase):
             ROOT / "docs" / "GEO-CAP-001-THREAT-MODEL.md"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            "trusted local CLI that launches fresh isolated Python workers",
+            "authenticated Git-blob bootstrap that enters a trusted local CLI and launches fresh isolated Python workers",
+            threat_model,
+        )
+        self.assertIn("qsol_first_observation prepare", threat_model)
+        self.assertIn("qsol_first_observation observe", threat_model)
+        self.assertIn("HEAD:tools/run_first_production_observation.py", threat_model)
+        self.assertNotIn(
+            "canonical invocation requires `python -I -S -B tools/run_first_production_observation.py",
             threat_model,
         )
         self.assertIn("arbitrary hostile mutation inside an already-running embedding process", threat_model)
