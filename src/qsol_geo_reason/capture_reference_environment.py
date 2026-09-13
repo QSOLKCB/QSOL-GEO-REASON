@@ -91,7 +91,7 @@ def _installed_runtime_versions() -> dict[str, tuple[str, str]]:
             continue
         version = distribution.version
         previous = installed.get(canonical)
-        if previous is not None and previous != (name, version):
+        if previous is not None:
             raise CaptureContractError(
                 "multiple installed distributions normalize to the same name: "
                 f"{previous[0]} and {name}"
