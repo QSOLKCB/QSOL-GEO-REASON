@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import json
+import py_compile
 import secrets
 import tempfile
 import unittest
@@ -122,20 +123,34 @@ class Phase2AShadowReceiptSymlinkRegressions(unittest.TestCase):
             bootstrap.index("sys.path.insert(0,src)"),
         )
 
-    def test_launcher_allows_cache_tagged_bytecode_under_pycache(self) -> None:
+    def test_launcher_rejects_valid_cache_tagged_bytecode_before_src_prepend(self) -> None:
         launcher = _load_launcher()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             package = root / "src" / "qsol_geo_reason"
             package.mkdir(parents=True)
             (package / "__init__.py").write_text("\n", encoding="utf-8")
-            (package / "canonical.py").write_text("VALUE = 'tracked'\n", encoding="utf-8")
-            cache = package / "__pycache__" / "canonical.cpython-311.pyc"
-            cache.parent.mkdir()
-            cache.write_bytes(b"ordinary-cache-tagged-bytecode")
+            source = package / "canonical.py"
+            source.write_text("VALUE = 'tracked'\n", encoding="utf-8")
+            cache = Path(importlib.util.cache_from_source(str(source)))
+            py_compile.compile(str(source), cfile=str(cache), doraise=True)
+            self.assertTrue(cache.is_file())
+            self.assertEqual(cache.parent.name, "__pycache__")
 
             with mock.patch.object(launcher, "ROOT", root):
-                launcher._assert_no_importable_python_shadows()
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "importable source shadows",
+                ):
+                    launcher._assert_no_importable_python_shadows()
+
+        bootstrap = launcher._ORCHESTRATOR_BOOTSTRAP
+        self.assertIn("bytecode=", bootstrap)
+        self.assertNotIn("'__pycache__' not in p.parts", bootstrap)
+        self.assertLess(
+            bootstrap.index("bytecode="),
+            bootstrap.index("sys.path.insert(0,src)"),
+        )
 
     def test_linked_preparation_receipt_survives_parent_fsync_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
