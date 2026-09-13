@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -99,6 +100,37 @@ class HubTreeReceiptImmutabilityTests(unittest.TestCase):
             self.assertEqual(after.st_ino, before.st_ino)
             self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
             self.assertEqual(list(destination.parent.glob(f".{self.COMMIT}.*.tmp")), [])
+            verifier.assert_not_called()
+
+    def test_staging_name_collision_does_not_unlink_unowned_temp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = self._snapshot(root)
+            files = self._files()
+            tree_dir = snapshot.parent.parent / "trees"
+            tree_dir.mkdir()
+            nonce = "c" * 32
+            collision = tree_dir / (
+                f".{self.COMMIT}.{os.getpid()}.{nonce}.tmp"
+            )
+            preserved = b"other-preparation-live-staging\n"
+            collision.write_bytes(preserved)
+
+            with (
+                mock.patch.object(HUB.secrets, "token_hex", return_value=nonce),
+                mock.patch.object(HUB, "_cached_hub_commit_tree") as verifier,
+                self.assertRaisesRegex(
+                    CaptureContractError,
+                    "unable to persist trusted model Hub tree artifact",
+                ),
+            ):
+                HUB._write_tree_artifact(snapshot, self.COMMIT, files, "model")
+
+            # open("xb") never established ownership, so cleanup must leave the
+            # pre-existing staging file untouched rather than deleting another
+            # process's live file (or a stale crash artifact).
+            self.assertTrue(collision.is_file())
+            self.assertEqual(collision.read_bytes(), preserved)
             verifier.assert_not_called()
 
 
