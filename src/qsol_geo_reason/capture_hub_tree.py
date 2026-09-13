@@ -100,23 +100,45 @@ def _write_tree_artifact(
     destination = tree_dir / f"{commit.lower()}.json"
     temporary = tree_dir / f".{commit.lower()}.{os.getpid()}.tmp"
     try:
-        with temporary.open("wb") as handle:
+        with temporary.open("xb") as handle:
             handle.write(tree_bytes)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, destination)
-        # The file fsync makes the artifact bytes durable; syncing the containing
-        # directory makes the replacement/name durable before the receipt can be
-        # frozen into a preparation artifact.
-        _fsync_directory(tree_dir)
+        try:
+            # Publish by no-replace hard link. A previously frozen request may already
+            # depend on this exact commit-tree pathname, so replacement is forbidden.
+            # The hard link also closes the check-then-publish race between concurrent
+            # preparations for the same immutable commit.
+            os.link(temporary, destination)
+        except FileExistsError:
+            try:
+                existing_bytes = destination.read_bytes()
+            except OSError as exc:
+                raise CaptureContractError(
+                    f"unable to verify existing trusted {where} Hub tree artifact"
+                ) from exc
+            if existing_bytes != tree_bytes:
+                raise CaptureContractError(
+                    f"existing trusted {where} Hub tree artifact for {commit} differs from newly observed metadata"
+                )
+            # Exact byte identity means another preparation already published the
+            # same evidence. Retain that immutable artifact rather than rewriting it.
+        else:
+            # The file fsync makes the artifact bytes durable; syncing the containing
+            # directory makes the new no-replace name durable before the receipt can
+            # be frozen into a preparation artifact.
+            _fsync_directory(tree_dir)
+    except CaptureContractError:
+        raise
     except OSError as exc:
+        raise CaptureContractError(
+            f"unable to persist trusted {where} Hub tree artifact"
+        ) from exc
+    finally:
         try:
             temporary.unlink(missing_ok=True)
         except OSError:
             pass
-        raise CaptureContractError(
-            f"unable to persist trusted {where} Hub tree artifact"
-        ) from exc
 
     _cached_hub_commit_tree(
         snapshot.resolve(),
