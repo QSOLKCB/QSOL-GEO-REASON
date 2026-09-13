@@ -41,7 +41,10 @@ class Phase2ALatestReviewTests(unittest.TestCase):
 
     def test_experiment_authenticates_launcher_blob_before_execution(self) -> None:
         document = EXPERIMENT_DOC.read_text(encoding="utf-8")
-        self.assertIn("HEAD:tools/run_first_production_observation.py", document)
+        self.assertIn("HEAD^{commit}", document)
+        self.assertIn('commit+":tools/run_first_production_observation.py"', document)
+        self.assertIn("_QSOL_AUTHENTICATED_BOOTSTRAP_REVISION", document)
+        self.assertIn("_QSOL_AUTHENTICATED_LAUNCHER_SHA256", document)
         self.assertIn("cat-file", document)
         self.assertIn('exec(compile(src,str(path),"exec"),ns,ns)', document)
         self.assertIn("qsol_first_observation prepare", document)
