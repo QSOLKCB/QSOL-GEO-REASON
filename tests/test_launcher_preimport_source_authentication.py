@@ -189,6 +189,54 @@ class LauncherPreimportSourceAuthenticationTests(unittest.TestCase):
             self.assertFalse(attacker_marker.exists())
             self.assertEqual(tracked_launcher.read_text(encoding="utf-8"), malicious)
 
+    def test_committed_launcher_rejects_symlinked_working_path_before_root_resolution(self) -> None:
+        source = LAUNCHER.read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            trusted_root = workspace / "trusted"
+            trusted_tools = trusted_root / "tools"
+            trusted_tools.mkdir(parents=True)
+            attacker_root = workspace / "attacker"
+            attacker_tools = attacker_root / "tools"
+            attacker_tools.mkdir(parents=True)
+            attacker_launcher = attacker_tools / "run_first_production_observation.py"
+            attacker_launcher.write_text("# attacker checkout\n", encoding="utf-8")
+            working_launcher = trusted_tools / "run_first_production_observation.py"
+            working_launcher.symlink_to(attacker_launcher)
+
+            bootstrap = (
+                "import sys;"
+                "src=sys.argv[1];path=sys.argv[2];"
+                "ns={'__name__':'qsol_symlink_test','__file__':path,'__package__':None};"
+                "exec(compile(src,path,'exec'),ns,ns)"
+            )
+            completed = subprocess.run(
+                [sys.executable, "-I", "-S", "-B", "-c", bootstrap, source, str(working_launcher)],
+                cwd=trusted_root,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("rejects symlinked launcher file", completed.stderr)
+
+    def test_repository_root_boundary_rejects_symlinked_tools_parent(self) -> None:
+        launcher = _load_launcher()
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            trusted_root = workspace / "trusted"
+            trusted_root.mkdir()
+            attacker_tools = workspace / "attacker-tools"
+            attacker_tools.mkdir()
+            (attacker_tools / "run_first_production_observation.py").write_text(
+                "# attacker launcher\n",
+                encoding="utf-8",
+            )
+            (trusted_root / "tools").symlink_to(attacker_tools, target_is_directory=True)
+            candidate = trusted_root / "tools" / "run_first_production_observation.py"
+            with self.assertRaisesRegex(RuntimeError, "symlinked launcher tools directory"):
+                launcher._repository_root_from_launcher_path(candidate)
+
 
 if __name__ == "__main__":
     unittest.main()
