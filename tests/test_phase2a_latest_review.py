@@ -38,18 +38,19 @@ class Phase2ALatestReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             TOOL._assert_preparation_output_outside_checkout(Path(tmp) / "request.json")
 
-    def test_experiment_uses_no_site_initial_launcher_invocation(self) -> None:
+    def test_experiment_authenticates_launcher_blob_before_execution(self) -> None:
         document = EXPERIMENT_DOC.read_text(encoding="utf-8")
-        self.assertIn(
+        self.assertIn("HEAD:tools/run_first_production_observation.py", document)
+        self.assertIn("cat-file", document)
+        self.assertIn("exec(compile(src,str(path),'exec'),ns,ns)", document)
+        self.assertIn("qsol_first_observation prepare", document)
+        self.assertIn("qsol_first_observation observe", document)
+        self.assertNotIn(
             "python -I -S -B tools/run_first_production_observation.py prepare",
             document,
         )
-        self.assertIn(
-            "python -I -S -B tools/run_first_production_observation.py observe",
-            document,
-        )
         self.assertNotIn(
-            "\npython tools/run_first_production_observation.py prepare",
+            "python -I -S -B tools/run_first_production_observation.py observe",
             document,
         )
 
