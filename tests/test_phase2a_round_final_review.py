@@ -40,9 +40,10 @@ class Phase2ARoundFinalReviewTests(unittest.TestCase):
             completed.stderr,
         )
         self.assertIn(
-            "python -I -S -B tools/run_first_production_observation.py",
+            "authenticated Git-blob production bootstrap",
             completed.stderr,
         )
+        self.assertIn("GEO-CAP-001-EXP-001", completed.stderr)
         self.assertNotIn("usage:", completed.stderr)
 
     def test_identical_duplicate_distribution_metadata_is_rejected(self) -> None:
