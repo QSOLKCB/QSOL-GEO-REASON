@@ -80,6 +80,10 @@ class CaptureReplayVerdictTests(unittest.TestCase):
     def _fake_preparation_verifier(receipt: dict, **_kwargs):
         return dict(receipt)
 
+    @staticmethod
+    def _execution_ids() -> dict[str, str]:
+        return {"run-a": "EXEC-A", "run-b": "EXEC-B"}
+
     def _build_verdict(self, root: Path):
         (
             request,
@@ -90,6 +94,7 @@ class CaptureReplayVerdictTests(unittest.TestCase):
             receipt_a,
             receipt_b,
         ) = self._workspace(root)
+        ids = self._execution_ids()
         verdict = capture_replay.build_replay_verdict(
             request=request,
             validated_request_path=snapshot,
@@ -98,6 +103,8 @@ class CaptureReplayVerdictTests(unittest.TestCase):
             run_b_dir=run_b,
             run_a_execution_receipt_path=receipt_a,
             run_b_execution_receipt_path=receipt_b,
+            run_a_execution_id=ids["run-a"],
+            run_b_execution_id=ids["run-b"],
             run_a_manifest_receipt="a" * 64,
             run_b_manifest_receipt="a" * 64,
             experiment_id="EXP-TEST-001",
@@ -111,6 +118,25 @@ class CaptureReplayVerdictTests(unittest.TestCase):
             receipt_a,
             receipt_b,
             verdict,
+        )
+
+    def _verify(self, verdict: dict, request: dict, snapshot: Path, preparation_receipt: Path,
+                run_a: Path, run_b: Path, receipt_a: Path, receipt_b: Path):
+        ids = self._execution_ids()
+        return capture_replay.verify_replay_verdict(
+            verdict,
+            request=request,
+            validated_request_path=snapshot,
+            preparation_receipt_path=preparation_receipt,
+            run_a_dir=run_a,
+            run_b_dir=run_b,
+            run_a_execution_receipt_path=receipt_a,
+            run_b_execution_receipt_path=receipt_b,
+            run_a_execution_id=ids["run-a"],
+            run_b_execution_id=ids["run-b"],
+            run_a_manifest_receipt="a" * 64,
+            run_b_manifest_receipt="a" * 64,
+            experiment_id="EXP-TEST-001",
         )
 
     def test_schema_is_closed_and_declares_preparation_and_execution_binding_fields(self) -> None:
@@ -169,18 +195,9 @@ class CaptureReplayVerdictTests(unittest.TestCase):
                     receipt_b,
                     verdict,
                 ) = self._build_verdict(Path(tmp))
-                verified = capture_replay.verify_replay_verdict(
-                    verdict,
-                    request=request,
-                    validated_request_path=snapshot,
-                    preparation_receipt_path=preparation_receipt,
-                    run_a_dir=run_a,
-                    run_b_dir=run_b,
-                    run_a_execution_receipt_path=receipt_a,
-                    run_b_execution_receipt_path=receipt_b,
-                    run_a_manifest_receipt="a" * 64,
-                    run_b_manifest_receipt="a" * 64,
-                    experiment_id="EXP-TEST-001",
+                verified = self._verify(
+                    verdict, request, snapshot, preparation_receipt,
+                    run_a, run_b, receipt_a, receipt_b,
                 )
             self.assertEqual(verified, verdict)
             self.assertEqual(verdict["replay_outcome"], "byte_identical")
@@ -196,6 +213,60 @@ class CaptureReplayVerdictTests(unittest.TestCase):
                 verdict["run_b_execution_receipt_file_sha256"],
             )
             self.assertTrue(all(verdict["bundle_file_byte_equality"].values()))
+
+    def test_swapped_or_foreign_execution_receipt_cannot_claim_replay_slot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (
+                mock.patch.object(
+                    capture_replay,
+                    "_load_verified_observation_bundle",
+                    side_effect=self._fake_bundle_loader,
+                ),
+                mock.patch.object(
+                    capture_replay,
+                    "verify_execution_receipt",
+                    side_effect=self._fake_execution_verifier,
+                ),
+                mock.patch.object(
+                    capture_replay,
+                    "verify_preparation_receipt",
+                    side_effect=self._fake_preparation_verifier,
+                ),
+            ):
+                (
+                    request,
+                    snapshot,
+                    preparation_receipt,
+                    run_a,
+                    run_b,
+                    receipt_a,
+                    receipt_b,
+                    verdict,
+                ) = self._build_verdict(root)
+                with self.assertRaisesRegex(CaptureContractError, "planned run-a replay slot"):
+                    capture_replay.verify_replay_verdict(
+                        verdict,
+                        request=request,
+                        validated_request_path=snapshot,
+                        preparation_receipt_path=preparation_receipt,
+                        run_a_dir=run_a,
+                        run_b_dir=run_b,
+                        run_a_execution_receipt_path=receipt_b,
+                        run_b_execution_receipt_path=receipt_a,
+                        run_a_execution_id="EXEC-A",
+                        run_b_execution_id="EXEC-B",
+                        run_a_manifest_receipt="a" * 64,
+                        run_b_manifest_receipt="a" * 64,
+                        experiment_id="EXP-TEST-001",
+                    )
+
+                receipt_a.write_text('{"execution_id":"OTHER-ATTEMPT-A"}\n', encoding="utf-8")
+                with self.assertRaisesRegex(CaptureContractError, "planned run-a replay slot"):
+                    self._verify(
+                        verdict, request, snapshot, preparation_receipt,
+                        run_a, run_b, receipt_a, receipt_b,
+                    )
 
     def test_verifier_rejects_edited_verdict_replaced_preparation_and_collapsed_execution_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -232,18 +303,9 @@ class CaptureReplayVerdictTests(unittest.TestCase):
                 with self.assertRaisesRegex(
                     CaptureContractError, "does not match the verified preparation"
                 ):
-                    capture_replay.verify_replay_verdict(
-                        tampered,
-                        request=request,
-                        validated_request_path=snapshot,
-                        preparation_receipt_path=preparation_receipt,
-                        run_a_dir=run_a,
-                        run_b_dir=run_b,
-                        run_a_execution_receipt_path=receipt_a,
-                        run_b_execution_receipt_path=receipt_b,
-                        run_a_manifest_receipt="a" * 64,
-                        run_b_manifest_receipt="a" * 64,
-                        experiment_id="EXP-TEST-001",
+                    self._verify(
+                        tampered, request, snapshot, preparation_receipt,
+                        run_a, run_b, receipt_a, receipt_b,
                     )
 
                 preparation_receipt.write_text(
@@ -261,18 +323,9 @@ class CaptureReplayVerdictTests(unittest.TestCase):
                 with self.assertRaisesRegex(
                     CaptureContractError, "does not match the verified preparation"
                 ):
-                    capture_replay.verify_replay_verdict(
-                        verdict,
-                        request=request,
-                        validated_request_path=snapshot,
-                        preparation_receipt_path=preparation_receipt,
-                        run_a_dir=run_a,
-                        run_b_dir=run_b,
-                        run_a_execution_receipt_path=receipt_a,
-                        run_b_execution_receipt_path=receipt_b,
-                        run_a_manifest_receipt="a" * 64,
-                        run_b_manifest_receipt="a" * 64,
-                        experiment_id="EXP-TEST-001",
+                    self._verify(
+                        verdict, request, snapshot, preparation_receipt,
+                        run_a, run_b, receipt_a, receipt_b,
                     )
 
                 collapsed = json.loads(json.dumps(verdict))
@@ -280,18 +333,9 @@ class CaptureReplayVerdictTests(unittest.TestCase):
                 with self.assertRaisesRegex(
                     CaptureContractError, "execution identities must be distinct"
                 ):
-                    capture_replay.verify_replay_verdict(
-                        collapsed,
-                        request=request,
-                        validated_request_path=snapshot,
-                        preparation_receipt_path=preparation_receipt,
-                        run_a_dir=run_a,
-                        run_b_dir=run_b,
-                        run_a_execution_receipt_path=receipt_a,
-                        run_b_execution_receipt_path=receipt_b,
-                        run_a_manifest_receipt="a" * 64,
-                        run_b_manifest_receipt="a" * 64,
-                        experiment_id="EXP-TEST-001",
+                    self._verify(
+                        collapsed, request, snapshot, preparation_receipt,
+                        run_a, run_b, receipt_a, receipt_b,
                     )
 
     def test_verifier_rejects_malformed_scalar_types_fail_closed(self) -> None:
@@ -329,6 +373,7 @@ class CaptureReplayVerdictTests(unittest.TestCase):
                 with self.assertRaisesRegex(
                     CaptureContractError, "experiment_id.*non-empty string"
                 ):
+                    ids = self._execution_ids()
                     capture_replay.verify_replay_verdict(
                         malformed_experiment,
                         request=request,
@@ -338,6 +383,8 @@ class CaptureReplayVerdictTests(unittest.TestCase):
                         run_b_dir=run_b,
                         run_a_execution_receipt_path=receipt_a,
                         run_b_execution_receipt_path=receipt_b,
+                        run_a_execution_id=ids["run-a"],
+                        run_b_execution_id=ids["run-b"],
                         run_a_manifest_receipt="a" * 64,
                         run_b_manifest_receipt="a" * 64,
                         experiment_id=7,  # type: ignore[arg-type]
@@ -346,18 +393,9 @@ class CaptureReplayVerdictTests(unittest.TestCase):
                 malformed_outcome = json.loads(json.dumps(verdict))
                 malformed_outcome["replay_outcome"] = ["byte_identical"]
                 with self.assertRaisesRegex(CaptureContractError, "replay_outcome"):
-                    capture_replay.verify_replay_verdict(
-                        malformed_outcome,
-                        request=request,
-                        validated_request_path=snapshot,
-                        preparation_receipt_path=preparation_receipt,
-                        run_a_dir=run_a,
-                        run_b_dir=run_b,
-                        run_a_execution_receipt_path=receipt_a,
-                        run_b_execution_receipt_path=receipt_b,
-                        run_a_manifest_receipt="a" * 64,
-                        run_b_manifest_receipt="a" * 64,
-                        experiment_id="EXP-TEST-001",
+                    self._verify(
+                        malformed_outcome, request, snapshot, preparation_receipt,
+                        run_a, run_b, receipt_a, receipt_b,
                     )
 
     def test_bundle_byte_divergence_is_recorded_not_tuned_away(self) -> None:
@@ -401,6 +439,8 @@ class CaptureReplayVerdictTests(unittest.TestCase):
                     run_b_dir=run_b,
                     run_a_execution_receipt_path=receipt_a,
                     run_b_execution_receipt_path=receipt_b,
+                    run_a_execution_id="EXEC-A",
+                    run_b_execution_id="EXEC-B",
                     run_a_manifest_receipt="a" * 64,
                     run_b_manifest_receipt="a" * 64,
                     experiment_id="EXP-TEST-001",
