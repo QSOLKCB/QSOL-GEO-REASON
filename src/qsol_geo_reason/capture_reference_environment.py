@@ -13,12 +13,12 @@ from typing import Any, Mapping
 
 from .canonical import sha256_json
 from .capture_common import CaptureContractError
-from .capture_package import _python_package_provenance
+from .capture_package import _authenticate_package_bytecode, _python_package_provenance
 
 
 ROOT = Path(__file__).resolve().parents[2]
 LOCK = ROOT / "constraints" / "capture-reference-py311.txt"
-REFERENCE_ENVIRONMENT_SCHEMA_VERSION = "1.2.0"
+REFERENCE_ENVIRONMENT_SCHEMA_VERSION = "1.3.0"
 REFERENCE_LANE = "capture-reference-py311-linux-x86_64-cpu"
 _BOOTSTRAP_OR_PROJECT = frozenset({"pip", "setuptools", "wheel", "qsol-geo-reason"})
 HUB_TRANSPORT_PACKAGE_IMPORTS = {
@@ -27,6 +27,30 @@ HUB_TRANSPORT_PACKAGE_IMPORTS = {
     "certifi": "certifi",
     "charset-normalizer": "charset_normalizer",
     "idna": "idna",
+}
+# These are the locked executable transitive distributions not already content-bound
+# by the canonical production manifest (torch/transformers/tokenizers/safetensors) or
+# by the dedicated Hub/transport receipts above. Their union with those existing
+# receipts covers the complete 28-distribution reference runtime closure.
+CAPTURE_TRANSITIVE_PACKAGE_IMPORTS = {
+    "attrs": "attrs",
+    "filelock": "filelock",
+    "fsspec": "fsspec",
+    "jinja2": "jinja2",
+    "jsonschema": "jsonschema",
+    "jsonschema-specifications": "jsonschema_specifications",
+    "markupsafe": "markupsafe",
+    "mpmath": "mpmath",
+    "networkx": "networkx",
+    "numpy": "numpy",
+    "packaging": "packaging",
+    "pyyaml": "yaml",
+    "referencing": "referencing",
+    "regex": "regex",
+    "rpds-py": "rpds",
+    "sympy": "sympy",
+    "tqdm": "tqdm",
+    "typing-extensions": "typing_extensions",
 }
 _RECEIPT_KEYS = frozenset(
     {
@@ -43,6 +67,7 @@ _RECEIPT_KEYS = frozenset(
         "huggingface_hub_package_file_count",
         "huggingface_hub_package_receipt_sha256",
         "hub_transport_package_provenance",
+        "capture_transitive_package_provenance",
         "environment_receipt_sha256",
     }
 )
@@ -112,8 +137,44 @@ def _canonical_machine(value: str) -> str:
     return "x86_64" if lowered in {"x86_64", "amd64"} else lowered
 
 
+def _single_module_provenance_without_import(origin: Path, where: str) -> dict[str, Any]:
+    """Content-bind a single-file module plus any executable caches without importing it."""
+    try:
+        source = origin.resolve(strict=True)
+        if not source.is_file() or source.suffix != ".py":
+            raise CaptureContractError(
+                f"{where} single-module origin is not a regular Python source file: {origin}"
+            )
+        root = source.parent
+        source_bytes = source.read_bytes()
+    except OSError as exc:
+        raise CaptureContractError(f"unable to read {where} single-module source") from exc
+
+    hashes = {source.name: hashlib.sha256(source_bytes).hexdigest()}
+    caches: set[Path] = set()
+    pycache = root / "__pycache__"
+    try:
+        if pycache.is_dir():
+            caches.update(pycache.glob(f"{source.stem}.*.pyc"))
+            caches.update(pycache.glob(f"{source.stem}.*.pyo"))
+        for suffix in (".pyc", ".pyo"):
+            candidate = source.with_suffix(suffix)
+            if candidate.is_file():
+                caches.add(candidate)
+    except OSError as exc:
+        raise CaptureContractError(
+            f"unable to inspect executable caches for {where}"
+        ) from exc
+    for cache in sorted(caches, key=lambda value: value.as_posix()):
+        _authenticate_package_bytecode(root, cache, hashes, where)
+    return {
+        "file_count": 1,
+        "receipt_sha256": sha256_json(hashes),
+    }
+
+
 def _package_provenance_without_import(import_name: str, where: str) -> dict[str, Any]:
-    """Content-bind one importable package tree without executing package code."""
+    """Content-bind one importable package/module without executing its code."""
     try:
         spec = importlib.util.find_spec(import_name)
     except (ImportError, AttributeError, ValueError) as exc:
@@ -124,6 +185,8 @@ def _package_provenance_without_import(import_name: str, where: str) -> dict[str
         raise CaptureContractError(
             f"{where} cannot locate the locked {import_name} package"
         )
+    if spec.submodule_search_locations is None:
+        return _single_module_provenance_without_import(Path(spec.origin), where)
     probe = types.SimpleNamespace(__file__=spec.origin)
     return _python_package_provenance(probe, where)
 
@@ -143,6 +206,17 @@ def _hub_transport_package_provenance() -> dict[str, dict[str, Any]]:
             f"Hugging Face Hub transport dependency {canonical}",
         )
         for canonical, import_name in sorted(HUB_TRANSPORT_PACKAGE_IMPORTS.items())
+    }
+
+
+def _capture_transitive_package_provenance() -> dict[str, dict[str, Any]]:
+    """Content-bind the locked executable transitive closure used by capture-time imports."""
+    return {
+        canonical: _package_provenance_without_import(
+            import_name,
+            f"capture transitive dependency {canonical}",
+        )
+        for canonical, import_name in sorted(CAPTURE_TRANSITIVE_PACKAGE_IMPORTS.items())
     }
 
 
@@ -175,33 +249,53 @@ def _validate_hub_package_provenance(
     return _validate_package_provenance(provenance, "Hugging Face Hub package")
 
 
-def _validate_hub_transport_package_provenance(
+def _validate_package_provenance_map(
     provenance: Mapping[str, Any],
+    expected_imports: Mapping[str, str],
+    where: str,
 ) -> dict[str, dict[str, Any]]:
     if not isinstance(provenance, Mapping):
-        raise CaptureContractError(
-            "Hugging Face Hub transport package provenance must be an object"
-        )
-    expected = set(HUB_TRANSPORT_PACKAGE_IMPORTS)
+        raise CaptureContractError(f"{where} package provenance must be an object")
+    expected = set(expected_imports)
     actual = set(provenance)
     if actual != expected:
         missing = sorted(expected - actual)
         extra = sorted(actual - expected)
         raise CaptureContractError(
-            "Hugging Face Hub transport package provenance keys are not canonical: "
+            f"{where} package provenance keys are not canonical: "
             f"missing={missing}; extra={extra}"
         )
     normalized: dict[str, dict[str, Any]] = {}
     for canonical in sorted(expected):
         count, receipt = _validate_package_provenance(
             provenance[canonical],
-            f"Hugging Face Hub transport dependency {canonical}",
+            f"{where} dependency {canonical}",
         )
         normalized[canonical] = {
             "file_count": count,
             "receipt_sha256": receipt,
         }
     return normalized
+
+
+def _validate_hub_transport_package_provenance(
+    provenance: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    return _validate_package_provenance_map(
+        provenance,
+        HUB_TRANSPORT_PACKAGE_IMPORTS,
+        "Hugging Face Hub transport",
+    )
+
+
+def _validate_capture_transitive_package_provenance(
+    provenance: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    return _validate_package_provenance_map(
+        provenance,
+        CAPTURE_TRANSITIVE_PACKAGE_IMPORTS,
+        "capture transitive",
+    )
 
 
 def _require_reference_platform(
@@ -250,6 +344,7 @@ def _build_reference_environment_receipt_from_state(
     platform_machine: str,
     hub_package_provenance: Mapping[str, Any],
     hub_transport_package_provenance: Mapping[str, Any],
+    capture_transitive_package_provenance: Mapping[str, Any],
     python_releaselevel: str = "final",
     python_serial: int = 0,
     lock_sha256: str | None = None,
@@ -267,6 +362,9 @@ def _build_reference_environment_receipt_from_state(
     )
     transport_provenance = _validate_hub_transport_package_provenance(
         hub_transport_package_provenance
+    )
+    transitive_provenance = _validate_capture_transitive_package_provenance(
+        capture_transitive_package_provenance
     )
 
     missing = sorted(set(locked) - set(installed))
@@ -322,6 +420,7 @@ def _build_reference_environment_receipt_from_state(
         "huggingface_hub_package_file_count": hub_file_count,
         "huggingface_hub_package_receipt_sha256": hub_receipt_sha256,
         "hub_transport_package_provenance": transport_provenance,
+        "capture_transitive_package_provenance": transitive_provenance,
     }
     payload["environment_receipt_sha256"] = sha256_json(payload)
     return payload
@@ -339,6 +438,7 @@ def build_reference_environment_receipt() -> dict[str, Any]:
         platform_machine=platform.machine(),
         hub_package_provenance=_huggingface_hub_package_provenance(),
         hub_transport_package_provenance=_hub_transport_package_provenance(),
+        capture_transitive_package_provenance=_capture_transitive_package_provenance(),
         python_releaselevel=version.releaselevel,
         python_serial=version.serial,
         lock_sha256=_lock_sha256(),
@@ -371,7 +471,9 @@ def verify_reference_environment_receipt(
         raise CaptureContractError("reference environment must record CPython")
     python_version = receipt["python_version"]
     if not isinstance(python_version, str) or re.fullmatch(r"3\.11\.[0-9]+", python_version) is None:
-        raise CaptureContractError("reference environment must record an exact Python 3.11 patch version")
+        raise CaptureContractError(
+            "reference environment must record an exact Python 3.11 patch version"
+        )
     if receipt["platform_system"] != "Linux" or receipt["platform_machine"] != "x86_64":
         raise CaptureContractError("reference environment platform must be Linux x86_64")
 
@@ -389,7 +491,9 @@ def verify_reference_environment_receipt(
         raise CaptureContractError("reference environment distribution_count is invalid")
     lock_sha = receipt["lock_sha256"]
     if lock_sha != _lock_sha256():
-        raise CaptureContractError("reference environment lock_sha256 does not match the checked-in lock")
+        raise CaptureContractError(
+            "reference environment lock_sha256 does not match the checked-in lock"
+        )
     _validate_hub_package_provenance(
         {
             "file_count": receipt["huggingface_hub_package_file_count"],
@@ -403,6 +507,13 @@ def verify_reference_environment_receipt(
         raise CaptureContractError(
             "reference environment Hub transport package provenance is not canonical"
         )
+    normalized_transitive = _validate_capture_transitive_package_provenance(
+        receipt["capture_transitive_package_provenance"]
+    )
+    if normalized_transitive != receipt["capture_transitive_package_provenance"]:
+        raise CaptureContractError(
+            "reference environment capture transitive package provenance is not canonical"
+        )
     observed_hash = receipt["environment_receipt_sha256"]
     if (
         not isinstance(observed_hash, str)
@@ -411,7 +522,11 @@ def verify_reference_environment_receipt(
     ):
         raise CaptureContractError("environment_receipt_sha256 must be lowercase 64-hex")
     expected_hash = sha256_json(
-        {key: value for key, value in receipt.items() if key != "environment_receipt_sha256"}
+        {
+            key: value
+            for key, value in receipt.items()
+            if key != "environment_receipt_sha256"
+        }
     )
     if observed_hash != expected_hash:
         raise CaptureContractError("reference environment receipt SHA-256 is invalid")
@@ -433,6 +548,7 @@ def verify_current_reference_environment(
 
 
 __all__ = [
+    "CAPTURE_TRANSITIVE_PACKAGE_IMPORTS",
     "HUB_TRANSPORT_PACKAGE_IMPORTS",
     "LOCK",
     "REFERENCE_ENVIRONMENT_SCHEMA_VERSION",
