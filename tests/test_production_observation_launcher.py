@@ -43,7 +43,10 @@ class ProductionObservationLauncherTests(unittest.TestCase):
                 },
             )(),
         ):
-            with self.assertRaisesRegex(RuntimeError, "python -I -S -B"):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "authenticated Git-blob qsol_first_observation bootstrap",
+            ):
                 launcher._assert_initial_launcher_boundary()
 
     def test_launcher_execve_strips_injection_and_keeps_second_interpreter_no_site(self) -> None:
