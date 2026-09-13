@@ -72,6 +72,8 @@ class ProductionObservationLauncherTests(unittest.TestCase):
         with (
             mock.patch.dict(launcher.os.environ, hostile, clear=True),
             mock.patch.object(launcher, "_assert_initial_launcher_boundary"),
+            mock.patch.object(launcher, "_assert_no_importable_native_extensions"),
+            mock.patch.object(launcher, "_assert_no_importable_python_shadows"),
             mock.patch.object(
                 launcher,
                 "_literal_site_package_paths",
