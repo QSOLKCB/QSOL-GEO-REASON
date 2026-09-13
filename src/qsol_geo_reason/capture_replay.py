@@ -141,18 +141,13 @@ def _require_equality_map(value: Any) -> dict[str, bool]:
     expected = frozenset(REPLAY_BUNDLE_FILES)
     _require_exact_keys(value, expected, "bundle_file_byte_equality")
     return {
-        name: _require_bool(
-            value[name], f"bundle_file_byte_equality.{name}"
-        )
+        name: _require_bool(value[name], f"bundle_file_byte_equality.{name}")
         for name in REPLAY_BUNDLE_FILES
     }
 
 
 def _bundle_file_receipts(directory: Path) -> dict[str, str]:
-    return {
-        name: _sha256_file(directory / name)
-        for name in REPLAY_BUNDLE_FILES
-    }
+    return {name: _sha256_file(directory / name) for name in REPLAY_BUNDLE_FILES}
 
 
 def _load_verified_observation_bundle(
@@ -183,10 +178,23 @@ def _actual_replay_state(
     run_b_dir: Path,
     run_a_execution_receipt_path: Path,
     run_b_execution_receipt_path: Path,
+    run_a_execution_id: str,
+    run_b_execution_id: str,
     run_a_manifest_receipt: str,
     run_b_manifest_receipt: str,
     experiment_id: str,
 ) -> dict[str, Any]:
+    expected_execution_id_a = _require_nonempty_string(
+        run_a_execution_id, "planned run-a execution_id"
+    )
+    expected_execution_id_b = _require_nonempty_string(
+        run_b_execution_id, "planned run-b execution_id"
+    )
+    if expected_execution_id_a == expected_execution_id_b:
+        raise CaptureContractError(
+            "planned run-a and run-b execution identities must be distinct"
+        )
+
     snapshot = _read_json(validated_request_path)
     if snapshot != request:
         raise CaptureContractError(
@@ -241,6 +249,14 @@ def _actual_replay_state(
     execution_id_b = _require_nonempty_string(
         execution_receipt_b.get("execution_id"), "run-b execution_id"
     )
+    if execution_id_a != expected_execution_id_a:
+        raise CaptureContractError(
+            "run-a execution receipt does not match the planned run-a replay slot"
+        )
+    if execution_id_b != expected_execution_id_b:
+        raise CaptureContractError(
+            "run-b execution receipt does not match the planned run-b replay slot"
+        )
     if execution_id_a == execution_id_b:
         raise CaptureContractError(
             "run-a and run-b must have distinct execution identities"
@@ -255,13 +271,11 @@ def _actual_replay_state(
         for name in REPLAY_BUNDLE_FILES
     }
     manifest_equal = manifest_a_sha == manifest_b_sha
-    trajectory_equal = (
-        trajectory_a.get("trajectory_sha256")
-        == trajectory_b.get("trajectory_sha256")
+    trajectory_equal = trajectory_a.get("trajectory_sha256") == trajectory_b.get(
+        "trajectory_sha256"
     )
-    repository_equal = (
-        manifest_a.get("repository_commit")
-        == manifest_b.get("repository_commit")
+    repository_equal = manifest_a.get("repository_commit") == manifest_b.get(
+        "repository_commit"
     )
     byte_identical = all(equality.values()) and manifest_equal
 
@@ -295,6 +309,8 @@ def build_replay_verdict(
     run_b_dir: Path,
     run_a_execution_receipt_path: Path,
     run_b_execution_receipt_path: Path,
+    run_a_execution_id: str,
+    run_b_execution_id: str,
     run_a_manifest_receipt: str,
     run_b_manifest_receipt: str,
     experiment_id: str,
@@ -309,6 +325,8 @@ def build_replay_verdict(
         run_b_dir=run_b_dir,
         run_a_execution_receipt_path=run_a_execution_receipt_path,
         run_b_execution_receipt_path=run_b_execution_receipt_path,
+        run_a_execution_id=run_a_execution_id,
+        run_b_execution_id=run_b_execution_id,
         run_a_manifest_receipt=run_a_manifest_receipt,
         run_b_manifest_receipt=run_b_manifest_receipt,
         experiment_id=experiment_id,
@@ -324,17 +342,11 @@ def build_replay_verdict(
         "validated_request_artifact_sha256": state["request_artifact_sha256"],
         "preparation_repository_commit": state["preparation_repository_commit"],
         "preparation_receipt_sha256": state["preparation_receipt_sha256"],
-        "preparation_receipt_file_sha256": state[
-            "preparation_receipt_file_sha256"
-        ],
+        "preparation_receipt_file_sha256": state["preparation_receipt_file_sha256"],
         "run_a_execution_id": state["execution_id_a"],
         "run_b_execution_id": state["execution_id_b"],
-        "run_a_execution_receipt_file_sha256": state[
-            "execution_receipt_file_sha_a"
-        ],
-        "run_b_execution_receipt_file_sha256": state[
-            "execution_receipt_file_sha_b"
-        ],
+        "run_a_execution_receipt_file_sha256": state["execution_receipt_file_sha_a"],
+        "run_b_execution_receipt_file_sha256": state["execution_receipt_file_sha_b"],
         "run_a_manifest_receipt_sha256": state["manifest_a_sha256"],
         "run_b_manifest_receipt_sha256": state["manifest_b_sha256"],
         "run_a_bundle_file_sha256": state["receipts_a"],
@@ -355,6 +367,8 @@ def build_replay_verdict(
         run_b_dir=run_b_dir,
         run_a_execution_receipt_path=run_a_execution_receipt_path,
         run_b_execution_receipt_path=run_b_execution_receipt_path,
+        run_a_execution_id=run_a_execution_id,
+        run_b_execution_id=run_b_execution_id,
         run_a_manifest_receipt=run_a_manifest_receipt,
         run_b_manifest_receipt=run_b_manifest_receipt,
         experiment_id=experiment_id,
@@ -372,6 +386,8 @@ def verify_replay_verdict(
     run_b_dir: Path,
     run_a_execution_receipt_path: Path,
     run_b_execution_receipt_path: Path,
+    run_a_execution_id: str,
+    run_b_execution_id: str,
     run_a_manifest_receipt: str,
     run_b_manifest_receipt: str,
     experiment_id: str,
@@ -393,9 +409,7 @@ def verify_replay_verdict(
     if observed_experiment_id != expected_experiment_id:
         raise CaptureContractError("replay verdict experiment_id is invalid")
     if verdict["evidence_class"] != "OBSERVATION":
-        raise CaptureContractError(
-            "replay verdict evidence_class must be OBSERVATION"
-        )
+        raise CaptureContractError("replay verdict evidence_class must be OBSERVATION")
     if verdict["replication_status"] != REPLAY_REPLICATION_STATUS:
         raise CaptureContractError(
             "replay verdict replication_status must be not_attempted"
@@ -460,9 +474,7 @@ def verify_replay_verdict(
     )
     outcome = verdict["replay_outcome"]
     if not isinstance(outcome, str) or outcome not in REPLAY_INTERPRETATIONS:
-        raise CaptureContractError(
-            "replay_outcome must be byte_identical or diverged"
-        )
+        raise CaptureContractError("replay_outcome must be byte_identical or diverged")
     if verdict["interpretation"] != REPLAY_INTERPRETATIONS[outcome]:
         raise CaptureContractError(
             "replay verdict interpretation does not match replay_outcome"
@@ -476,6 +488,8 @@ def verify_replay_verdict(
         run_b_dir=run_b_dir,
         run_a_execution_receipt_path=run_a_execution_receipt_path,
         run_b_execution_receipt_path=run_b_execution_receipt_path,
+        run_a_execution_id=run_a_execution_id,
+        run_b_execution_id=run_b_execution_id,
         run_a_manifest_receipt=run_a_manifest_receipt,
         run_b_manifest_receipt=run_b_manifest_receipt,
         experiment_id=experiment_id,
@@ -485,17 +499,11 @@ def verify_replay_verdict(
         "validated_request_artifact_sha256": state["request_artifact_sha256"],
         "preparation_repository_commit": state["preparation_repository_commit"],
         "preparation_receipt_sha256": state["preparation_receipt_sha256"],
-        "preparation_receipt_file_sha256": state[
-            "preparation_receipt_file_sha256"
-        ],
+        "preparation_receipt_file_sha256": state["preparation_receipt_file_sha256"],
         "run_a_execution_id": state["execution_id_a"],
         "run_b_execution_id": state["execution_id_b"],
-        "run_a_execution_receipt_file_sha256": state[
-            "execution_receipt_file_sha_a"
-        ],
-        "run_b_execution_receipt_file_sha256": state[
-            "execution_receipt_file_sha_b"
-        ],
+        "run_a_execution_receipt_file_sha256": state["execution_receipt_file_sha_a"],
+        "run_b_execution_receipt_file_sha256": state["execution_receipt_file_sha_b"],
         "run_a_manifest_receipt_sha256": state["manifest_a_sha256"],
         "run_b_manifest_receipt_sha256": state["manifest_b_sha256"],
         "run_a_bundle_file_sha256": state["receipts_a"],
