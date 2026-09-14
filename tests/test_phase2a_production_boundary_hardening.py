@@ -10,7 +10,7 @@ from unittest import mock
 
 from qsol_geo_reason import first_production_observation as TOOL
 from qsol_geo_reason.capture_common import CaptureContractError
-from qsol_geo_reason import capture_hub_prepare_worker
+from qsol_geo_reason import capture_hub_prepare_worker, no_site_subprocess
 from reference_environment_fixture import (
     hub_transport_package_provenance,
     reference_environment_receipt,
@@ -27,7 +27,21 @@ class Phase2AProductionBoundaryHardeningTests(unittest.TestCase):
             "hub_transport_package_provenance": hub_transport_package_provenance(),
         }
 
-    def test_isolated_hub_preparation_uses_no_site_child_sanitized_environment_and_returns_package_receipts(self) -> None:
+    def _authenticated_source_patches(self):
+        return (
+            mock.patch.object(
+                no_site_subprocess,
+                "_AUTHENTICATED_SOURCE_REVISION",
+                "a" * 40,
+            ),
+            mock.patch.object(
+                no_site_subprocess,
+                "_AUTHENTICATED_SOURCE_MANIFEST",
+                {"__init__.py": "b" * 64},
+            ),
+        )
+
+    def test_isolated_hub_preparation_uses_authenticated_no_site_child_sanitized_environment_and_returns_package_receipts(self) -> None:
         seen: dict[str, object] = {}
         evidence = self._worker_evidence()
 
@@ -51,16 +65,33 @@ class Phase2AProductionBoundaryHardeningTests(unittest.TestCase):
             "HF_ENDPOINT": "https://mirror.invalid",
             "HF_HUB_OFFLINE": "1",
         }
+        revision_patch, manifest_patch = self._authenticated_source_patches()
         with (
             mock.patch.object(TOOL.subprocess, "run", side_effect=fake_run),
             mock.patch.dict(TOOL.os.environ, hostile, clear=False),
+            revision_patch,
+            manifest_patch,
         ):
             observed = TOOL.prepare_hub_evidence({"frozen": "request"})
 
         self.assertEqual(observed, evidence)
         command = seen["command"]
         self.assertEqual(command[:4], [sys.executable, "-I", "-S", "-B"])
-        self.assertIn("capture_hub_prepare_worker", command[5])
+        bootstrap = command[5]
+        self.assertIn("capture_hub_prepare_worker", bootstrap)
+        self.assertIn("source_manifest=json.loads(sys.argv[3])", bootstrap)
+        self.assertIn("sourcebad=sorted", bootstrap)
+        self.assertLess(
+            bootstrap.index("sourcebad=sorted"),
+            bootstrap.index("sys.path.insert(0,src)"),
+        )
+        self.assertLess(
+            bootstrap.index("sys.path.insert(0,src)"),
+            bootstrap.index(
+                "from qsol_geo_reason.capture_hub_prepare_worker import main"
+            ),
+        )
+        self.assertIn("a" * 40, command)
         environment = seen["environment"]
         for key in hostile:
             self.assertNotIn(key, environment)
@@ -76,6 +107,7 @@ class Phase2AProductionBoundaryHardeningTests(unittest.TestCase):
                 stderr="",
             )
 
+        revision_patch, manifest_patch = self._authenticated_source_patches()
         with (
             mock.patch.object(TOOL.subprocess, "run", side_effect=fake_run),
             mock.patch.object(
@@ -83,6 +115,8 @@ class Phase2AProductionBoundaryHardeningTests(unittest.TestCase):
                 "verify_current_reference_environment",
                 return_value=reference_environment_receipt(),
             ),
+            revision_patch,
+            manifest_patch,
         ):
             receipts = TOOL.prepare_tree_receipts({"frozen": "request"})
         self.assertEqual(
@@ -107,6 +141,7 @@ class Phase2AProductionBoundaryHardeningTests(unittest.TestCase):
                 stderr="",
             )
 
+        revision_patch, manifest_patch = self._authenticated_source_patches()
         with (
             mock.patch.object(TOOL.subprocess, "run", side_effect=fake_run),
             mock.patch.object(
@@ -114,6 +149,8 @@ class Phase2AProductionBoundaryHardeningTests(unittest.TestCase):
                 "verify_current_reference_environment",
                 return_value=reference_environment_receipt(),
             ),
+            revision_patch,
+            manifest_patch,
         ):
             with self.assertRaisesRegex(
                 CaptureContractError,
