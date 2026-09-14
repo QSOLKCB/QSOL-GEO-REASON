@@ -12,7 +12,6 @@ import os
 import stat
 import subprocess
 import sys
-import sysconfig
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -22,6 +21,7 @@ from .capture_reference_environment import (
     _validate_hub_transport_package_provenance,
     verify_current_reference_environment,
 )
+from .no_site_subprocess import isolated_package_command
 from .provenance import SourceIdentityError
 from .runner_provenance import authenticate_tracked_tool_against_revision
 
@@ -53,15 +53,6 @@ _HUB_PACKAGE_FIELDS = (
 )
 _HUB_TRANSPORT_FIELD = "hub_transport_package_provenance"
 _HUB_EVIDENCE_FIELDS = (*_core.TREE_FIELDS, *_HUB_PACKAGE_FIELDS, _HUB_TRANSPORT_FIELD)
-_HUB_BOOTSTRAP = (
-    "import sys;"
-    "src=sys.argv[1];"
-    "paths=sys.argv[2:];"
-    "sys.path.insert(0,src);"
-    "[sys.path.append(p) for p in paths if p not in sys.path];"
-    "from qsol_geo_reason.capture_hub_prepare_worker import main;"
-    "raise SystemExit(main())"
-)
 
 
 def _trusted_system_path() -> str:
@@ -98,49 +89,12 @@ def _hub_prepare_environment() -> dict[str, str]:
     return environment
 
 
-def _literal_site_package_paths() -> list[str]:
-    """Locate interpreter package directories without executing site/.pth startup code."""
-    paths: list[str] = []
-    executable = Path(sys.executable)
-    venv_root = executable.parent.parent
-    if (venv_root / "pyvenv.cfg").is_file():
-        if os.name == "nt":
-            candidates = [venv_root / "Lib" / "site-packages"]
-        else:
-            version = f"python{sys.version_info.major}.{sys.version_info.minor}"
-            candidates = [
-                venv_root / "lib" / version / "site-packages",
-                venv_root / "lib64" / version / "site-packages",
-            ]
-    else:
-        candidates = []
-        for key in ("purelib", "platlib"):
-            value = sysconfig.get_paths().get(key)
-            if isinstance(value, str) and value.strip():
-                candidates.append(Path(value))
-    for candidate in candidates:
-        resolved = candidate.resolve(strict=False)
-        if resolved.is_dir() and str(resolved) not in paths:
-            paths.append(str(resolved))
-    if not paths:
-        raise CaptureContractError(
-            "unable to locate literal site-package directories for isolated Hub preparation"
-        )
-    return paths
-
-
 def _isolated_prepare_hub_evidence(request: Mapping[str, Any]) -> dict[str, Any]:
-    """Perform online Hub work in a fresh -I -S child and return content-bound evidence."""
-    command = [
-        sys.executable,
-        "-I",
-        "-S",
-        "-B",
-        "-c",
-        _HUB_BOOTSTRAP,
-        str((_core.ROOT / "src").resolve()),
-        *_literal_site_package_paths(),
-    ]
+    """Perform online Hub work only after child-side tracked-source authentication."""
+    command = isolated_package_command(
+        "qsol_geo_reason.capture_hub_prepare_worker",
+        [],
+    )
     completed = subprocess.run(
         command,
         cwd=_core.ROOT,
