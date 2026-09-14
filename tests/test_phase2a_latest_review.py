@@ -47,8 +47,8 @@ class Phase2ALatestReviewTests(unittest.TestCase):
         self.assertIn("_QSOL_AUTHENTICATED_LAUNCHER_SHA256", document)
         self.assertIn("cat-file", document)
         self.assertIn('exec(compile(src,str(path),"exec"),ns,ns)', document)
-        self.assertIn("qsol_first_observation prepare", document)
-        self.assertIn("qsol_first_observation observe", document)
+        self.assertIn("\\qsol_first_observation prepare", document)
+        self.assertIn("\\qsol_first_observation observe", document)
         self.assertNotIn(
             "python -I -S -B tools/run_first_production_observation.py prepare",
             document,
@@ -58,11 +58,13 @@ class Phase2ALatestReviewTests(unittest.TestCase):
             document,
         )
 
-    def test_readme_routes_production_commands_through_authenticated_bootstrap(self) -> None:
+    def test_readme_routes_production_commands_through_alias_suppressed_bootstrap(self) -> None:
         document = README.read_text(encoding="utf-8")
         self.assertIn("authenticated Git-blob", document)
-        self.assertIn("qsol_first_observation prepare", document)
-        self.assertIn("qsol_first_observation observe", document)
+        self.assertIn("\\qsol_first_observation prepare", document)
+        self.assertIn("\\qsol_first_observation observe", document)
+        self.assertNotIn("\nqsol_first_observation prepare", document)
+        self.assertNotIn("\nqsol_first_observation observe", document)
         self.assertNotIn(
             "python -I -S -B tools/run_first_production_observation.py prepare",
             document,
