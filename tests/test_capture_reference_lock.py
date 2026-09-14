@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import unittest
 from pathlib import Path
@@ -26,35 +27,39 @@ def _load_verifier():
     return module
 
 
-def _reference_platform_patches(verifier):
-    return (
-        mock.patch.object(verifier, "_current_python_version", return_value=(3, 11, 16)),
-        mock.patch.object(verifier, "_current_python_releaselevel", return_value="final"),
-        mock.patch.object(verifier, "_current_python_serial", return_value=0),
-        mock.patch.object(verifier, "_current_python_implementation", return_value="CPython"),
-        mock.patch.object(verifier, "_current_platform_system", return_value="Linux"),
-        mock.patch.object(verifier, "_current_platform_machine", return_value="x86_64"),
-        mock.patch.object(
-            verifier,
-            "_current_hub_package_provenance",
-            return_value=hub_package_provenance(),
-        ),
-        mock.patch.object(
-            verifier,
-            "_current_hub_transport_package_provenance",
-            return_value=hub_transport_package_provenance(),
-        ),
-        mock.patch.object(
-            verifier,
-            "_current_capture_direct_package_provenance",
-            return_value=capture_direct_package_provenance(),
-        ),
-        mock.patch.object(
-            verifier,
-            "_current_capture_transitive_package_provenance",
-            return_value=capture_transitive_package_provenance(),
-        ),
-    )
+def _enter_reference_platform(
+    stack: contextlib.ExitStack,
+    verifier,
+    *,
+    python_version=(3, 11, 16),
+    releaselevel="final",
+    serial=0,
+    transport=None,
+    direct=None,
+    transitive=None,
+) -> None:
+    stack.enter_context(mock.patch.object(verifier, "_current_python_version", return_value=python_version))
+    stack.enter_context(mock.patch.object(verifier, "_current_python_releaselevel", return_value=releaselevel))
+    stack.enter_context(mock.patch.object(verifier, "_current_python_serial", return_value=serial))
+    stack.enter_context(mock.patch.object(verifier, "_current_python_implementation", return_value="CPython"))
+    stack.enter_context(mock.patch.object(verifier, "_current_platform_system", return_value="Linux"))
+    stack.enter_context(mock.patch.object(verifier, "_current_platform_machine", return_value="x86_64"))
+    stack.enter_context(mock.patch.object(verifier, "_current_hub_package_provenance", return_value=hub_package_provenance()))
+    stack.enter_context(mock.patch.object(
+        verifier,
+        "_current_hub_transport_package_provenance",
+        return_value=transport if transport is not None else hub_transport_package_provenance(),
+    ))
+    stack.enter_context(mock.patch.object(
+        verifier,
+        "_current_capture_direct_package_provenance",
+        return_value=direct if direct is not None else capture_direct_package_provenance(),
+    ))
+    stack.enter_context(mock.patch.object(
+        verifier,
+        "_current_capture_transitive_package_provenance",
+        return_value=transitive if transitive is not None else capture_transitive_package_provenance(),
+    ))
 
 
 class CaptureReferenceLockTests(unittest.TestCase):
@@ -86,72 +91,51 @@ class CaptureReferenceLockTests(unittest.TestCase):
         actual = dict(locked)
         actual["requests"] = ("requests", "0.0.0")
         actual["surprise-package"] = ("surprise-package", "1.0.0")
-        patches = _reference_platform_patches(verifier)
-        with (
-            mock.patch.object(verifier, "_installed_runtime_versions", return_value=actual),
-            *patches,
-        ):
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(verifier, "_installed_runtime_versions", return_value=actual))
+            _enter_reference_platform(stack, verifier)
             with self.assertRaisesRegex(RuntimeError, "unexpected=.*surprise-package"):
                 verifier.verify_reference_environment()
 
     def test_verifier_rejects_non_python311_even_with_exact_distribution_lock(self) -> None:
         verifier = _load_verifier()
         locked = verifier._locked_versions()
-        patches = _reference_platform_patches(verifier)
-        with (
-            mock.patch.object(verifier, "_installed_runtime_versions", return_value=dict(locked)),
-            mock.patch.object(verifier, "_current_python_version", return_value=(3, 12, 9)),
-            *patches[1:],
-        ):
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(verifier, "_installed_runtime_versions", return_value=dict(locked)))
+            _enter_reference_platform(stack, verifier, python_version=(3, 12, 9))
             with self.assertRaisesRegex(RuntimeError, "requires Python 3.11"):
                 verifier.verify_reference_environment()
 
     def test_verifier_rejects_prerelease_python311_even_with_exact_lock(self) -> None:
         verifier = _load_verifier()
         locked = verifier._locked_versions()
-        patches = _reference_platform_patches(verifier)
-        with (
-            mock.patch.object(verifier, "_installed_runtime_versions", return_value=dict(locked)),
-            patches[0],
-            mock.patch.object(verifier, "_current_python_releaselevel", return_value="candidate"),
-            mock.patch.object(verifier, "_current_python_serial", return_value=1),
-            *patches[3:],
-        ):
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(verifier, "_installed_runtime_versions", return_value=dict(locked)))
+            _enter_reference_platform(stack, verifier, releaselevel="candidate", serial=1)
             with self.assertRaisesRegex(RuntimeError, "requires a final CPython release"):
                 verifier.verify_reference_environment()
 
     def test_reference_receipt_is_self_hashed_complete_and_content_binds_capture_closure(self) -> None:
         verifier = _load_verifier()
         locked = verifier._locked_versions()
-        patches = _reference_platform_patches(verifier)
-        with (
-            mock.patch.object(verifier, "_installed_runtime_versions", return_value=dict(locked)),
-            *patches,
-        ):
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(verifier, "_installed_runtime_versions", return_value=dict(locked)))
+            _enter_reference_platform(stack, verifier)
             receipt = verifier.verify_reference_environment()
         self.assertEqual(receipt["distribution_count"], 28)
         self.assertEqual(receipt["python_version"], "3.11.16")
         self.assertEqual(receipt["platform_machine"], "x86_64")
         self.assertEqual(receipt["huggingface_hub_package_file_count"], 137)
         self.assertEqual(receipt["huggingface_hub_package_receipt_sha256"], "7" * 64)
-        self.assertEqual(
-            receipt["hub_transport_package_provenance"],
-            hub_transport_package_provenance(),
-        )
+        self.assertEqual(receipt["hub_transport_package_provenance"], hub_transport_package_provenance())
         for required in ("filelock", "fsspec", "packaging", "pyyaml", "tqdm", "typing-extensions"):
             self.assertIn(required, receipt["hub_transport_package_provenance"])
-        self.assertEqual(
-            receipt["capture_direct_package_provenance"],
-            capture_direct_package_provenance(),
-        )
+        self.assertEqual(receipt["capture_direct_package_provenance"], capture_direct_package_provenance())
         self.assertEqual(
             set(receipt["capture_direct_package_provenance"]),
             {"torch", "transformers", "tokenizers", "safetensors"},
         )
-        self.assertEqual(
-            receipt["capture_transitive_package_provenance"],
-            capture_transitive_package_provenance(),
-        )
+        self.assertEqual(receipt["capture_transitive_package_provenance"], capture_transitive_package_provenance())
         for required in ("numpy", "regex", "pyyaml", "sympy", "typing-extensions"):
             self.assertIn(required, receipt["capture_transitive_package_provenance"])
         self.assertRegex(receipt["environment_receipt_sha256"], r"^[0-9a-f]{64}$")
@@ -162,17 +146,9 @@ class CaptureReferenceLockTests(unittest.TestCase):
         locked = verifier._locked_versions()
         transport = hub_transport_package_provenance()
         transport.pop("filelock")
-        patches = _reference_platform_patches(verifier)
-        with (
-            mock.patch.object(verifier, "_installed_runtime_versions", return_value=dict(locked)),
-            *patches[:7],
-            mock.patch.object(
-                verifier,
-                "_current_hub_transport_package_provenance",
-                return_value=transport,
-            ),
-            *patches[8:],
-        ):
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(verifier, "_installed_runtime_versions", return_value=dict(locked)))
+            _enter_reference_platform(stack, verifier, transport=transport)
             with self.assertRaisesRegex(RuntimeError, "execution package provenance keys"):
                 verifier.verify_reference_environment()
 
@@ -181,17 +157,9 @@ class CaptureReferenceLockTests(unittest.TestCase):
         locked = verifier._locked_versions()
         direct = capture_direct_package_provenance()
         direct.pop("torch")
-        patches = _reference_platform_patches(verifier)
-        with (
-            mock.patch.object(verifier, "_installed_runtime_versions", return_value=dict(locked)),
-            *patches[:8],
-            mock.patch.object(
-                verifier,
-                "_current_capture_direct_package_provenance",
-                return_value=direct,
-            ),
-            patches[9],
-        ):
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(verifier, "_installed_runtime_versions", return_value=dict(locked)))
+            _enter_reference_platform(stack, verifier, direct=direct)
             with self.assertRaisesRegex(RuntimeError, "capture direct package provenance keys"):
                 verifier.verify_reference_environment()
 
@@ -200,16 +168,9 @@ class CaptureReferenceLockTests(unittest.TestCase):
         locked = verifier._locked_versions()
         transitive = capture_transitive_package_provenance()
         transitive.pop("numpy")
-        patches = _reference_platform_patches(verifier)
-        with (
-            mock.patch.object(verifier, "_installed_runtime_versions", return_value=dict(locked)),
-            *patches[:9],
-            mock.patch.object(
-                verifier,
-                "_current_capture_transitive_package_provenance",
-                return_value=transitive,
-            ),
-        ):
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(verifier, "_installed_runtime_versions", return_value=dict(locked)))
+            _enter_reference_platform(stack, verifier, transitive=transitive)
             with self.assertRaisesRegex(RuntimeError, "capture transitive package provenance keys"):
                 verifier.verify_reference_environment()
 
