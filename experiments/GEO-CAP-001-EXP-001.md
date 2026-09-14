@@ -80,36 +80,36 @@ The standalone verifier is a preflight, not the provenance authority. `prepare` 
 
 The working-tree `tools/run_first_production_observation.py` file is **not itself a trust root**. Do not execute it directly. A file hidden with Git `skip-worktree` or `assume-unchanged` could otherwise run top-level code before it had a chance to authenticate itself.
 
-Define the following Bash function once from the repository root. **Before starting any Python process**, the function enters a subshell and uses only Bash built-ins to clear every environment variable whose name begins `LD_`, `DYLD_`, `_RLD_`, or `LDR_`, plus `GLIBC_TUNABLES`, `LIBPATH`, and `SHLIB_PATH`. Every `unset` is checked. If Bash refuses to clear a loader-control name—for example because an exported `LD_PRELOAD` was marked `readonly`—the subshell exits with status 126. After the requested unsets, the function re-enumerates the loader-variable families and explicitly rechecks the named controls; if any loader variable remains, it aborts before Python starts. This mirrors the launcher's native-loader scrub while avoiding `/usr/bin/env` or any other dynamically loaded helper that could itself consume `LD_PRELOAD`. After the verified scrub, the function resolves `python` with Bash's path-only lookup, which ignores shell functions, and requires the result to be an absolute regular executable path. It then invokes that resolved path through the `command` builtin so a same-named shell function cannot intercept the bootstrap. Only then does the inline `-I -S -B -c` program run. That program is independent of the checkout: it resolves fixed system Git, requires a root-owned/non-group-or-world-writable executable on POSIX, hashes that executable before and after use, invokes Git with a minimal redirection-free environment, resolves one immutable `HEAD^{commit}` **before** reading the launcher, reads `<that-commit>:tools/run_first_production_observation.py`, computes the SHA-256 of those exact committed launcher bytes, and injects both the resolved commit and launcher digest into the committed launcher namespace. The working-tree launcher bytes are never loaded by this first boundary, and a later movement of `HEAD` cannot change the revision attributed to the already-running launcher.
+Define the following Bash function once from the repository root. **Before starting any Python process**, the function enters a subshell and uses only Bash built-ins to clear every environment variable whose name begins `LD_`, `DYLD_`, `_RLD_`, or `LDR_`, plus `GLIBC_TUNABLES`, `LIBPATH`, and `SHLIB_PATH`. Every `unset` is checked. If Bash refuses to clear a loader-control name—for example because an exported `LD_PRELOAD` was marked `readonly`—the subshell exits with status 126. After the requested unsets, the function re-enumerates the loader-variable families and explicitly rechecks the named controls; if any loader variable remains, it aborts before Python starts. This mirrors the launcher's native-loader scrub while avoiding `/usr/bin/env` or any other dynamically loaded helper that could itself consume `LD_PRELOAD`. Because Bash expands aliases while reading an interactive function definition, every command-position builtin in this wrapper is backslash-escaped at every command position (`\local`, `\unset`, `\printf`, `\exit`, and `\command`). Bash removes that quoting before builtin lookup, but alias substitution cannot rewrite those words while the function is being defined. After the verified scrub, the function resolves `python` with Bash's path-only lookup, which ignores shell functions, and requires the result to be an absolute regular executable path. It then invokes that resolved path through the escaped `command` builtin so neither a same-named shell function nor a definition-time `command` alias can intercept the bootstrap. Only then does the inline `-I -S -B -c` program run. That program is independent of the checkout: it resolves fixed system Git, requires a root-owned/non-group-or-world-writable executable on POSIX, hashes that executable before and after use, invokes Git with a minimal redirection-free environment, resolves one immutable `HEAD^{commit}` **before** reading the launcher, reads `<that-commit>:tools/run_first_production_observation.py`, computes the SHA-256 of those exact committed launcher bytes, and injects both the resolved commit and launcher digest into the committed launcher namespace. The working-tree launcher bytes are never loaded by this first boundary, and a later movement of `HEAD` cannot change the revision attributed to the already-running launcher.
 
 ```bash
 QSOL_FIRST_OBSERVATION_BOOTSTRAP='import hashlib,os,pathlib,stat,subprocess,sys;root=pathlib.Path.cwd().resolve();path=root/"tools"/"run_first_production_observation.py";git=pathlib.Path("/usr/bin/git").resolve(strict=True);info=git.stat();(not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or bool(info.st_mode & (stat.S_IWGRP|stat.S_IWOTH))) and (_ for _ in ()).throw(RuntimeError("untrusted system Git executable"));before=hashlib.sha256(git.read_bytes()).hexdigest();env={"PATH":"/usr/bin:/bin","LC_ALL":"C","GIT_NO_REPLACE_OBJECTS":"1","GIT_CONFIG_NOSYSTEM":"1","GIT_CONFIG_GLOBAL":os.devnull,"GIT_OPTIONAL_LOCKS":"0","GIT_TERMINAL_PROMPT":"0"};commit=subprocess.run([str(git),"-C",str(root),"rev-parse","--verify","HEAD^{commit}"],env=env,check=True,capture_output=True).stdout.decode().strip();(len(commit)!=40 or any(c not in "0123456789abcdef" for c in commit)) and (_ for _ in ()).throw(RuntimeError("invalid authenticated launcher commit"));src=subprocess.run([str(git),"-C",str(root),"cat-file","blob",commit+":tools/run_first_production_observation.py"],env=env,check=True,capture_output=True).stdout;launcher_sha=hashlib.sha256(src).hexdigest();hashlib.sha256(git.read_bytes()).hexdigest()!=before and (_ for _ in ()).throw(RuntimeError("trusted Git executable changed during launcher authentication"));ns={"__name__":"__main__","__file__":str(path),"__package__":None,"_QSOL_AUTHENTICATED_BOOTSTRAP_REVISION":commit,"_QSOL_AUTHENTICATED_LAUNCHER_SHA256":launcher_sha};sys.argv=[str(path),*sys.argv[1:]];exec(compile(src,str(path),"exec"),ns,ns)'
 qsol_first_observation() {
   (
-    local qsol_loader_var qsol_python
+    \local qsol_loader_var qsol_python
     for qsol_loader_var in ${!LD_@} ${!DYLD_@} ${!_RLD_@} ${!LDR_@} \
       GLIBC_TUNABLES LIBPATH SHLIB_PATH; do
-      if [[ -v "$qsol_loader_var" ]] && ! unset "$qsol_loader_var" 2>/dev/null; then
-        printf 'qsol_first_observation: refusing to start Python; cannot clear loader variable %s\n' "$qsol_loader_var" >&2
-        exit 126
+      if [[ -v "$qsol_loader_var" ]] && ! \unset "$qsol_loader_var" 2>/dev/null; then
+        \printf 'qsol_first_observation: refusing to start Python; cannot clear loader variable %s\n' "$qsol_loader_var" >&2
+        \exit 126
       fi
     done
     for qsol_loader_var in ${!LD_@} ${!DYLD_@} ${!_RLD_@} ${!LDR_@}; do
-      printf 'qsol_first_observation: refusing to start Python; loader variable survived scrub: %s\n' "$qsol_loader_var" >&2
-      exit 126
+      \printf 'qsol_first_observation: refusing to start Python; loader variable survived scrub: %s\n' "$qsol_loader_var" >&2
+      \exit 126
     done
     for qsol_loader_var in GLIBC_TUNABLES LIBPATH SHLIB_PATH; do
       if [[ -v "$qsol_loader_var" ]]; then
-        printf 'qsol_first_observation: refusing to start Python; loader variable survived scrub: %s\n' "$qsol_loader_var" >&2
-        exit 126
+        \printf 'qsol_first_observation: refusing to start Python; loader variable survived scrub: %s\n' "$qsol_loader_var" >&2
+        \exit 126
       fi
     done
-    qsol_python="$(command type -P python 2>/dev/null)" || qsol_python=
+    qsol_python="$(\command type -P python 2>/dev/null)" || qsol_python=
     if [[ "$qsol_python" != /* || ! -f "$qsol_python" || ! -x "$qsol_python" ]]; then
-      printf 'qsol_first_observation: refusing to start Python; cannot resolve an absolute executable\n' >&2
-      exit 126
+      \printf 'qsol_first_observation: refusing to start Python; cannot resolve an absolute executable\n' >&2
+      \exit 126
     fi
-    command "$qsol_python" -I -S -B -c "$QSOL_FIRST_OBSERVATION_BOOTSTRAP" "$@"
+    \command "$qsol_python" -I -S -B -c "$QSOL_FIRST_OBSERVATION_BOOTSTRAP" "$@"
   )
 }
 ```
