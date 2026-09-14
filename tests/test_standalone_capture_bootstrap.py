@@ -52,6 +52,7 @@ class StandaloneCaptureBootstrapTests(unittest.TestCase):
     def test_payload_authenticates_before_any_package_import(self) -> None:
         source = PYTHON_PAYLOAD.read_text(encoding="utf-8")
         self.assertIn('_BOOTSTRAP_GIT_PATH = "scripts/qsol-geo-capture"', source)
+        self.assertIn('_STAGE0_MODULE_NAME = "qsol_standalone_authenticated_payload"', source)
         self.assertIn('"HEAD^{commit}"', source)
         self.assertIn('"ls-tree"', source)
         self.assertIn('_PACKAGE_GIT_ROOT = "src/qsol_geo_reason"', source)
@@ -76,6 +77,18 @@ class StandaloneCaptureBootstrapTests(unittest.TestCase):
         before_child_bootstrap = source[: source.index("def _authenticated_capture_bootstrap")]
         self.assertNotIn("from qsol_geo_reason", before_child_bootstrap)
         self.assertNotIn("import qsol_geo_reason", before_child_bootstrap)
+
+    def test_direct_python_payload_execution_fails_closed(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, str(PYTHON_PAYLOAD), "--help"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("internal authenticated payload", completed.stderr)
+        self.assertNotIn("usage:", completed.stdout.lower())
 
     def test_package_local_native_shadow_is_rejected_before_import(self) -> None:
         namespace = runpy.run_path(
