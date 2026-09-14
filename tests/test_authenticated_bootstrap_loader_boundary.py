@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -34,10 +35,26 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
         self.assertIn("loader variable survived scrub", function)
         self.assertNotIn("env -u", function)
 
-        python_start = function.index('python -I -S -B -c "$QSOL_FIRST_OBSERVATION_BOOTSTRAP"')
+        self.assertIn(
+            'qsol_python="$(command type -P python 2>/dev/null)" || qsol_python=',
+            function,
+        )
+        self.assertIn('"$qsol_python" != /*', function)
+        self.assertIn('! -f "$qsol_python"', function)
+        self.assertIn('! -x "$qsol_python"', function)
+        self.assertIn("cannot resolve an absolute executable", function)
+        self.assertNotIn(
+            '\n    python -I -S -B -c "$QSOL_FIRST_OBSERVATION_BOOTSTRAP"',
+            function,
+        )
+
+        python_start = function.index(
+            'command "$qsol_python" -I -S -B -c "$QSOL_FIRST_OBSERVATION_BOOTSTRAP"'
+        )
         self.assertLess(function.index("${!LD_@}"), python_start)
         self.assertLess(function.index("! unset"), python_start)
         self.assertLess(function.index("loader variable survived scrub"), python_start)
+        self.assertLess(function.index("command type -P python"), python_start)
 
         self.assertIn(
             "Before starting any Python process",
@@ -49,6 +66,10 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
         )
         self.assertIn(
             "Every `unset` is checked",
+            text,
+        )
+        self.assertIn(
+            "path-only lookup, which ignores shell functions",
             text,
         )
 
@@ -78,6 +99,41 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 126, completed.stderr)
             self.assertFalse(marker.exists(), "Python tripwire was reached after scrub failure")
             self.assertIn("cannot clear loader variable LD_PRELOAD", completed.stderr)
+
+    def test_python_shell_function_cannot_intercept_bootstrap(self) -> None:
+        function_body = _documented_bootstrap_function()
+        function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            python_path = tmp_path / "python"
+            python_path.symlink_to(Path(sys.executable).resolve())
+            marker = tmp_path / "python-function-called"
+            marker_shell = shlex.quote(str(marker))
+            path_shell = shlex.quote(str(tmp_path))
+            script = (
+                function_definition
+                + "\nPATH="
+                + path_shell
+                + "\n"
+                + "python() { printf 'intercepted\\n' > "
+                + marker_shell
+                + "; return 0; }\n"
+                + "QSOL_FIRST_OBSERVATION_BOOTSTRAP='import sys; sys.exit(23)'\n"
+                + "qsol_first_observation\n"
+            )
+            completed = subprocess.run(
+                ["/bin/bash", "-c", script],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 23, completed.stderr)
+            self.assertFalse(
+                marker.exists(),
+                "python shell function intercepted the authenticated bootstrap",
+            )
 
 
 if __name__ == "__main__":
