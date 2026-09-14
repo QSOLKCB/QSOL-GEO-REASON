@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
 """Installed authenticated bootstrap for the standalone GEO-CAP-001 capture CLI.
 
-This script is installed as ``qsol-geo-capture``.  It intentionally imports no
-``qsol_geo_reason`` module in its first process.  Instead it locates the editable
-source checkout, binds one immutable Git revision through a fixed trusted Git
-executable, authenticates this installed bootstrap body and every tracked package
-file against that revision, and only then execs a fresh ``-I -S -B`` interpreter.
-The child re-hashes the complete package manifest before exposing ``src`` on
-``sys.path`` and before importing ``qsol_geo_reason.capture_cli``.
+This script is installed as ``qsol-geo-capture``. It intentionally imports no
+``qsol_geo_reason`` module in its first process. Instead it resolves the invoking
+checkout through a fixed trusted Git executable, binds one immutable revision,
+authenticates this installed bootstrap body and every tracked package file against
+that revision, and only then execs a fresh ``-I -S -B`` interpreter. The child
+re-hashes the complete package manifest before exposing ``src`` on ``sys.path`` and
+before importing ``qsol_geo_reason.capture_cli``.
 """
 from __future__ import annotations
 
 import hashlib
-import importlib.machinery
-import importlib.util
 import json
 import os
 import stat
@@ -146,24 +144,13 @@ def _git(
     return completed
 
 
-def _checkout_root() -> Path:
-    spec = importlib.util.find_spec("qsol_geo_reason")
-    locations = tuple(spec.submodule_search_locations or ()) if spec is not None else ()
-    if len(locations) != 1:
-        raise StandaloneCaptureBootstrapError(
-            "qsol-geo-capture requires one editable QSOL-GEO-REASON source checkout"
-        )
-    package_root = Path(os.path.abspath(locations[0]))
-    source_root = package_root.parent
-    repository_root = source_root.parent
-    if package_root.name != "qsol_geo_reason" or source_root.name != "src":
-        raise StandaloneCaptureBootstrapError(
-            "qsol-geo-capture could not locate the canonical src/qsol_geo_reason checkout"
-        )
+def _assert_checkout_roots(root: Path) -> None:
+    source_root = root / "src"
+    package_root = source_root / "qsol_geo_reason"
     for path, expected, label in (
-        (package_root, stat.S_ISDIR, "package root"),
+        (root, stat.S_ISDIR, "repository root"),
         (source_root, stat.S_ISDIR, "source root"),
-        (repository_root, stat.S_ISDIR, "repository root"),
+        (package_root, stat.S_ISDIR, "package root"),
     ):
         try:
             info = path.lstat()
@@ -175,7 +162,6 @@ def _checkout_root() -> Path:
             raise StandaloneCaptureBootstrapError(
                 f"standalone capture rejects symlinked or invalid {label}: {path}"
             )
-    return repository_root
 
 
 def _git_blob_sha1(raw: bytes) -> str:
@@ -249,12 +235,12 @@ def _authenticate_installed_bootstrap(
 
 
 def _authenticate_checkout() -> tuple[Path, str, dict[str, str]]:
-    root = _checkout_root()
     git_path, git_digest = _trusted_git_identity()
     try:
-        git_root = Path(
+        anchor = Path.cwd().resolve(strict=True)
+        root = Path(
             _git(
-                root,
+                anchor,
                 git_path,
                 git_digest,
                 "rev-parse",
@@ -273,12 +259,9 @@ def _authenticate_checkout() -> tuple[Path, str, dict[str, str]]:
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError) as exc:
         raise StandaloneCaptureBootstrapError(
-            "standalone canonical capture requires the editable package to point at a Git checkout"
+            "standalone canonical capture must be invoked from inside the QSOL-GEO-REASON Git checkout"
         ) from exc
-    if git_root != root.resolve(strict=True):
-        raise StandaloneCaptureBootstrapError(
-            "editable qsol-geo-capture package does not resolve to the authenticated Git checkout root"
-        )
+    _assert_checkout_roots(root)
     if (
         len(revision) != 40
         or any(ch not in "0123456789abcdef" for ch in revision)
