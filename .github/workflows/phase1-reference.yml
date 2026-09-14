@@ -26,7 +26,8 @@ jobs:
         run: |
           set -euo pipefail
           installed="$(command -v qsol-geo-capture)"
-          head -n 1 "$installed" | grep -E '^#!.* -ISB$'
+          test "$(head -n 1 "$installed")" = '#!/bin/bash -p'
+          grep -F 'exec "$qsol_python" -I -S -B - "$qsol_script" "$@"' "$installed"
           hook="$RUNNER_TEMP/qsol-standalone-site-hook"
           marker="$RUNNER_TEMP/qsol-standalone-sitecustomize-ran"
           mkdir -p "$hook"
