@@ -27,6 +27,7 @@ jobs:
           set -euo pipefail
           installed="$(command -v qsol-geo-capture)"
           test "$(head -n 1 "$installed")" = '#!/bin/bash -p'
+          grep -F 'qsol_interpreter_anchor="$qsol_bindir/qsol-geo-sim"' "$installed"
           grep -F 'exec "$qsol_python" -I -S -B - "$qsol_script" "$@"' "$installed"
           hook="$RUNNER_TEMP/qsol-standalone-site-hook"
           marker="$RUNNER_TEMP/qsol-standalone-sitecustomize-ran"
@@ -45,6 +46,65 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Verify frozen reference fixture
         run: python tools/verify_reference.py
+
+  posix-standalone-install-layouts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Conventional virtualenv capture bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="$PWD"
+          venv="$RUNNER_TEMP/qsol-capture-venv"
+          python -m venv "$venv"
+          "$venv/bin/python" -m pip install -e "$repo"
+          test -x "$venv/bin/qsol-geo-capture"
+          test -f "$venv/bin/qsol-geo-sim"
+
+          hook="$RUNNER_TEMP/qsol-venv-site-hook"
+          marker="$RUNNER_TEMP/qsol-venv-sitecustomize-ran"
+          mkdir -p "$hook"
+          cat > "$hook/sitecustomize.py" <<'PY'
+          import os
+          from pathlib import Path
+          marker = os.environ.get("QSOL_STANDALONE_SITE_MARKER")
+          if marker:
+              Path(marker).write_text("sitecustomize executed\n", encoding="utf-8")
+          PY
+
+          cd "$RUNNER_TEMP"
+          PYTHONPATH="$hook" QSOL_STANDALONE_SITE_MARKER="$marker" "$venv/bin/qsol-geo-capture" --help >/dev/null
+          test ! -e "$marker"
+      - name: User-site capture bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="$PWD"
+          userbase="$RUNNER_TEMP/qsol-userbase"
+          PYTHONUSERBASE="$userbase" python -m pip install --user -e "$repo"
+          command="$userbase/bin/qsol-geo-capture"
+          anchor="$userbase/bin/qsol-geo-sim"
+          test -x "$command"
+          test -f "$anchor"
+
+          hook="$RUNNER_TEMP/qsol-user-site-hook"
+          marker="$RUNNER_TEMP/qsol-user-sitecustomize-ran"
+          mkdir -p "$hook"
+          cat > "$hook/sitecustomize.py" <<'PY'
+          import os
+          from pathlib import Path
+          marker = os.environ.get("QSOL_STANDALONE_SITE_MARKER")
+          if marker:
+              Path(marker).write_text("sitecustomize executed\n", encoding="utf-8")
+          PY
+
+          cd "$RUNNER_TEMP"
+          PYTHONPATH="$hook" QSOL_STANDALONE_SITE_MARKER="$marker" "$command" --help >/dev/null
+          test ! -e "$marker"
 
   windows-standalone-capture:
     runs-on: windows-latest
