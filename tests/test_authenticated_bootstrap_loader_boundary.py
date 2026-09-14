@@ -17,6 +17,18 @@ def _documented_bootstrap_function() -> str:
     return text.split("qsol_first_observation() {", 1)[1].split("\n}\n```", 1)[0]
 
 
+def _documented_bootstrap_literal() -> str:
+    function = _documented_bootstrap_function()
+    marker = "' qsol_first_observation \"${VIRTUAL_ENV-}\" '"
+    return function.split(marker, 1)[1].split("' \"$@\"", 1)[0]
+
+
+def _documented_bootstrap_function_with(code: str) -> str:
+    function = _documented_bootstrap_function()
+    literal = _documented_bootstrap_literal()
+    return function.replace(f"'{literal}'", shlex.quote(code), 1)
+
+
 def _make_reference_venv(tmp_path: Path) -> Path:
     venv = tmp_path / "venv"
     bin_dir = venv / "bin"
@@ -29,6 +41,7 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
     def test_documented_bootstrap_scrubs_loader_then_execs_function_free_shell(self) -> None:
         text = EXPERIMENT.read_text(encoding="utf-8")
         function = _documented_bootstrap_function()
+        bootstrap = _documented_bootstrap_literal()
 
         for prefix_expansion in (
             "${!LD_@}",
@@ -58,7 +71,14 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
             '"$qsol_python" -I -S -B -c "$qsol_bootstrap" "$@"',
             function,
         )
-        self.assertIn('"${VIRTUAL_ENV-}" "$QSOL_FIRST_OBSERVATION_BOOTSTRAP" "$@"', function)
+        self.assertTrue(
+            bootstrap.startswith("import hashlib,os,pathlib,stat,subprocess,sys;"),
+            bootstrap,
+        )
+        self.assertIn("exec(compile(src", bootstrap)
+        self.assertIn(f"'{bootstrap}'", function)
+        self.assertNotIn("QSOL_FIRST_OBSERVATION_BOOTSTRAP=", text)
+        self.assertNotIn("$QSOL_FIRST_OBSERVATION_BOOTSTRAP", function)
         self.assertNotIn("command type -P python", function)
         self.assertNotIn('\\command "$qsol_python"', function)
         self.assertNotIn("\n    /bin/bash --noprofile --norc -p -c", function)
@@ -69,8 +89,10 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
         python_start = function.index(
             '"$qsol_python" -I -S -B -c "$qsol_bootstrap" "$@"'
         )
+        bootstrap_arg = function.index(f"'{bootstrap}'")
         self.assertLess(posix_start, loader_unset)
         self.assertLess(loader_unset, clean_shell_start)
+        self.assertLess(clean_shell_start, bootstrap_arg)
         self.assertLess(clean_shell_start, python_start)
 
         self.assertIn("Before starting any Python process", text)
@@ -78,10 +100,11 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
         self.assertIn("special builtins", text)
         self.assertIn("exec", text)
         self.assertIn("does not import exported shell functions", text)
+        self.assertIn("bootstrap program is passed as a literal positional argument", text)
         self.assertIn("activated virtual environment", text)
 
     def test_readonly_loader_variable_aborts_before_python(self) -> None:
-        function_body = _documented_bootstrap_function()
+        function_body = _documented_bootstrap_function_with("import sys; sys.exit(19)")
         function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -112,8 +135,45 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 126, completed.stderr)
             self.assertFalse(marker.exists(), "Python tripwire was reached after scrub failure")
 
+    def test_readonly_prebound_bootstrap_variable_cannot_replace_literal(self) -> None:
+        function_body = _documented_bootstrap_function_with("import sys; sys.exit(41)")
+        function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            venv = _make_reference_venv(tmp_path)
+            marker = tmp_path / "readonly-bootstrap-executed"
+            venv_shell = shlex.quote(str(venv))
+            malicious = (
+                "import pathlib;"
+                f"pathlib.Path({str(marker)!r}).write_text('intercepted', encoding='utf-8');"
+                "raise SystemExit(0)"
+            )
+            script = (
+                "QSOL_FIRST_OBSERVATION_BOOTSTRAP="
+                + shlex.quote(malicious)
+                + "\nreadonly QSOL_FIRST_OBSERVATION_BOOTSTRAP\n"
+                + "VIRTUAL_ENV="
+                + venv_shell
+                + "\n"
+                + function_definition
+                + "qsol_first_observation\n"
+            )
+            completed = subprocess.run(
+                ["/bin/bash", "-c", script],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 41, completed.stderr)
+            self.assertFalse(
+                marker.exists(),
+                "readonly ambient bootstrap variable replaced the documented literal",
+            )
+
     def test_python_shell_function_cannot_intercept_bootstrap(self) -> None:
-        function_body = _documented_bootstrap_function()
+        function_body = _documented_bootstrap_function_with("import sys; sys.exit(23)")
         function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -131,7 +191,6 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
                 + marker_shell
                 + "; return 0; }\n"
                 + "export -f python\n"
-                + "QSOL_FIRST_OBSERVATION_BOOTSTRAP='import sys; sys.exit(23)'\n"
                 + "qsol_first_observation\n"
             )
             completed = subprocess.run(
@@ -148,7 +207,7 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
             )
 
     def test_command_shell_function_cannot_intercept_clean_child(self) -> None:
-        function_body = _documented_bootstrap_function()
+        function_body = _documented_bootstrap_function_with("import sys; sys.exit(31)")
         function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -166,7 +225,6 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
                 + marker_shell
                 + "; return 0; }\n"
                 + "export -f command\n"
-                + "QSOL_FIRST_OBSERVATION_BOOTSTRAP='import sys; sys.exit(31)'\n"
                 + "qsol_first_observation\n"
             )
             completed = subprocess.run(
@@ -183,7 +241,7 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
             )
 
     def test_path_named_bash_and_special_builtin_functions_cannot_intercept_boundary(self) -> None:
-        function_body = _documented_bootstrap_function()
+        function_body = _documented_bootstrap_function_with("import sys; sys.exit(37)")
         function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -210,7 +268,6 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
                 + "exit() { "
                 + tripwire
                 + "; }\n"
-                + "QSOL_FIRST_OBSERVATION_BOOTSTRAP='import sys; sys.exit(37)'\n"
                 + "qsol_first_observation\n"
             )
             completed = subprocess.run(
@@ -227,7 +284,7 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
             )
 
     def test_interactive_aliases_cannot_rewrite_bootstrap_function_definition(self) -> None:
-        function_body = _documented_bootstrap_function()
+        function_body = _documented_bootstrap_function_with("import sys; sys.exit(29)")
         function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -252,7 +309,6 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
                 + venv_shell
                 + "\n"
                 + function_definition
-                + "QSOL_FIRST_OBSERVATION_BOOTSTRAP='import sys; sys.exit(29)'\n"
                 + "qsol_first_observation\n"
             )
             completed = subprocess.run(
