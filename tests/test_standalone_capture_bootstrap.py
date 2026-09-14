@@ -31,10 +31,15 @@ class StandaloneCaptureBootstrapTests(unittest.TestCase):
             pyproject,
         )
 
-    def test_installed_wrapper_starts_python_only_after_shell_boundary(self) -> None:
+    def test_installed_wrapper_uses_installer_bound_interpreter_and_isolated_stage0(self) -> None:
         source = BOOTSTRAP.read_text(encoding="utf-8")
         self.assertEqual(source.splitlines()[0], "#!/bin/bash -p")
+        self.assertIn('qsol_interpreter_anchor="$qsol_bindir/qsol-geo-sim"', source)
+        self.assertIn('IFS= read -r qsol_shebang < "$qsol_interpreter_anchor"', source)
+        self.assertIn("qsol_python=${qsol_shebang#\\#!}", source)
         self.assertIn('exec "$qsol_python" -I -S -B - "$qsol_script" "$@"', source)
+        self.assertNotIn('qsol_python="$qsol_bindir/python"', source)
+        self.assertNotIn('qsol_python="$qsol_bindir/python3"', source)
         self.assertIn("not sys.flags.isolated", source)
         self.assertIn("not sys.flags.no_site", source)
         self.assertIn("not sys.dont_write_bytecode", source)
@@ -46,15 +51,26 @@ class StandaloneCaptureBootstrapTests(unittest.TestCase):
         self.assertNotIn("#!/usr/bin/env python", source)
         self.assertNotIn("import qsol_geo_reason", source)
 
+        interpreter_anchor = source.index('qsol_interpreter_anchor="$qsol_bindir/qsol-geo-sim"')
         python_exec = source.index('exec "$qsol_python" -I -S -B')
         stage0_flag_check = source.index("if not sys.flags.isolated")
         discover_root = source.index("root = editable_checkout_root()")
         read_payload = source.index('commit + ":scripts/qsol-geo-capture-python"')
         invoke_payload = source.index('namespace["main"]()')
+        self.assertLess(interpreter_anchor, python_exec)
         self.assertLess(python_exec, stage0_flag_check)
         self.assertLess(stage0_flag_check, discover_root)
         self.assertLess(discover_root, read_payload)
         self.assertLess(read_payload, invoke_payload)
+
+    def test_stage0_preserves_lexical_virtualenv_and_derives_user_site_from_wrapper(self) -> None:
+        source = BOOTSTRAP.read_text(encoding="utf-8")
+        self.assertIn("executable = pathlib.Path(sys.executable)", source)
+        self.assertNotIn("pathlib.Path(sys.executable).resolve", source)
+        self.assertIn("venv_root = executable.parent.parent", source)
+        self.assertIn("install_prefix = wrapper.parent.parent", source)
+        self.assertIn('install_prefix / "lib" / version / "site-packages"', source)
+        self.assertIn('install_prefix / "lib64" / version / "site-packages"', source)
 
     def test_windows_wrapper_starts_isolated_stage0_and_is_packaged(self) -> None:
         wrapper = WINDOWS_WRAPPER.read_text(encoding="utf-8")
