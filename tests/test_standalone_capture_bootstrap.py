@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.machinery
 import json
+import os
 import runpy
 import subprocess
 import sys
@@ -31,15 +32,19 @@ class StandaloneCaptureBootstrapTests(unittest.TestCase):
             pyproject,
         )
 
-    def test_installed_wrapper_uses_installer_bound_interpreter_and_isolated_stage0(self) -> None:
+    def test_installed_wrapper_authenticates_interpreter_location_before_isolated_stage0(self) -> None:
         source = BOOTSTRAP.read_text(encoding="utf-8")
         self.assertEqual(source.splitlines()[0], "#!/bin/bash -p")
+        self.assertIn('qsol_python="$qsol_bindir/python"', source)
+        self.assertIn('qsol_python="$qsol_bindir/python3"', source)
         self.assertIn('qsol_interpreter_anchor="$qsol_bindir/qsol-geo-sim"', source)
+        self.assertIn('! -f $qsol_interpreter_anchor || -L $qsol_interpreter_anchor', source)
         self.assertIn('IFS= read -r qsol_shebang < "$qsol_interpreter_anchor"', source)
         self.assertIn("qsol_python=${qsol_shebang#\\#!}", source)
+        self.assertIn("/usr/bin/readlink", source)
+        self.assertIn("/opt/hostedtoolcache/Python/*/bin/python*", source)
+        self.assertIn("does not resolve inside a trusted system/toolchain root", source)
         self.assertIn('exec "$qsol_python" -I -S -B - "$qsol_script" "$@"', source)
-        self.assertNotIn('qsol_python="$qsol_bindir/python"', source)
-        self.assertNotIn('qsol_python="$qsol_bindir/python3"', source)
         self.assertIn("not sys.flags.isolated", source)
         self.assertIn("not sys.flags.no_site", source)
         self.assertIn("not sys.dont_write_bytecode", source)
@@ -51,17 +56,45 @@ class StandaloneCaptureBootstrapTests(unittest.TestCase):
         self.assertNotIn("#!/usr/bin/env python", source)
         self.assertNotIn("import qsol_geo_reason", source)
 
-        interpreter_anchor = source.index('qsol_interpreter_anchor="$qsol_bindir/qsol-geo-sim"')
+        trusted_target = source.index("qsol_python_resolved=")
         python_exec = source.index('exec "$qsol_python" -I -S -B')
         stage0_flag_check = source.index("if not sys.flags.isolated")
         discover_root = source.index("root = editable_checkout_root()")
         read_payload = source.index('commit + ":scripts/qsol-geo-capture-python"')
         invoke_payload = source.index('namespace["main"]()')
-        self.assertLess(interpreter_anchor, python_exec)
+        self.assertLess(trusted_target, python_exec)
         self.assertLess(python_exec, stage0_flag_check)
         self.assertLess(stage0_flag_check, discover_root)
         self.assertLess(discover_root, read_payload)
         self.assertLess(read_payload, invoke_payload)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX shell boundary regression")
+    def test_modified_user_site_locator_cannot_execute_fake_python(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="qsol-locator-") as tmp:
+            root = Path(tmp)
+            wrapper = root / "qsol-geo-capture"
+            wrapper.write_bytes(BOOTSTRAP.read_bytes())
+            wrapper.chmod(0o755)
+            marker = root / "fake-python-ran"
+            fake = root / "fake-python"
+            fake.write_text(
+                "#!/bin/sh\nprintf '%s\\n' ran > \"$QSOL_FAKE_MARKER\"\nexit 0\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            anchor = root / "qsol-geo-sim"
+            anchor.write_text(f"#!{fake}\n# attacker-controlled generated launcher\n", encoding="utf-8")
+            anchor.chmod(0o755)
+            completed = subprocess.run(
+                [str(wrapper), "--help"],
+                env={**os.environ, "QSOL_FAKE_MARKER": str(marker)},
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 126)
+            self.assertIn("trusted system/toolchain root", completed.stderr)
+            self.assertFalse(marker.exists())
 
     def test_stage0_preserves_lexical_virtualenv_and_derives_user_site_from_wrapper(self) -> None:
         source = BOOTSTRAP.read_text(encoding="utf-8")
@@ -72,16 +105,21 @@ class StandaloneCaptureBootstrapTests(unittest.TestCase):
         self.assertIn('install_prefix / "lib" / version / "site-packages"', source)
         self.assertIn('install_prefix / "lib64" / version / "site-packages"', source)
 
-    def test_windows_wrapper_starts_isolated_stage0_and_is_packaged(self) -> None:
+    def test_windows_wrapper_has_user_site_python_launcher_fallback(self) -> None:
         wrapper = WINDOWS_WRAPPER.read_text(encoding="utf-8")
         stage0 = WINDOWS_STAGE0.read_text(encoding="utf-8")
         self.assertIn("qsol-geo-capture-windows.py", wrapper)
         self.assertIn("-I -S -B", wrapper)
         self.assertIn("python.exe", wrapper)
         self.assertIn("..\\python.exe", wrapper)
+        self.assertIn("Python311", wrapper)
+        self.assertIn("-3.11", wrapper)
+        self.assertIn(r"C:\Windows\py.exe", wrapper)
+        self.assertIn(r"Programs\Python\Launcher\py.exe", wrapper)
         self.assertIn("not sys.flags.isolated", stage0)
         self.assertIn("not sys.flags.no_site", stage0)
         self.assertIn("not sys.dont_write_bytecode", stage0)
+        self.assertIn('wrapper.parent.parent / "site-packages"', stage0)
         self.assertIn("direct_url.json", stage0)
         self.assertIn('"scripts/qsol-geo-capture.cmd"', stage0)
         self.assertIn('"scripts/qsol-geo-capture-windows.py"', stage0)
