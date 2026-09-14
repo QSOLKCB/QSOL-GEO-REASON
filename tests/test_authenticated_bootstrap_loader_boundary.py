@@ -26,7 +26,7 @@ def _make_reference_venv(tmp_path: Path) -> Path:
 
 
 class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
-    def test_documented_bootstrap_scrubs_loader_then_enters_function_free_shell(self) -> None:
+    def test_documented_bootstrap_scrubs_loader_then_execs_function_free_shell(self) -> None:
         text = EXPERIMENT.read_text(encoding="utf-8")
         function = _documented_bootstrap_function()
 
@@ -37,13 +37,15 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
             "${!LDR_@}",
         ):
             self.assertIn(prefix_expansion, function)
+        self.assertIn("POSIXLY_CORRECT=1", function)
         self.assertIn("GLIBC_TUNABLES LIBPATH SHLIB_PATH; do", function)
         self.assertIn('! \\unset "$qsol_loader_var" 2>/dev/null', function)
         self.assertIn("\\exit 126", function)
-        self.assertIn("loader variable survived scrub", function)
         self.assertNotIn("env -u", function)
+        self.assertNotIn("\\local ", function)
+        self.assertNotIn("\\printf ", function)
 
-        clean_shell = "/bin/bash --noprofile --norc -p -c"
+        clean_shell = "\\exec /bin/bash --noprofile --norc -p -c"
         self.assertIn(clean_shell, function)
         self.assertIn("qsol_venv=$1", function)
         self.assertIn("qsol_bootstrap=$2", function)
@@ -59,19 +61,22 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
         self.assertIn('"${VIRTUAL_ENV-}" "$QSOL_FIRST_OBSERVATION_BOOTSTRAP" "$@"', function)
         self.assertNotIn("command type -P python", function)
         self.assertNotIn('\\command "$qsol_python"', function)
+        self.assertNotIn("\n    /bin/bash --noprofile --norc -p -c", function)
 
+        posix_start = function.index("POSIXLY_CORRECT=1")
+        loader_unset = function.index("! \\unset")
+        clean_shell_start = function.index(clean_shell)
         python_start = function.index(
             '"$qsol_python" -I -S -B -c "$qsol_bootstrap" "$@"'
         )
-        self.assertLess(function.index("${!LD_@}"), python_start)
-        self.assertLess(function.index("! \\unset"), python_start)
-        self.assertLess(function.index("loader variable survived scrub"), python_start)
-        self.assertLess(function.index(clean_shell), python_start)
+        self.assertLess(posix_start, loader_unset)
+        self.assertLess(loader_unset, clean_shell_start)
+        self.assertLess(clean_shell_start, python_start)
 
         self.assertIn("Before starting any Python process", text)
-        self.assertIn("uses only Bash built-ins", text)
-        self.assertIn("Every `unset` is checked", text)
-        self.assertIn("Privileged Bash", text)
+        self.assertIn("POSIX mode", text)
+        self.assertIn("special builtins", text)
+        self.assertIn("exec", text)
         self.assertIn("does not import shell functions", text)
         self.assertIn("activated virtual environment", text)
 
@@ -106,7 +111,6 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
 
             self.assertEqual(completed.returncode, 126, completed.stderr)
             self.assertFalse(marker.exists(), "Python tripwire was reached after scrub failure")
-            self.assertIn("cannot clear loader variable LD_PRELOAD", completed.stderr)
 
     def test_python_shell_function_cannot_intercept_bootstrap(self) -> None:
         function_body = _documented_bootstrap_function()
@@ -178,6 +182,50 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
                 "ambient command shell function intercepted the authenticated bootstrap",
             )
 
+    def test_path_named_bash_and_special_builtin_functions_cannot_intercept_boundary(self) -> None:
+        function_body = _documented_bootstrap_function()
+        function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            venv = _make_reference_venv(tmp_path)
+            marker = tmp_path / "ambient-function-called"
+            marker_shell = shlex.quote(str(marker))
+            venv_shell = shlex.quote(str(venv))
+            tripwire = "printf intercepted > " + marker_shell + "; return 0"
+            script = (
+                function_definition
+                + "\nVIRTUAL_ENV="
+                + venv_shell
+                + "\n"
+                + "function /bin/bash { "
+                + tripwire
+                + "; }\n"
+                + "exec() { "
+                + tripwire
+                + "; }\n"
+                + "unset() { "
+                + tripwire
+                + "; }\n"
+                + "exit() { "
+                + tripwire
+                + "; }\n"
+                + "QSOL_FIRST_OBSERVATION_BOOTSTRAP='import sys; sys.exit(37)'\n"
+                + "qsol_first_observation\n"
+            )
+            completed = subprocess.run(
+                ["/bin/bash", "-c", script],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 37, completed.stderr)
+            self.assertFalse(
+                marker.exists(),
+                "ambient path-named or special-builtin shell function intercepted the boundary",
+            )
+
     def test_interactive_aliases_cannot_rewrite_bootstrap_function_definition(self) -> None:
         function_body = _documented_bootstrap_function()
         function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
@@ -191,19 +239,13 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
             alias_payload = "printf intercepted > " + marker_shell + "; false"
             script = (
                 "shopt -s expand_aliases\n"
-                + "alias command="
-                + shlex.quote(alias_payload)
-                + "\n"
-                + "alias local="
-                + shlex.quote(alias_payload)
-                + "\n"
                 + "alias unset="
                 + shlex.quote(alias_payload)
                 + "\n"
-                + "alias printf="
+                + "alias exit="
                 + shlex.quote(alias_payload)
                 + "\n"
-                + "alias exit="
+                + "alias exec="
                 + shlex.quote(alias_payload)
                 + "\n"
                 + "VIRTUAL_ENV="
