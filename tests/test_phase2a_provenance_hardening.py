@@ -23,6 +23,7 @@ from test_capture_codex_round6 import fixture_request
 ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = ROOT / "tools" / "run_first_production_observation.py"
 EXPERIMENT_DOC = ROOT / "experiments" / "GEO-CAP-001-EXP-001.md"
+REFERENCE_PYTHON = "/tmp/qsol-geo-reason-capture-py311/bin/python"
 
 
 class Phase2AProvenanceHardeningTests(unittest.TestCase):
@@ -136,6 +137,8 @@ class Phase2AProvenanceHardeningTests(unittest.TestCase):
             document,
         )
         self.assertNotIn("python3.11 -m venv .venv-capture-py311", document)
+        self.assertNotIn(". /tmp/qsol-geo-reason-capture-py311/bin/activate", document)
+        self.assertIn("does not source `activate`", document)
         self.assertIn("outside the repository checkout", document)
         self.assertIn("constraints/capture-reference-py311.txt", document)
         self.assertIn("torch==2.2.2+cpu", document)
@@ -144,6 +147,16 @@ class Phase2AProvenanceHardeningTests(unittest.TestCase):
         self.assertIn("download.pytorch.org/whl/cpu", document)
         self.assertIn("must report Python 3.11.x", document)
         self.assertIn("embedded in the preparation receipt", document)
+        self.assertIn(f"{REFERENCE_PYTHON} -m pip install", document)
+        self.assertIn(
+            f"{REFERENCE_PYTHON} -B tools/verify_capture_reference_environment.py",
+            document,
+        )
+        self.assertIn(f"{REFERENCE_PYTHON} -m pip check", document)
+        self.assertIn(f"{REFERENCE_PYTHON} --version", document)
+        function = document.split("qsol_first_observation() {", 1)[1].split("\n}\n```", 1)[0]
+        self.assertIn(REFERENCE_PYTHON, function)
+        self.assertNotIn("VIRTUAL_ENV", function)
 
 
 if __name__ == "__main__":
