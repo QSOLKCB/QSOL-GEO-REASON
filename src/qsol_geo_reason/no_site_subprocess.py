@@ -2,11 +2,11 @@
 
 Evidence-producing subprocesses must not execute ``sitecustomize``, ``usercustomize``,
 executable ``.pth`` files, or mutable checkout package code before the launcher-bound
-QSOL source identity has been rechecked.  This module carries the authenticated Git
+QSOL source identity has been rechecked. This module carries the authenticated Git
 revision and complete tracked-package SHA-256 manifest into each ``-I -S -B`` child.
 The child rejects import shadows, bytecode, and package-local native extensions and
 re-hashes every manifest entry before prepending ``src`` or importing any
-``qsol_geo_reason`` module.  It then installs the same verified identity in the child
+``qsol_geo_reason`` module. It then installs the same verified identity in the child
 so nested authenticated subprocesses retain the original trust root.
 """
 from __future__ import annotations
@@ -105,7 +105,7 @@ def _require_authenticated_source_manifest() -> tuple[str, dict[str, str]]:
 
 
 def literal_site_package_paths() -> list[str]:
-    """Locate interpreter package directories without processing startup hooks."""
+    """Locate package directories without processing startup hooks or ``.pth`` files."""
     paths: list[str] = []
     executable = Path(sys.executable)
     venv_root = executable.parent.parent
@@ -124,6 +124,17 @@ def literal_site_package_paths() -> list[str]:
             value = sysconfig.get_paths().get(key)
             if isinstance(value, str) and value.strip():
                 candidates.append(Path(value))
+
+    # A parent authenticated no-site bootstrap may have explicitly appended a user
+    # site-packages directory after validating the editable install. Preserve those
+    # literal directories for nested capture_cli -> capture_worker hops without ever
+    # importing site or evaluating .pth files.
+    for raw in sys.path:
+        if not isinstance(raw, str) or not raw:
+            continue
+        candidate = Path(raw)
+        if candidate.is_absolute() and candidate.name.lower() == "site-packages":
+            candidates.append(candidate)
 
     for candidate in candidates:
         resolved = candidate.resolve(strict=False)
