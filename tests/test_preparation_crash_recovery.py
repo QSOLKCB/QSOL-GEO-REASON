@@ -101,6 +101,99 @@ class PreparationCrashRecoveryTests(unittest.TestCase):
             authenticated_paths = [call.args[0] for call in authenticate.call_args_list]
             self.assertIn(TOOL.REFERENCE_LOCK, authenticated_paths)
 
+    def test_request_and_receipt_pair_recovers_by_revalidation_and_directory_resync(self) -> None:
+        recovery_commit = "f" * 40
+        request, receipt = self._prepared_request_and_receipt()
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "final-request.json"
+            sidecar = TOOL._default_preparation_receipt_path(output)
+            output.write_bytes(TOOL.canonical_json_bytes(request) + b"\n")
+            sidecar.write_bytes(TOOL.canonical_json_bytes(receipt) + b"\n")
+
+            with (
+                mock.patch.object(
+                    TOOL,
+                    "resolve_implementation_revision",
+                    return_value=recovery_commit,
+                ),
+                mock.patch.object(
+                    TOOL,
+                    "authenticate_tracked_file_against_revision",
+                    return_value="experiments/GEO-CAP-001-EXP-001.request.template.json",
+                ),
+                mock.patch.object(
+                    TOOL,
+                    "authenticate_tracked_tool_against_revision",
+                    return_value="1" * 40,
+                ),
+                mock.patch.object(
+                    TOOL,
+                    "verify_current_reference_environment",
+                    side_effect=lambda expected=None: dict(
+                        expected or reference_environment_receipt()
+                    ),
+                ) as environment_auth,
+                mock.patch.object(
+                    TOOL,
+                    "prepare_tree_receipts",
+                    side_effect=AssertionError("pair recovery must not contact the Hub"),
+                ) as warmup,
+                mock.patch.object(TOOL, "_fsync_directory") as fsync_directory,
+            ):
+                request_sha256 = TOOL.prepare(output)
+
+            self.assertFalse(warmup.called)
+            environment_auth.assert_called_once_with(receipt["reference_environment"])
+            fsync_directory.assert_called_once_with(output.parent)
+            self.assertEqual(request_sha256, TOOL.sha256_json(request))
+            self.assertEqual(output.read_bytes(), TOOL.canonical_json_bytes(request) + b"\n")
+            self.assertEqual(sidecar.read_bytes(), TOOL.canonical_json_bytes(receipt) + b"\n")
+
+    def test_request_and_receipt_pair_mismatch_fails_closed_without_resync_or_hub(self) -> None:
+        recovery_commit = "f" * 40
+        request, receipt = self._prepared_request_and_receipt()
+        tampered = json.loads(json.dumps(request))
+        tampered["run_id"] = "tampered-existing-request"
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "final-request.json"
+            sidecar = TOOL._default_preparation_receipt_path(output)
+            output.write_bytes(TOOL.canonical_json_bytes(tampered) + b"\n")
+            sidecar.write_bytes(TOOL.canonical_json_bytes(receipt) + b"\n")
+
+            with (
+                mock.patch.object(
+                    TOOL,
+                    "resolve_implementation_revision",
+                    return_value=recovery_commit,
+                ),
+                mock.patch.object(
+                    TOOL,
+                    "authenticate_tracked_file_against_revision",
+                    return_value="experiments/GEO-CAP-001-EXP-001.request.template.json",
+                ),
+                mock.patch.object(
+                    TOOL,
+                    "authenticate_tracked_tool_against_revision",
+                    return_value="1" * 40,
+                ),
+                mock.patch.object(
+                    TOOL,
+                    "prepare_tree_receipts",
+                    side_effect=AssertionError("mismatched pair must not contact the Hub"),
+                ) as warmup,
+                mock.patch.object(TOOL, "_fsync_directory") as fsync_directory,
+            ):
+                with self.assertRaisesRegex(
+                    CaptureContractError,
+                    "does not match its authenticated preparation receipt",
+                ):
+                    TOOL.prepare(output)
+
+            self.assertFalse(warmup.called)
+            fsync_directory.assert_not_called()
+            self.assertEqual(output.read_bytes(), TOOL.canonical_json_bytes(tampered) + b"\n")
+            self.assertEqual(sidecar.read_bytes(), TOOL.canonical_json_bytes(receipt) + b"\n")
+
     def test_receipt_only_recovery_rejects_symlinked_sidecar_before_hub_warmup(self) -> None:
         recovery_commit = "f" * 40
         _, receipt = self._prepared_request_and_receipt()
