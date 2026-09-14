@@ -1,7 +1,7 @@
 #!/bin/bash -p
 set -euo pipefail
 
-# POSIX installed qsol-geo-capture trust boundary.  Python starts only after
+# POSIX installed qsol-geo-capture trust boundary. Python starts only after
 # ambient Python/native-loader controls have been cleared, and always under
 # isolated/no-site/no-bytecode flags.
 for qsol_name in ${!PYTHON@} ${!LD_@} ${!DYLD_@} ${!_RLD_@} ${!LDR_@}; do
@@ -26,29 +26,72 @@ case "$qsol_script" in
 esac
 qsol_bindir=${qsol_script%/*}
 
-# setuptools/pip generates qsol-geo-sim from [project.scripts] using the exact
-# interpreter that performed the installation.  Read that generated shebang as
-# an installer-bound interpreter anchor instead of assuming Python lives beside
-# this raw script-file.  This works for virtualenvs and --user installs alike
-# without consulting caller-controlled PATH.
-qsol_interpreter_anchor="$qsol_bindir/qsol-geo-sim"
-if [[ ! -f $qsol_interpreter_anchor ]]; then
-    printf '%s\n' "qsol-geo-capture: missing installer-bound qsol-geo-sim interpreter anchor" >&2
+# Prefer an interpreter whose pathname is derived from the installed environment
+# rather than from another mutable generated launcher. Conventional virtualenv and
+# prefix installs therefore never consult qsol-geo-sim at all.
+qsol_python=""
+if [[ -f $qsol_bindir/python && -x $qsol_bindir/python ]]; then
+    qsol_python="$qsol_bindir/python"
+elif [[ -f $qsol_bindir/python3 && -x $qsol_bindir/python3 ]]; then
+    qsol_python="$qsol_bindir/python3"
+else
+    # A POSIX --user install places raw scripts under <userbase>/bin while the
+    # installing interpreter remains outside that prefix. setuptools also emits
+    # qsol-geo-sim there. Its shebang is used only as an untrusted locator: the
+    # generated file itself is never executed, symlinks are rejected, and the
+    # selected interpreter must resolve into a fixed trusted system/toolchain root
+    # before it can receive the authenticated stage-0 program.
+    qsol_interpreter_anchor="$qsol_bindir/qsol-geo-sim"
+    if [[ ! -f $qsol_interpreter_anchor || -L $qsol_interpreter_anchor ]]; then
+        printf '%s\n' "qsol-geo-capture: missing regular non-symlink user-site interpreter locator" >&2
+        exit 126
+    fi
+    IFS= read -r qsol_shebang < "$qsol_interpreter_anchor" || {
+        printf '%s\n' "qsol-geo-capture: unable to read user-site interpreter locator" >&2
+        exit 126
+    }
+    case "$qsol_shebang" in
+        '#!'/*) qsol_python=${qsol_shebang#\#!} ;;
+        *)
+            printf '%s\n' "qsol-geo-capture: user-site interpreter locator has a noncanonical shebang" >&2
+            exit 126
+            ;;
+    esac
+fi
+
+if [[ $qsol_python != /* || ! -f $qsol_python || ! -x $qsol_python ]]; then
+    printf '%s\n' "qsol-geo-capture: selected Python interpreter is not an absolute executable file" >&2
     exit 126
 fi
-IFS= read -r qsol_shebang < "$qsol_interpreter_anchor" || {
-    printf '%s\n' "qsol-geo-capture: unable to read installer-bound interpreter anchor" >&2
+
+# Follow the selected interpreter only through a fixed system readlink binary. The
+# locator is not an authority: a rewritten shebang such as /tmp/fake-python fails
+# here before any Python process starts. The lexical venv path remains the executed
+# pathname so CPython preserves the active virtualenv prefix.
+qsol_readlink=""
+for qsol_candidate in /usr/bin/readlink /bin/readlink /run/current-system/sw/bin/readlink; do
+    if [[ -f $qsol_candidate && -x $qsol_candidate ]]; then
+        qsol_readlink=$qsol_candidate
+        break
+    fi
+done
+if [[ -z $qsol_readlink ]]; then
+    printf '%s\n' "qsol-geo-capture: cannot locate fixed system readlink for interpreter authentication" >&2
+    exit 126
+fi
+qsol_python_resolved=$($qsol_readlink -f -- "$qsol_python") || {
+    printf '%s\n' "qsol-geo-capture: unable to resolve selected Python interpreter" >&2
     exit 126
 }
-case "$qsol_shebang" in
-    '#!'/*) qsol_python=${qsol_shebang#\#!} ;;
+case "$qsol_python_resolved" in
+    /usr/bin/python*|/bin/python*|/usr/local/bin/python*|/opt/hostedtoolcache/Python/*/bin/python*|/run/current-system/sw/bin/python*) ;;
     *)
-        printf '%s\n' "qsol-geo-capture: installer-bound interpreter anchor has a noncanonical shebang" >&2
+        printf '%s\n' "qsol-geo-capture: selected Python interpreter does not resolve inside a trusted system/toolchain root" >&2
         exit 126
         ;;
 esac
-if [[ $qsol_python != /* || ! -f $qsol_python || ! -x $qsol_python ]]; then
-    printf '%s\n' "qsol-geo-capture: installer-bound Python interpreter is not an absolute executable file" >&2
+if [[ ! -f $qsol_python_resolved || ! -x $qsol_python_resolved ]]; then
+    printf '%s\n' "qsol-geo-capture: trusted Python target is not an executable regular file" >&2
     exit 126
 fi
 
@@ -77,7 +120,7 @@ loader_names = {"GLIBC_TUNABLES", "LIBPATH", "SHLIB_PATH"}
 
 
 def literal_site_package_paths() -> tuple[pathlib.Path, ...]:
-    # Keep the lexical executable path.  A conventional virtualenv's bin/python
+    # Keep the lexical executable path. A conventional virtualenv's bin/python
     # is commonly a symlink to the base interpreter; resolving it here would
     # discard the active environment and scan the wrong site-packages tree.
     executable = pathlib.Path(sys.executable)
