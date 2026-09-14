@@ -25,12 +25,30 @@ case "$qsol_script" in
     *) qsol_script="$PWD/${qsol_script#./}" ;;
 esac
 qsol_bindir=${qsol_script%/*}
-qsol_python="$qsol_bindir/python"
-if [[ ! -f $qsol_python || ! -x $qsol_python ]]; then
-    qsol_python="$qsol_bindir/python3"
+
+# setuptools/pip generates qsol-geo-sim from [project.scripts] using the exact
+# interpreter that performed the installation.  Read that generated shebang as
+# an installer-bound interpreter anchor instead of assuming Python lives beside
+# this raw script-file.  This works for virtualenvs and --user installs alike
+# without consulting caller-controlled PATH.
+qsol_interpreter_anchor="$qsol_bindir/qsol-geo-sim"
+if [[ ! -f $qsol_interpreter_anchor ]]; then
+    printf '%s\n' "qsol-geo-capture: missing installer-bound qsol-geo-sim interpreter anchor" >&2
+    exit 126
 fi
+IFS= read -r qsol_shebang < "$qsol_interpreter_anchor" || {
+    printf '%s\n' "qsol-geo-capture: unable to read installer-bound interpreter anchor" >&2
+    exit 126
+}
+case "$qsol_shebang" in
+    '#!'/*) qsol_python=${qsol_shebang#\#!} ;;
+    *)
+        printf '%s\n' "qsol-geo-capture: installer-bound interpreter anchor has a noncanonical shebang" >&2
+        exit 126
+        ;;
+esac
 if [[ $qsol_python != /* || ! -f $qsol_python || ! -x $qsol_python ]]; then
-    printf '%s\n' "qsol-geo-capture: installed command requires an adjacent executable Python interpreter" >&2
+    printf '%s\n' "qsol-geo-capture: installer-bound Python interpreter is not an absolute executable file" >&2
     exit 126
 fi
 
@@ -59,11 +77,16 @@ loader_names = {"GLIBC_TUNABLES", "LIBPATH", "SHLIB_PATH"}
 
 
 def literal_site_package_paths() -> tuple[pathlib.Path, ...]:
-    executable = pathlib.Path(sys.executable).resolve(strict=True)
+    # Keep the lexical executable path.  A conventional virtualenv's bin/python
+    # is commonly a symlink to the base interpreter; resolving it here would
+    # discard the active environment and scan the wrong site-packages tree.
+    executable = pathlib.Path(sys.executable)
+    if not executable.is_absolute():
+        raise RuntimeError("isolated stage0 requires an absolute interpreter pathname")
     venv_root = executable.parent.parent
+    version = f"python{sys.version_info.major}.{sys.version_info.minor}"
     candidates: list[pathlib.Path] = []
     if (venv_root / "pyvenv.cfg").is_file():
-        version = f"python{sys.version_info.major}.{sys.version_info.minor}"
         candidates.extend(
             (
                 venv_root / "lib" / version / "site-packages",
@@ -75,6 +98,18 @@ def literal_site_package_paths() -> tuple[pathlib.Path, ...]:
             value = sysconfig.get_paths().get(key)
             if isinstance(value, str) and value.strip():
                 candidates.append(pathlib.Path(value))
+
+        # For a POSIX --user install, raw scripts land under <userbase>/bin while
+        # distribution metadata lands under <userbase>/lib/pythonX.Y/site-packages.
+        # Derive that path from the installed wrapper itself rather than HOME,
+        # PYTHONUSERBASE, PATH, or another ambient selector.
+        install_prefix = wrapper.parent.parent
+        candidates.extend(
+            (
+                install_prefix / "lib" / version / "site-packages",
+                install_prefix / "lib64" / version / "site-packages",
+            )
+        )
     observed: list[pathlib.Path] = []
     for candidate in candidates:
         resolved = candidate.resolve(strict=False)
