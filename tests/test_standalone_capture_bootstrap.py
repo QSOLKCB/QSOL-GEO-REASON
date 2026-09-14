@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import importlib.machinery
 import json
-import os
 import runpy
 import subprocess
 import sys
@@ -14,6 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP = ROOT / "scripts" / "qsol-geo-capture"
+PYTHON_PAYLOAD = ROOT / "scripts" / "qsol-geo-capture-python"
 PYPROJECT = ROOT / "pyproject.toml"
 PROTOCOL = ROOT / "protocols" / "GEO-CAP-001.md"
 
@@ -27,16 +27,30 @@ class StandaloneCaptureBootstrapTests(unittest.TestCase):
             pyproject,
         )
 
-    def test_first_interpreter_is_isolated_and_no_site_before_bootstrap(self) -> None:
-        first_line = BOOTSTRAP.read_text(encoding="utf-8").splitlines()[0]
-        self.assertEqual(first_line, "#!/usr/bin/python3 -ISB")
-        self.assertNotIn("/usr/bin/env", first_line)
-        self.assertIn("-I", "-ISB")
-        self.assertIn("S", "-ISB")
-        self.assertIn("B", "-ISB")
-
-    def test_bootstrap_authenticates_before_any_package_import(self) -> None:
+    def test_installed_wrapper_starts_python_only_after_shell_boundary(self) -> None:
         source = BOOTSTRAP.read_text(encoding="utf-8")
+        self.assertEqual(source.splitlines()[0], "#!/bin/bash -p")
+        self.assertIn('exec "$qsol_python" -I -S -B - "$qsol_script" "$@"', source)
+        self.assertIn("not sys.flags.isolated", source)
+        self.assertIn("not sys.flags.no_site", source)
+        self.assertIn("not sys.dont_write_bytecode", source)
+        self.assertIn('commit + ":scripts/qsol-geo-capture-python"', source)
+        self.assertIn("bound_authenticate_checkout", source)
+        self.assertNotIn("#!/usr/bin/env python", source)
+        self.assertNotIn("import qsol_geo_reason", source)
+
+        python_exec = source.index('exec "$qsol_python" -I -S -B')
+        stage0_flag_check = source.index("if not sys.flags.isolated")
+        read_payload = source.index('commit + ":scripts/qsol-geo-capture-python"')
+        bind_revision = source.index("def bound_authenticate_checkout")
+        invoke_payload = source.index('namespace["main"]()')
+        self.assertLess(python_exec, stage0_flag_check)
+        self.assertLess(stage0_flag_check, read_payload)
+        self.assertLess(read_payload, bind_revision)
+        self.assertLess(bind_revision, invoke_payload)
+
+    def test_payload_authenticates_before_any_package_import(self) -> None:
+        source = PYTHON_PAYLOAD.read_text(encoding="utf-8")
         self.assertIn('_BOOTSTRAP_GIT_PATH = "scripts/qsol-geo-capture"', source)
         self.assertIn('"HEAD^{commit}"', source)
         self.assertIn('"ls-tree"', source)
@@ -64,7 +78,9 @@ class StandaloneCaptureBootstrapTests(unittest.TestCase):
         self.assertNotIn("import qsol_geo_reason", before_child_bootstrap)
 
     def test_package_local_native_shadow_is_rejected_before_import(self) -> None:
-        namespace = runpy.run_path(str(BOOTSTRAP), run_name="qsol_standalone_capture_test")
+        namespace = runpy.run_path(
+            str(PYTHON_PAYLOAD), run_name="qsol_standalone_capture_test"
+        )
         child_bootstrap = namespace["_authenticated_capture_bootstrap"]()
 
         with tempfile.TemporaryDirectory(prefix="qsol-native-shadow-") as tmp:
@@ -77,15 +93,13 @@ class StandaloneCaptureBootstrapTests(unittest.TestCase):
                 "no_site_subprocess.py": hashlib.sha256(tracked.read_bytes()).hexdigest()
             }
             suffix = next(
-                (
-                    value
-                    for value in importlib.machinery.EXTENSION_SUFFIXES
-                    if value
-                ),
+                (value for value in importlib.machinery.EXTENSION_SUFFIXES if value),
                 ".so",
             )
             shadow = package / f"no_site_subprocess{suffix}"
-            shadow.write_bytes(b"not a real extension; it must be rejected before import\n")
+            shadow.write_bytes(
+                b"not a real extension; it must be rejected before import\n"
+            )
 
             completed = subprocess.run(
                 [
@@ -113,7 +127,9 @@ class StandaloneCaptureBootstrapTests(unittest.TestCase):
             self.assertIn(shadow.name, completed.stderr)
 
     def test_bound_revision_argument_cannot_be_replaced_by_caller(self) -> None:
-        namespace = runpy.run_path(str(BOOTSTRAP), run_name="qsol_standalone_capture_test")
+        namespace = runpy.run_path(
+            str(PYTHON_PAYLOAD), run_name="qsol_standalone_capture_test"
+        )
         bind = namespace["_bound_cli_arguments"]
         revision = "a" * 40
 
