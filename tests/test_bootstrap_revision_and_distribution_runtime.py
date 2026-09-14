@@ -30,6 +30,13 @@ def _load_launcher():
     return module
 
 
+def _documented_bootstrap_literal() -> str:
+    text = EXPERIMENT.read_text(encoding="utf-8")
+    function = text.split("qsol_first_observation() {", 1)[1].split("\n}\n```", 1)[0]
+    marker = "' qsol_first_observation \"${VIRTUAL_ENV-}\" '"
+    return function.split(marker, 1)[1].split("' \"$@\"", 1)[0]
+
+
 def _git(git: Path, root: Path, *args: str) -> str:
     completed = subprocess.run(
         [str(git), "-C", str(root), *args],
@@ -100,10 +107,7 @@ class BootstrapRevisionAndDistributionRuntimeTests(unittest.TestCase):
                     )
 
     def test_documented_bootstrap_resolves_commit_before_launcher_blob(self) -> None:
-        text = EXPERIMENT.read_text(encoding="utf-8")
-        bootstrap = text.split("QSOL_FIRST_OBSERVATION_BOOTSTRAP=", 1)[1].split(
-            "\nqsol_first_observation()", 1
-        )[0]
+        bootstrap = _documented_bootstrap_literal()
         self.assertIn('"rev-parse","--verify","HEAD^{commit}"', bootstrap)
         self.assertIn('commit+":tools/run_first_production_observation.py"', bootstrap)
         self.assertIn('"_QSOL_AUTHENTICATED_BOOTSTRAP_REVISION":commit', bootstrap)
