@@ -23,7 +23,8 @@ WORKFLOW = ROOT / ".github" / "workflows" / "phase1-reference.yml"
 class StandaloneCaptureMacShebangUserSiteTests(unittest.TestCase):
     def test_posix_wrapper_is_macos_portable_without_gnu_readlink_f(self) -> None:
         source = POSIX_WRAPPER.read_text(encoding="utf-8")
-        self.assertNotIn("readlink -f", source)
+        self.assertNotIn('$qsol_readlink -f', source)
+        self.assertNotIn('"$qsol_readlink" -f', source)
         self.assertNotIn("[[ -v", source)
         self.assertIn("/Library/Frameworks/Python.framework/Versions/*/bin/python*", source)
         self.assertIn("/opt/homebrew/Cellar/python*", source)
