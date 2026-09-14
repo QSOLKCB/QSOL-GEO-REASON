@@ -259,6 +259,23 @@ def _existing_regular_preparation_receipt(path: Path) -> bool:
     return True
 
 
+def _existing_regular_prepared_request(path: Path) -> bool:
+    """Return whether a recoverable request exists, rejecting symlinks/non-regular files."""
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise CaptureContractError(
+            f"unable to inspect prepared request recovery artifact {path}: {exc}"
+        ) from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise CaptureContractError(
+            f"prepared request recovery artifact must be a regular non-symlink file: {path}"
+        )
+    return True
+
+
 def _read_regular_preparation_receipt(path: Path) -> Mapping[str, Any]:
     """Read one recovery receipt while preserving the original pathname identity."""
     try:
@@ -289,6 +306,42 @@ def _read_regular_preparation_receipt(path: Path) -> Mapping[str, Any]:
     return receipt
 
 
+def _read_regular_prepared_request(path: Path) -> Mapping[str, Any]:
+    """Read a published request stably and require the canonical bytes emitted by the publisher."""
+    try:
+        before = path.lstat()
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            raise CaptureContractError(
+                f"prepared request recovery artifact must be a regular non-symlink file: {path}"
+            )
+        raw = path.read_bytes()
+        value = json.loads(raw.decode("utf-8"))
+        after = path.lstat()
+    except CaptureContractError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise CaptureContractError(
+            f"unable to read prepared request recovery artifact {path}: {exc}"
+        ) from exc
+    if (
+        stat.S_ISLNK(after.st_mode)
+        or not stat.S_ISREG(after.st_mode)
+        or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+    ):
+        raise CaptureContractError(
+            f"prepared request recovery artifact changed during verification: {path}"
+        )
+    if not isinstance(value, dict):
+        raise CaptureContractError(
+            f"prepared request recovery artifact must contain a JSON object: {path}"
+        )
+    if raw != _core.canonical_json_bytes(value) + b"\n":
+        raise CaptureContractError(
+            f"prepared request recovery artifact is not canonical immutable JSON: {path}"
+        )
+    return value
+
+
 def _recover_incomplete_preparation(
     output: Path,
     preparation_receipt_path: Path,
@@ -307,6 +360,54 @@ def _recover_incomplete_preparation(
     )
     _core._exclusive_write_json(output, final_request)
     return _core.sha256_json(final_request)
+
+
+def _recover_published_preparation(
+    output: Path,
+    preparation_receipt_path: Path,
+    *,
+    recovery_repository_commit: str,
+) -> str:
+    """Revalidate and durably resync a request+receipt pair left visible after publication."""
+    receipt = _read_regular_preparation_receipt(preparation_receipt_path)
+    expected_request = _core._reconstruct_request_from_preparation_receipt(
+        receipt,
+        recovery_repository_commit=recovery_repository_commit,
+    )
+    observed_request = _read_regular_prepared_request(output)
+    if observed_request != expected_request:
+        raise CaptureContractError(
+            "existing prepared request does not match its authenticated preparation receipt"
+        )
+    _core.verify_preparation_receipt(
+        receipt,
+        request=observed_request,
+        experiment_id=_core.EXPERIMENT_ID,
+    )
+    _core.verify_current_reference_environment(receipt["reference_environment"])
+    _reauthenticate_revision(
+        recovery_repository_commit,
+        "published preparation recovery inputs changed before durability sync",
+    )
+
+    # Re-read both immutable names after all semantic/source checks.  A retry is
+    # allowed to complete only if the exact pair remained stable throughout the
+    # recovery window; it never overwrites either artifact or repeats Hub work.
+    if _read_regular_preparation_receipt(preparation_receipt_path) != receipt:
+        raise CaptureContractError(
+            "preparation receipt changed during published-pair recovery"
+        )
+    if _read_regular_prepared_request(output) != observed_request:
+        raise CaptureContractError(
+            "prepared request changed during published-pair recovery"
+        )
+    try:
+        _core._fsync_directory(output.parent)
+    except OSError as exc:
+        raise CaptureContractError(
+            f"unable to durably recover published preparation pair in {output.parent}: {exc}"
+        ) from exc
+    return _core.sha256_json(observed_request)
 
 
 def _preserve_failed_attempt(
@@ -380,11 +481,15 @@ def prepare(
     output: Path,
     implementation_revision: str | None = None,
 ) -> str:
-    """Prepare the frozen request with launcher, runtime, and no-site Hub provenance."""
+    """Prepare or safely recover the frozen request under authenticated provenance."""
     _assert_preparation_output_outside_checkout(output)
     preparation_receipt_path = _core._default_preparation_receipt_path(output)
-    if output.exists():
-        raise CaptureContractError(f"refusing to overwrite existing artifact {output}")
+    output_exists = _existing_regular_prepared_request(output)
+    receipt_exists = _existing_regular_preparation_receipt(preparation_receipt_path)
+    if output_exists and not receipt_exists:
+        raise CaptureContractError(
+            f"refusing existing prepared request without its required preparation receipt: {output}"
+        )
 
     try:
         preparation_repository_commit = _core.resolve_implementation_revision(
@@ -397,8 +502,14 @@ def prepare(
         ) from exc
     _authenticate_external_inputs(preparation_repository_commit)
 
-    if _existing_regular_preparation_receipt(preparation_receipt_path):
-        return _core._recover_incomplete_preparation(
+    if output_exists:
+        return _recover_published_preparation(
+            output,
+            preparation_receipt_path,
+            recovery_repository_commit=preparation_repository_commit,
+        )
+    if receipt_exists:
+        return _recover_incomplete_preparation(
             output,
             preparation_receipt_path,
             recovery_repository_commit=preparation_repository_commit,
@@ -599,6 +710,7 @@ _core.prepare_hub_evidence = _isolated_prepare_hub_evidence
 _core.prepare_tree_receipts = _isolated_prepare_tree_receipts
 _core._assert_preparation_output_outside_checkout = _assert_preparation_output_outside_checkout
 _core._recover_incomplete_preparation = _recover_incomplete_preparation
+_core._recover_published_preparation = _recover_published_preparation
 _core._preserve_failed_attempt = _preserve_failed_attempt
 _core.prepare = prepare
 _core.observe = observe
