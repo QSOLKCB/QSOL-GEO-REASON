@@ -25,25 +25,11 @@ LOCK = ROOT / "constraints" / "capture-reference-py311.txt"
 REFERENCE_ENVIRONMENT_SCHEMA_VERSION = "1.4.0"
 REFERENCE_LANE = "capture-reference-py311-linux-x86_64-cpu"
 _BOOTSTRAP_OR_PROJECT = frozenset({"pip", "setuptools", "wheel", "qsol-geo-reason"})
+# This is the complete locked external dependency closure that huggingface_hub 0.23.5
+# may execute while resolving/downloading snapshots. It intentionally includes both
+# direct Hub dependencies and Requests' HTTP/TLS dependencies, so the no-site Hub
+# child can authenticate every such package before importing huggingface_hub.
 HUB_TRANSPORT_PACKAGE_IMPORTS = {
-    "requests": "requests",
-    "urllib3": "urllib3",
-    "certifi": "certifi",
-    "charset-normalizer": "charset_normalizer",
-    "idna": "idna",
-}
-# Direct executable packages used by canonical capture. These were previously
-# represented only by per-run manifests, which did not bind observation-time bytes
-# back to the environment frozen during preparation.
-CAPTURE_DIRECT_PACKAGE_IMPORTS = {
-    "safetensors": "safetensors",
-    "tokenizers": "tokenizers",
-    "torch": "torch",
-    "transformers": "transformers",
-}
-# Complete locked dependency closure that huggingface_hub 0.23.5 may execute while
-# resolving/downloading snapshots, including Requests' TLS/HTTP dependencies.
-HUB_EXECUTION_PACKAGE_IMPORTS = {
     "certifi": "certifi",
     "charset-normalizer": "charset_normalizer",
     "filelock": "filelock",
@@ -56,10 +42,18 @@ HUB_EXECUTION_PACKAGE_IMPORTS = {
     "typing-extensions": "typing_extensions",
     "urllib3": "urllib3",
 }
+# Direct executable packages used by canonical capture. These must be frozen during
+# preparation as well as reported by individual run manifests; otherwise two replay
+# runs could agree after the direct runtime changed between prepare and observe.
+CAPTURE_DIRECT_PACKAGE_IMPORTS = {
+    "safetensors": "safetensors",
+    "tokenizers": "tokenizers",
+    "torch": "torch",
+    "transformers": "transformers",
+}
 # Locked executable transitive distributions not represented by the direct capture
-# map or dedicated Hub package. Some packages intentionally overlap the explicit Hub
-# execution map: the latter records the online-preparation trust boundary as a closed
-# set, while this map records the capture-time transitive closure.
+# map or dedicated Hugging Face Hub package receipt. Some entries overlap the Hub
+# closure because they also execute during capture-time imports.
 CAPTURE_TRANSITIVE_PACKAGE_IMPORTS = {
     "attrs": "attrs",
     "filelock": "filelock",
@@ -83,7 +77,6 @@ CAPTURE_TRANSITIVE_PACKAGE_IMPORTS = {
 _PACKAGE_DISTRIBUTION_BY_IMPORT = {
     "huggingface_hub": "huggingface-hub",
     **{import_name: canonical for canonical, import_name in HUB_TRANSPORT_PACKAGE_IMPORTS.items()},
-    **{import_name: canonical for canonical, import_name in HUB_EXECUTION_PACKAGE_IMPORTS.items()},
     **{import_name: canonical for canonical, import_name in CAPTURE_DIRECT_PACKAGE_IMPORTS.items()},
     **{import_name: canonical for canonical, import_name in CAPTURE_TRANSITIVE_PACKAGE_IMPORTS.items()},
 }
@@ -102,7 +95,6 @@ _RECEIPT_KEYS = frozenset(
         "huggingface_hub_package_file_count",
         "huggingface_hub_package_receipt_sha256",
         "hub_transport_package_provenance",
-        "hub_execution_package_provenance",
         "capture_direct_package_provenance",
         "capture_transitive_package_provenance",
         "environment_receipt_sha256",
@@ -245,17 +237,9 @@ def _package_provenance_map(
 
 
 def _hub_transport_package_provenance() -> dict[str, dict[str, Any]]:
-    """Content-bind the locked Requests/TLS distribution payload used for Hub transport."""
+    """Content-bind the complete locked dependency closure used by Hub preparation."""
     return _package_provenance_map(
         HUB_TRANSPORT_PACKAGE_IMPORTS,
-        "Hugging Face Hub transport",
-    )
-
-
-def _hub_execution_package_provenance() -> dict[str, dict[str, Any]]:
-    """Content-bind every locked dependency executable by online Hub preparation."""
-    return _package_provenance_map(
-        HUB_EXECUTION_PACKAGE_IMPORTS,
         "Hugging Face Hub execution",
     )
 
@@ -340,16 +324,6 @@ def _validate_hub_transport_package_provenance(
     return _validate_package_provenance_map(
         provenance,
         HUB_TRANSPORT_PACKAGE_IMPORTS,
-        "Hugging Face Hub transport",
-    )
-
-
-def _validate_hub_execution_package_provenance(
-    provenance: Mapping[str, Any],
-) -> dict[str, dict[str, Any]]:
-    return _validate_package_provenance_map(
-        provenance,
-        HUB_EXECUTION_PACKAGE_IMPORTS,
         "Hugging Face Hub execution",
     )
 
@@ -420,7 +394,6 @@ def _build_reference_environment_receipt_from_state(
     platform_machine: str,
     hub_package_provenance: Mapping[str, Any],
     hub_transport_package_provenance: Mapping[str, Any],
-    hub_execution_package_provenance: Mapping[str, Any],
     capture_direct_package_provenance: Mapping[str, Any],
     capture_transitive_package_provenance: Mapping[str, Any],
     python_releaselevel: str = "final",
@@ -440,9 +413,6 @@ def _build_reference_environment_receipt_from_state(
     )
     transport_provenance = _validate_hub_transport_package_provenance(
         hub_transport_package_provenance
-    )
-    hub_execution_provenance = _validate_hub_execution_package_provenance(
-        hub_execution_package_provenance
     )
     direct_provenance = _validate_capture_direct_package_provenance(
         capture_direct_package_provenance
@@ -504,7 +474,6 @@ def _build_reference_environment_receipt_from_state(
         "huggingface_hub_package_file_count": hub_file_count,
         "huggingface_hub_package_receipt_sha256": hub_receipt_sha256,
         "hub_transport_package_provenance": transport_provenance,
-        "hub_execution_package_provenance": hub_execution_provenance,
         "capture_direct_package_provenance": direct_provenance,
         "capture_transitive_package_provenance": transitive_provenance,
     }
@@ -524,7 +493,6 @@ def build_reference_environment_receipt() -> dict[str, Any]:
         platform_machine=platform.machine(),
         hub_package_provenance=_huggingface_hub_package_provenance(),
         hub_transport_package_provenance=_hub_transport_package_provenance(),
-        hub_execution_package_provenance=_hub_execution_package_provenance(),
         capture_direct_package_provenance=_capture_direct_package_provenance(),
         capture_transitive_package_provenance=_capture_transitive_package_provenance(),
         python_releaselevel=version.releaselevel,
@@ -593,13 +561,6 @@ def verify_reference_environment_receipt(
     )
     if normalized_transport != receipt["hub_transport_package_provenance"]:
         raise CaptureContractError(
-            "reference environment Hub transport package provenance is not canonical"
-        )
-    normalized_hub_execution = _validate_hub_execution_package_provenance(
-        receipt["hub_execution_package_provenance"]
-    )
-    if normalized_hub_execution != receipt["hub_execution_package_provenance"]:
-        raise CaptureContractError(
             "reference environment Hub execution package provenance is not canonical"
         )
     normalized_direct = _validate_capture_direct_package_provenance(
@@ -652,7 +613,6 @@ def verify_current_reference_environment(
 __all__ = [
     "CAPTURE_DIRECT_PACKAGE_IMPORTS",
     "CAPTURE_TRANSITIVE_PACKAGE_IMPORTS",
-    "HUB_EXECUTION_PACKAGE_IMPORTS",
     "HUB_TRANSPORT_PACKAGE_IMPORTS",
     "LOCK",
     "REFERENCE_ENVIRONMENT_SCHEMA_VERSION",
