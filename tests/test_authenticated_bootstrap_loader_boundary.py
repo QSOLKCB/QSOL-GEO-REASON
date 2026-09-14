@@ -77,7 +77,7 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
         self.assertIn("POSIX mode", text)
         self.assertIn("special builtins", text)
         self.assertIn("exec", text)
-        self.assertIn("does not import shell functions", text)
+        self.assertIn("does not import exported shell functions", text)
         self.assertIn("activated virtual environment", text)
 
     def test_readonly_loader_variable_aborts_before_python(self) -> None:
