@@ -3,9 +3,10 @@
 Canonical lock: constraints/capture-reference-py311.txt.
 Reject missing, mismatched, and unexpected runtime distributions as well as any
 interpreter/platform outside the selected final CPython 3.11 Linux x86_64 lane. The
-receipt content-binds the exact importable Hugging Face Hub package tree, the locked
-Requests/urllib3/certifi/charset-normalizer/idna transport chain, and every remaining
-capture-time transitive executable package in the frozen reference closure.
+receipt content-binds the exact importable Hugging Face Hub package tree, its complete
+locked execution dependency closure, the direct Torch/Transformers/Tokenizers/
+Safetensors capture packages, and every remaining capture-time transitive executable
+package in the frozen reference closure.
 
 This verifier is intentionally bytecode-write-free. Canonical production rejects any
 ``src/qsol_geo_reason`` bytecode before import, so the preflight must not dirty a clean
@@ -44,6 +45,10 @@ def _current_hub_package_provenance():
 
 def _current_hub_transport_package_provenance():
     return _reference._hub_transport_package_provenance()
+
+
+def _current_capture_direct_package_provenance():
+    return _reference._capture_direct_package_provenance()
 
 
 def _current_capture_transitive_package_provenance():
@@ -86,6 +91,7 @@ def verify_reference_environment() -> dict[str, object]:
             platform_machine=_current_platform_machine(),
             hub_package_provenance=_current_hub_package_provenance(),
             hub_transport_package_provenance=_current_hub_transport_package_provenance(),
+            capture_direct_package_provenance=_current_capture_direct_package_provenance(),
             capture_transitive_package_provenance=_current_capture_transitive_package_provenance(),
             python_releaselevel=_current_python_releaselevel(),
             python_serial=_current_python_serial(),
