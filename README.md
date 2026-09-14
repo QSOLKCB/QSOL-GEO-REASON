@@ -199,19 +199,19 @@ python -m pip install -e '.[capture]'
 
 For the first production observation, do **not** edit the generic example request. The repository freezes `GEO-CAP-001-EXP-001` around `Qwen/Qwen2.5-0.5B` at immutable revision `060db6499f32faf8b98477b0a26969ef7d8b9987`, CPU float32 replay, required determinism, fixed text segmentation, sampled hidden-state indices `0, 6, 12, 18, 24`, and `step_mean` pooling.
 
-The working-tree launcher is **not** the production trust root. Before running either production phase, define the authenticated Git-blob `qsol_first_observation` bootstrap exactly as documented in [`experiments/GEO-CAP-001-EXP-001.md#authenticated-launcher-bootstrap`](experiments/GEO-CAP-001-EXP-001.md#authenticated-launcher-bootstrap). That bootstrap starts CPython in isolated/no-site mode, authenticates the committed launcher blob through trusted system Git, and executes those committed bytes rather than the mutable working-tree launcher.
+The working-tree launcher is **not** the production trust root. Before running either production phase, define the authenticated Git-blob `qsol_first_observation` bootstrap exactly as documented in [`experiments/GEO-CAP-001-EXP-001.md#authenticated-launcher-bootstrap`](experiments/GEO-CAP-001-EXP-001.md#authenticated-launcher-bootstrap). That bootstrap starts CPython in isolated/no-site mode, authenticates the committed launcher blob through trusted system Git, and executes those committed bytes rather than the mutable working-tree launcher. Invoke it with the documented leading backslash so an ambient alias with the same name cannot intercept the command.
 
 The trusted online preparation stage then materializes only the authenticated Hub tree receipts:
 
 ```bash
-qsol_first_observation prepare \
+\qsol_first_observation prepare \
   --output /tmp/GEO-CAP-001-EXP-001.request.json
 ```
 
 Then the empirical stage runs the exact final request twice under forced offline mode and records the replay result through the same authenticated bootstrap:
 
 ```bash
-qsol_first_observation observe \
+\qsol_first_observation observe \
   --request /tmp/GEO-CAP-001-EXP-001.request.json \
   --output-root /tmp/GEO-CAP-001-EXP-001
 ```
