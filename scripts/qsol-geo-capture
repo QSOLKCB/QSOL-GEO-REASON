@@ -1,0 +1,301 @@
+#!/bin/bash -p
+set -euo pipefail
+
+# POSIX installed qsol-geo-capture payload. Canonical production invocation enters
+# this file through a fixed Bash executable rather than asking the kernel to trust
+# this mutable file's shebang. Python starts only after ambient Python/native-loader
+# controls have been cleared, and always under isolated/no-site/no-bytecode flags.
+for qsol_name in ${!PYTHON@} ${!LD_@} ${!DYLD_@} ${!_RLD_@} ${!LDR_@}; do
+    unset "$qsol_name" || {
+        printf '%s\n' "qsol-geo-capture: unable to clear pre-interpreter environment control $qsol_name" >&2
+        exit 126
+    }
+done
+# Unsetting an absent variable succeeds and is compatible with the Bash 3.2 shipped
+# by macOS; do not use the newer [[ -v ... ]] operator at this boundary.
+for qsol_name in GLIBC_TUNABLES LIBPATH SHLIB_PATH; do
+    unset "$qsol_name" || {
+        printf '%s\n' "qsol-geo-capture: unable to clear pre-interpreter loader control $qsol_name" >&2
+        exit 126
+    }
+done
+
+qsol_script=$0
+case "$qsol_script" in
+    /*) ;;
+    *) qsol_script="$PWD/${qsol_script#./}" ;;
+esac
+qsol_bindir=${qsol_script%/*}
+
+# Prefer an interpreter whose pathname is derived from the installed environment
+# rather than from another mutable generated launcher. Conventional virtualenv and
+# prefix installs therefore never consult qsol-geo-sim at all.
+qsol_python=""
+if [[ -f $qsol_bindir/python && -x $qsol_bindir/python ]]; then
+    qsol_python="$qsol_bindir/python"
+elif [[ -f $qsol_bindir/python3 && -x $qsol_bindir/python3 ]]; then
+    qsol_python="$qsol_bindir/python3"
+else
+    # A POSIX --user install places raw scripts under <userbase>/bin while the
+    # installing interpreter remains outside that prefix. setuptools also emits
+    # qsol-geo-sim there. Its shebang is used only as an untrusted locator: the
+    # generated file itself is never executed, symlinks are rejected, and the
+    # selected interpreter must resolve into a fixed trusted system/toolchain root
+    # before it can receive the authenticated stage-0 program.
+    qsol_interpreter_anchor="$qsol_bindir/qsol-geo-sim"
+    if [[ ! -f $qsol_interpreter_anchor || -L $qsol_interpreter_anchor ]]; then
+        printf '%s\n' "qsol-geo-capture: missing regular non-symlink user-site interpreter locator" >&2
+        exit 126
+    fi
+    IFS= read -r qsol_shebang < "$qsol_interpreter_anchor" || {
+        printf '%s\n' "qsol-geo-capture: unable to read user-site interpreter locator" >&2
+        exit 126
+    }
+    case "$qsol_shebang" in
+        '#!'/*) qsol_python=${qsol_shebang#\#!} ;;
+        *)
+            printf '%s\n' "qsol-geo-capture: user-site interpreter locator has a noncanonical shebang" >&2
+            exit 126
+            ;;
+    esac
+fi
+
+if [[ $qsol_python != /* || ! -f $qsol_python || ! -x $qsol_python ]]; then
+    printf '%s\n' "qsol-geo-capture: selected Python interpreter is not an absolute executable file" >&2
+    exit 126
+fi
+
+# Resolve interpreter symlinks without GNU readlink -f (which stock macOS lacks).
+# Only a fixed system readlink binary is executed and the lexical venv pathname is
+# still the pathname passed to CPython, preserving virtualenv prefix semantics.
+qsol_readlink=""
+for qsol_candidate in /usr/bin/readlink /bin/readlink /run/current-system/sw/bin/readlink; do
+    if [[ -f $qsol_candidate && -x $qsol_candidate ]]; then
+        qsol_readlink=$qsol_candidate
+        break
+    fi
+done
+if [[ -z $qsol_readlink ]]; then
+    printf '%s\n' "qsol-geo-capture: cannot locate fixed system readlink for interpreter authentication" >&2
+    exit 126
+fi
+qsol_python_resolved=$qsol_python
+qsol_link_hops=0
+while [[ -L $qsol_python_resolved ]]; do
+    qsol_link_hops=$((qsol_link_hops + 1))
+    if (( qsol_link_hops > 32 )); then
+        printf '%s\n' "qsol-geo-capture: selected Python interpreter has an excessive symlink chain" >&2
+        exit 126
+    fi
+    qsol_link_target=$($qsol_readlink "$qsol_python_resolved") || {
+        printf '%s\n' "qsol-geo-capture: unable to resolve selected Python interpreter symlink" >&2
+        exit 126
+    }
+    case "$qsol_link_target" in
+        /*) qsol_python_resolved=$qsol_link_target ;;
+        *) qsol_python_resolved=${qsol_python_resolved%/*}/$qsol_link_target ;;
+    esac
+done
+qsol_python_dir=${qsol_python_resolved%/*}
+qsol_python_base=${qsol_python_resolved##*/}
+qsol_python_resolved=$(cd -P "$qsol_python_dir" 2>/dev/null && printf '%s/%s\n' "$PWD" "$qsol_python_base") || {
+    printf '%s\n' "qsol-geo-capture: unable to canonicalize selected Python interpreter" >&2
+    exit 126
+}
+
+# Accept the fixed system/toolchain roots used by Linux/Nix, GitHub-hosted runners,
+# python.org macOS installers, and Homebrew on both Apple Silicon and Intel. The
+# locator may name a path elsewhere, but such a target never receives stage-0.
+case "$qsol_python_resolved" in
+    /usr/bin/python*|/bin/python*|/usr/local/bin/python*|/opt/hostedtoolcache/Python/*/bin/python*|/Users/runner/hostedtoolcache/Python/*/bin/python*|/run/current-system/sw/bin/python*|/Library/Frameworks/Python.framework/Versions/*/bin/python*|/opt/homebrew/Cellar/python*/*/Frameworks/Python.framework/Versions/*/bin/python*|/opt/homebrew/Cellar/python*/*/bin/python*|/usr/local/Cellar/python*/*/Frameworks/Python.framework/Versions/*/bin/python*|/usr/local/Cellar/python*/*/bin/python*) ;;
+    *)
+        printf '%s\n' "qsol-geo-capture: selected Python interpreter does not resolve inside a trusted system/toolchain root" >&2
+        exit 126
+        ;;
+esac
+if [[ ! -f $qsol_python_resolved || ! -x $qsol_python_resolved ]]; then
+    printf '%s\n' "qsol-geo-capture: trusted Python target is not an executable regular file" >&2
+    exit 126
+fi
+
+exec "$qsol_python" -I -S -B - "$qsol_script" "$@" <<'QSOL_STANDALONE_STAGE0'
+from __future__ import annotations
+
+import hashlib
+import importlib.metadata
+import json
+import os
+import pathlib
+import re
+import stat
+import subprocess
+import sys
+import sysconfig
+import urllib.parse
+import urllib.request
+
+if not sys.flags.isolated or not sys.flags.no_site or not sys.flags.no_user_site or not sys.flags.ignore_environment or not sys.dont_write_bytecode:
+    raise RuntimeError("qsol-geo-capture standalone stage0 requires CPython -I -S -B")
+
+wrapper = pathlib.Path(sys.argv[1])
+loader_prefixes = ("LD_", "DYLD_", "_RLD_", "LDR_")
+loader_names = {"GLIBC_TUNABLES", "LIBPATH", "SHLIB_PATH"}
+
+
+def literal_site_package_paths() -> tuple[pathlib.Path, ...]:
+    # Keep the lexical executable path. A conventional virtualenv's bin/python
+    # is commonly a symlink to the base interpreter; resolving it here would
+    # discard the active environment and scan the wrong site-packages tree.
+    executable = pathlib.Path(sys.executable)
+    if not executable.is_absolute():
+        raise RuntimeError("isolated stage0 requires an absolute interpreter pathname")
+    venv_root = executable.parent.parent
+    version = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    candidates: list[pathlib.Path] = []
+    if (venv_root / "pyvenv.cfg").is_file():
+        candidates.extend(
+            (
+                venv_root / "lib" / version / "site-packages",
+                venv_root / "lib64" / version / "site-packages",
+            )
+        )
+    else:
+        for key in ("purelib", "platlib"):
+            value = sysconfig.get_paths().get(key)
+            if isinstance(value, str) and value.strip():
+                candidates.append(pathlib.Path(value))
+
+        # POSIX --user layouts derive from the installed wrapper rather than HOME,
+        # PYTHONUSERBASE, PATH, or site initialization. Linux commonly uses
+        # lib/pythonX.Y/site-packages; python.org macOS uses lib/python/site-packages.
+        install_prefix = wrapper.parent.parent
+        candidates.extend(
+            (
+                install_prefix / "lib" / version / "site-packages",
+                install_prefix / "lib64" / version / "site-packages",
+                install_prefix / "lib" / "python" / "site-packages",
+            )
+        )
+    observed: list[pathlib.Path] = []
+    for candidate in candidates:
+        resolved = candidate.resolve(strict=False)
+        if resolved.is_dir() and resolved not in observed:
+            observed.append(resolved)
+    if not observed:
+        raise RuntimeError("unable to locate installed distribution metadata without site startup")
+    return tuple(observed)
+
+
+def canonical_distribution_name(value: str) -> str:
+    return re.sub(r"[-_.]+", "-", value).lower()
+
+
+def editable_checkout_root() -> pathlib.Path:
+    roots: set[pathlib.Path] = set()
+    for site_path in literal_site_package_paths():
+        for distribution in importlib.metadata.distributions(path=[str(site_path)]):
+            name = distribution.metadata.get("Name", "")
+            if canonical_distribution_name(name) != "qsol-geo-reason":
+                continue
+            raw = distribution.read_text("direct_url.json")
+            if raw is None:
+                raise RuntimeError("qsol-geo-capture requires an editable qsol-geo-reason install to locate its authenticated checkout")
+            record = json.loads(raw)
+            if record.get("dir_info", {}).get("editable") is not True:
+                raise RuntimeError("qsol-geo-capture requires an editable qsol-geo-reason install to bind source provenance")
+            parsed = urllib.parse.urlsplit(record.get("url", ""))
+            if parsed.scheme.lower() != "file" or parsed.netloc not in {"", "localhost"}:
+                raise RuntimeError("editable qsol-geo-reason direct_url must be a local file URL")
+            decoded = urllib.request.url2pathname(urllib.parse.unquote(parsed.path))
+            roots.add(pathlib.Path(decoded).resolve(strict=True))
+    if len(roots) != 1:
+        raise RuntimeError("qsol-geo-capture could not identify exactly one editable QSOL-GEO-REASON checkout")
+    return next(iter(roots))
+
+
+def hash_executable(candidate: pathlib.Path) -> tuple[pathlib.Path, str]:
+    resolved = candidate.resolve(strict=True)
+    info = resolved.stat()
+    if not stat.S_ISREG(info.st_mode) or not os.access(resolved, os.X_OK):
+        raise RuntimeError(f"untrusted standalone Git executable {resolved}")
+    if os.name == "posix" and (info.st_uid != 0 or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+        raise RuntimeError(f"untrusted standalone Git executable metadata {resolved}")
+    return resolved, hashlib.sha256(resolved.read_bytes()).hexdigest()
+
+
+last_error: BaseException | None = None
+git_identity: tuple[pathlib.Path, str] | None = None
+for candidate in (
+    pathlib.Path("/usr/bin/git"),
+    pathlib.Path("/bin/git"),
+    pathlib.Path("/run/current-system/sw/bin/git"),
+):
+    try:
+        git_identity = hash_executable(candidate)
+        break
+    except (OSError, RuntimeError) as exc:
+        last_error = exc
+if git_identity is None:
+    raise RuntimeError("qsol-geo-capture requires a trusted system Git executable") from last_error
+git, git_digest = git_identity
+package_paths = literal_site_package_paths()
+root = editable_checkout_root()
+
+environment: dict[str, str] = {}
+for key, value in os.environ.items():
+    upper = key.upper()
+    if upper == "PATH" or upper.startswith("GIT_") or upper.startswith("PYTHON"):
+        continue
+    if upper.startswith(loader_prefixes) or upper in loader_names:
+        continue
+    environment[key] = value
+environment.update(
+    {
+        "PATH": "/usr/bin:/bin:/run/current-system/sw/bin",
+        "LC_ALL": "C",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+)
+
+
+def git_run(*args: str) -> bytes:
+    completed = subprocess.run(
+        [str(git), "-C", str(root), *args],
+        env=environment,
+        check=True,
+        capture_output=True,
+    )
+    observed_git, observed_digest = hash_executable(git)
+    if observed_git != git or observed_digest != git_digest:
+        raise RuntimeError("trusted Git executable changed during standalone stage0")
+    return completed.stdout
+
+
+commit = git_run("rev-parse", "--verify", "HEAD^{commit}").decode("ascii").strip()
+if len(commit) != 40 or any(ch not in "0123456789abcdef" for ch in commit):
+    raise RuntimeError("standalone stage0 could not bind a lowercase 40-hex Git commit")
+
+committed_wrapper = git_run("cat-file", "blob", commit + ":scripts/qsol-geo-capture")
+if wrapper.read_bytes() != committed_wrapper:
+    raise RuntimeError("installed qsol-geo-capture wrapper does not match the bound Git revision")
+
+payload = git_run("cat-file", "blob", commit + ":scripts/qsol-geo-capture-python")
+if git_run("rev-parse", "--verify", "HEAD^{commit}").decode("ascii").strip() != commit:
+    raise RuntimeError("Git HEAD changed while authenticating the standalone capture payload")
+
+sys.argv = [str(wrapper), *sys.argv[2:]]
+namespace = {
+    "__name__": "qsol_standalone_authenticated_payload",
+    "__file__": str(wrapper),
+    "__package__": None,
+    "_QSOL_STANDALONE_AUTHENTICATED_ROOT": str(root),
+    "_QSOL_STANDALONE_BOOTSTRAP_GIT_PATH": "scripts/qsol-geo-capture",
+    "_QSOL_STANDALONE_PACKAGE_PATHS": [str(path) for path in package_paths],
+}
+exec(compile(payload, str(wrapper), "exec"), namespace, namespace)
+raise SystemExit(namespace["main"]())
+QSOL_STANDALONE_STAGE0

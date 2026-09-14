@@ -1,0 +1,575 @@
+"""Authenticated Python payload for the installed ``qsol-geo-capture`` wrapper.
+
+This file is not a user-facing entry point. A platform-native wrapper first starts
+CPython as ``-I -S -B``, binds one Git commit and an editable checkout root, then
+reads this payload from that same commit and executes it under the private stage-0
+module identity. Direct execution of this tracked file fails closed.
+
+The payload imports no ``qsol_geo_reason`` module before authenticating the installed
+platform wrapper and every tracked package file against the same bound revision. Its
+child then re-hashes the complete package manifest and rejects importable shadows,
+including package-local native extensions, before exposing ``src`` on ``sys.path``
+or importing ``qsol_geo_reason.capture_cli``. Package directories validated by the
+platform stage-0 are carried through the isolated child so ``--user`` dependencies
+remain available without enabling ``site`` or executing ``.pth`` files.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import stat
+import subprocess
+import sys
+import sysconfig
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+
+_PACKAGE_GIT_ROOT = "src/qsol_geo_reason"
+_STAGE0_MODULE_NAME = "qsol_standalone_authenticated_payload"
+_STAGE0_ROOT_NAME = "_QSOL_STANDALONE_AUTHENTICATED_ROOT"
+_STAGE0_BOOTSTRAP_PATH_NAME = "_QSOL_STANDALONE_BOOTSTRAP_GIT_PATH"
+_STAGE0_PACKAGE_PATHS_NAME = "_QSOL_STANDALONE_PACKAGE_PATHS"
+_ALLOWED_BOOTSTRAP_GIT_PATHS = frozenset(
+    {"scripts/qsol-geo-capture", "scripts/qsol-geo-capture.cmd"}
+)
+_LOADER_ENV_PREFIXES = ("LD_", "DYLD_", "_RLD_", "LDR_")
+_LOADER_ENV_NAMES = frozenset({"GLIBC_TUNABLES", "LIBPATH", "SHLIB_PATH"})
+
+
+class StandaloneCaptureBootstrapError(RuntimeError):
+    pass
+
+
+def _stage0_authenticated_root() -> Path:
+    value = globals().get(_STAGE0_ROOT_NAME)
+    if not isinstance(value, str) or not value.strip():
+        raise StandaloneCaptureBootstrapError(
+            "standalone capture requires a stage0-authenticated editable checkout root"
+        )
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        raise StandaloneCaptureBootstrapError(
+            "stage0-authenticated checkout root must be absolute"
+        )
+    try:
+        return candidate.resolve(strict=True)
+    except OSError as exc:
+        raise StandaloneCaptureBootstrapError(
+            "unable to resolve the stage0-authenticated editable checkout root"
+        ) from exc
+
+
+def _stage0_bootstrap_git_path() -> str:
+    value = globals().get(_STAGE0_BOOTSTRAP_PATH_NAME)
+    if not isinstance(value, str) or value not in _ALLOWED_BOOTSTRAP_GIT_PATHS:
+        raise StandaloneCaptureBootstrapError(
+            "standalone capture received an unsupported authenticated wrapper identity"
+        )
+    return value
+
+
+def _stage0_package_paths() -> tuple[Path, ...]:
+    value = globals().get(_STAGE0_PACKAGE_PATHS_NAME)
+    if not isinstance(value, (list, tuple)) or not value:
+        raise StandaloneCaptureBootstrapError(
+            "standalone capture requires stage0-validated package directories"
+        )
+    observed: list[Path] = []
+    for raw in value:
+        if not isinstance(raw, str) or not raw.strip():
+            raise StandaloneCaptureBootstrapError(
+                "standalone stage0 package paths must be non-empty strings"
+            )
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            raise StandaloneCaptureBootstrapError(
+                "standalone stage0 package paths must be absolute"
+            )
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError as exc:
+            raise StandaloneCaptureBootstrapError(
+                f"unable to resolve stage0 package directory {candidate}"
+            ) from exc
+        if not resolved.is_dir():
+            raise StandaloneCaptureBootstrapError(
+                f"stage0 package path is not a directory: {resolved}"
+            )
+        if resolved not in observed:
+            observed.append(resolved)
+    return tuple(observed)
+
+
+def _system_git_candidates() -> tuple[Path, ...]:
+    if os.name == "nt":
+        return (
+            Path(r"C:\Program Files\Git\cmd\git.exe"),
+            Path(r"C:\Program Files\Git\bin\git.exe"),
+        )
+    return (
+        Path("/usr/bin/git"),
+        Path("/bin/git"),
+        Path("/run/current-system/sw/bin/git"),
+    )
+
+
+def _hash_executable(path: Path) -> tuple[Path, str]:
+    try:
+        resolved = path.resolve(strict=True)
+        info = resolved.stat()
+    except OSError as exc:
+        raise StandaloneCaptureBootstrapError(
+            f"unable to resolve trusted Git executable {path}"
+        ) from exc
+    if not stat.S_ISREG(info.st_mode) or not os.access(resolved, os.X_OK):
+        raise StandaloneCaptureBootstrapError(
+            f"trusted Git executable is not an executable regular file: {resolved}"
+        )
+    if os.name == "posix" and (
+        info.st_uid != 0 or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        raise StandaloneCaptureBootstrapError(
+            f"trusted Git executable is not root-owned and non-writable by group/other: {resolved}"
+        )
+    digest = hashlib.sha256()
+    try:
+        with resolved.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise StandaloneCaptureBootstrapError(
+            f"unable to hash trusted Git executable {resolved}"
+        ) from exc
+    return resolved, digest.hexdigest()
+
+
+def _trusted_git_identity() -> tuple[Path, str]:
+    last_error: BaseException | None = None
+    for candidate in _system_git_candidates():
+        try:
+            return _hash_executable(candidate)
+        except StandaloneCaptureBootstrapError as exc:
+            last_error = exc
+    raise StandaloneCaptureBootstrapError(
+        "standalone canonical capture requires a trusted system Git executable"
+    ) from last_error
+
+
+def _trusted_git_environment() -> dict[str, str]:
+    environment: dict[str, str] = {}
+    for key, value in os.environ.items():
+        upper = key.upper()
+        if upper == "PATH" or upper.startswith("GIT_"):
+            continue
+        if upper.startswith(_LOADER_ENV_PREFIXES) or upper in _LOADER_ENV_NAMES:
+            continue
+        environment[key] = value
+    if os.name == "nt":
+        trusted_path = os.pathsep.join(
+            (
+                r"C:\Program Files\Git\cmd",
+                r"C:\Program Files\Git\bin",
+                r"C:\Windows\System32",
+            )
+        )
+    else:
+        trusted_path = os.pathsep.join(
+            ("/usr/bin", "/bin", "/run/current-system/sw/bin")
+        )
+    environment.update(
+        {
+            "PATH": trusted_path,
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "LC_ALL": "C",
+        }
+    )
+    return environment
+
+
+def _git(
+    root: Path,
+    git_path: Path,
+    git_digest: str,
+    *args: str,
+    text: bool,
+) -> subprocess.CompletedProcess[Any]:
+    completed = subprocess.run(
+        [str(git_path), "-C", str(root), *args],
+        env=_trusted_git_environment(),
+        check=True,
+        capture_output=True,
+        text=text,
+    )
+    observed_path, observed_digest = _hash_executable(git_path)
+    if observed_path != git_path or observed_digest != git_digest:
+        raise StandaloneCaptureBootstrapError(
+            "trusted Git executable changed during standalone source authentication"
+        )
+    return completed
+
+
+def _assert_checkout_roots(root: Path) -> None:
+    source_root = root / "src"
+    package_root = source_root / "qsol_geo_reason"
+    for path, expected, label in (
+        (root, stat.S_ISDIR, "repository root"),
+        (source_root, stat.S_ISDIR, "source root"),
+        (package_root, stat.S_ISDIR, "package root"),
+    ):
+        try:
+            info = path.lstat()
+        except OSError as exc:
+            raise StandaloneCaptureBootstrapError(
+                f"unable to inspect standalone capture {label}: {path}"
+            ) from exc
+        if stat.S_ISLNK(info.st_mode) or not expected(info.st_mode):
+            raise StandaloneCaptureBootstrapError(
+                f"standalone capture rejects symlinked or invalid {label}: {path}"
+            )
+
+
+def _git_blob_sha1(raw: bytes) -> str:
+    digest = hashlib.sha1()
+    digest.update(b"blob ")
+    digest.update(str(len(raw)).encode("ascii"))
+    digest.update(b"\0")
+    digest.update(raw)
+    return digest.hexdigest()
+
+
+def _read_stable_regular(path: Path, label: str) -> bytes:
+    try:
+        before = path.lstat()
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            raise StandaloneCaptureBootstrapError(
+                f"standalone capture requires a regular non-symlink {label}: {path}"
+            )
+        raw = path.read_bytes()
+        after = path.lstat()
+    except StandaloneCaptureBootstrapError:
+        raise
+    except OSError as exc:
+        raise StandaloneCaptureBootstrapError(
+            f"unable to read standalone capture {label}: {path}"
+        ) from exc
+    if (
+        stat.S_ISLNK(after.st_mode)
+        or not stat.S_ISREG(after.st_mode)
+        or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+    ):
+        raise StandaloneCaptureBootstrapError(
+            f"standalone capture {label} changed pathname identity during authentication: {path}"
+        )
+    return raw
+
+
+def _authenticate_installed_bootstrap(
+    root: Path,
+    revision: str,
+    git_path: Path,
+    git_digest: str,
+) -> None:
+    bootstrap_git_path = _stage0_bootstrap_git_path()
+    try:
+        committed = _git(
+            root,
+            git_path,
+            git_digest,
+            "cat-file",
+            "blob",
+            f"{revision}:{bootstrap_git_path}",
+            text=False,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise StandaloneCaptureBootstrapError(
+            "unable to authenticate the installed qsol-geo-capture bootstrap"
+        ) from exc
+    installed = _read_stable_regular(Path(__file__), "installed bootstrap")
+    # Platform wrappers are authenticated byte-for-byte, including the POSIX
+    # shebang. Canonical POSIX production invocation uses a fixed Bash executable,
+    # so line 1 is data at process start and can safely be included in this check.
+    if installed != committed:
+        raise StandaloneCaptureBootstrapError(
+            "installed qsol-geo-capture bootstrap does not match the bound Git revision"
+        )
+
+
+def _authenticate_checkout() -> tuple[Path, str, dict[str, str]]:
+    git_path, git_digest = _trusted_git_identity()
+    root = _stage0_authenticated_root()
+    try:
+        observed_root = Path(
+            _git(
+                root,
+                git_path,
+                git_digest,
+                "rev-parse",
+                "--show-toplevel",
+                text=True,
+            ).stdout.strip()
+        ).resolve(strict=True)
+        revision = _git(
+            root,
+            git_path,
+            git_digest,
+            "rev-parse",
+            "--verify",
+            "HEAD^{commit}",
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise StandaloneCaptureBootstrapError(
+            "stage0-authenticated source root is not a usable QSOL-GEO-REASON Git checkout"
+        ) from exc
+    if observed_root != root:
+        raise StandaloneCaptureBootstrapError(
+            "stage0-authenticated source root is not the Git checkout top level"
+        )
+    _assert_checkout_roots(root)
+    if len(revision) != 40 or any(ch not in "0123456789abcdef" for ch in revision):
+        raise StandaloneCaptureBootstrapError(
+            "standalone canonical capture could not bind a lowercase 40-hex Git revision"
+        )
+
+    _authenticate_installed_bootstrap(root, revision, git_path, git_digest)
+
+    try:
+        listing = _git(
+            root,
+            git_path,
+            git_digest,
+            "ls-tree",
+            "-r",
+            "-z",
+            revision,
+            "--",
+            _PACKAGE_GIT_ROOT,
+            text=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise StandaloneCaptureBootstrapError(
+            "unable to enumerate tracked qsol_geo_reason source for standalone capture"
+        ) from exc
+    records = tuple(record for record in listing.split("\0") if record)
+    if not records:
+        raise StandaloneCaptureBootstrapError(
+            "bound revision contains no tracked qsol_geo_reason package files"
+        )
+
+    prefix = f"{_PACKAGE_GIT_ROOT}/"
+    manifest: dict[str, str] = {}
+    for record in records:
+        try:
+            metadata, relative = record.split("\t", 1)
+            mode, object_type, object_id = metadata.split(" ", 2)
+        except ValueError as exc:
+            raise StandaloneCaptureBootstrapError(
+                "malformed tracked package entry in bound Git revision"
+            ) from exc
+        normalized = relative.replace("\\", "/")
+        if not normalized.startswith(prefix):
+            raise StandaloneCaptureBootstrapError(
+                f"tracked package source escaped canonical package root: {relative}"
+            )
+        package_relative = normalized[len(prefix):]
+        pure = PurePosixPath(package_relative)
+        if (
+            not pure.parts
+            or package_relative != pure.as_posix()
+            or any(part in {"", ".", ".."} for part in pure.parts)
+        ):
+            raise StandaloneCaptureBootstrapError(f"invalid tracked package path: {relative}")
+        if (
+            object_type != "blob"
+            or mode not in {"100644", "100755"}
+            or len(object_id) != 40
+            or any(ch not in "0123456789abcdef" for ch in object_id)
+        ):
+            raise StandaloneCaptureBootstrapError(
+                f"canonical package source must be a regular SHA-1 Git blob: {relative}"
+            )
+        path = root.joinpath(*PurePosixPath(normalized).parts)
+        raw = _read_stable_regular(path, f"tracked package source {relative}")
+        if _git_blob_sha1(raw) != object_id:
+            raise StandaloneCaptureBootstrapError(
+                "standalone canonical capture rejects tracked package source that does not match "
+                f"bound revision independently of index flags: {relative}"
+            )
+        manifest[package_relative] = hashlib.sha256(raw).hexdigest()
+
+    observed_revision = _git(
+        root,
+        git_path,
+        git_digest,
+        "rev-parse",
+        "--verify",
+        "HEAD^{commit}",
+        text=True,
+    ).stdout.strip()
+    if observed_revision != revision:
+        raise StandaloneCaptureBootstrapError(
+            "Git HEAD changed during standalone capture source authentication"
+        )
+    return root, revision, dict(sorted(manifest.items()))
+
+
+def _literal_site_package_paths() -> list[str]:
+    paths: list[str] = []
+    candidates: list[Path] = list(_stage0_package_paths())
+    executable = Path(sys.executable)
+    venv_root = executable.parent.parent
+    if (venv_root / "pyvenv.cfg").is_file():
+        if os.name == "nt":
+            candidates.append(venv_root / "Lib" / "site-packages")
+        else:
+            version = f"python{sys.version_info.major}.{sys.version_info.minor}"
+            candidates.extend(
+                (
+                    venv_root / "lib" / version / "site-packages",
+                    venv_root / "lib64" / version / "site-packages",
+                )
+            )
+    else:
+        for key in ("purelib", "platlib"):
+            value = sysconfig.get_paths().get(key)
+            if isinstance(value, str) and value.strip():
+                candidates.append(Path(value))
+    for candidate in candidates:
+        resolved = candidate.resolve(strict=False)
+        if resolved.is_dir() and str(resolved) not in paths:
+            paths.append(str(resolved))
+    if not paths:
+        raise StandaloneCaptureBootstrapError(
+            "unable to locate literal interpreter package directories for standalone capture"
+        )
+    return paths
+
+
+def _bound_cli_arguments(argv: list[str], revision: str) -> list[str]:
+    cleaned: list[str] = []
+    index = 0
+    while index < len(argv):
+        argument = argv[index]
+        if argument == "--implementation-revision":
+            if index + 1 >= len(argv):
+                raise StandaloneCaptureBootstrapError(
+                    "--implementation-revision requires a value"
+                )
+            if argv[index + 1] != revision:
+                raise StandaloneCaptureBootstrapError(
+                    "requested implementation revision does not match the authenticated standalone capture revision"
+                )
+            index += 2
+            continue
+        if argument.startswith("--implementation-revision="):
+            supplied = argument.split("=", 1)[1]
+            if supplied != revision:
+                raise StandaloneCaptureBootstrapError(
+                    "requested implementation revision does not match the authenticated standalone capture revision"
+                )
+            index += 1
+            continue
+        cleaned.append(argument)
+        index += 1
+    cleaned.extend(["--implementation-revision", revision])
+    return cleaned
+
+
+def _sanitized_capture_environment() -> dict[str, str]:
+    environment: dict[str, str] = {}
+    for key, value in os.environ.items():
+        upper = key.upper()
+        if upper.startswith("PYTHON"):
+            continue
+        if upper.startswith(_LOADER_ENV_PREFIXES) or upper in _LOADER_ENV_NAMES:
+            continue
+        environment[key] = value
+    return environment
+
+
+def _authenticated_capture_bootstrap() -> str:
+    return (
+        "import hashlib,importlib.machinery,json,pathlib,sys;"
+        "src=sys.argv[1];"
+        "revision=sys.argv[2];"
+        "source_manifest=json.loads(sys.argv[3]);"
+        "sep=sys.argv.index('--');"
+        "paths=sys.argv[4:sep];"
+        "args=sys.argv[sep+1:];"
+        "srcroot=pathlib.Path(src);"
+        "pkg=srcroot/'qsol_geo_reason';"
+        "(srcroot.is_symlink() or pkg.is_symlink()) and (_ for _ in ()).throw(RuntimeError('authenticated package subprocess rejects symlinked src/package roots'));"
+        "importsfx=tuple(sorted({s.lower() for s in (*importlib.machinery.SOURCE_SUFFIXES,*importlib.machinery.BYTECODE_SUFFIXES,*importlib.machinery.EXTENSION_SUFFIXES,'.py','.pyc','.pyo','.so','.pyd') if s},key=len,reverse=True));"
+        "bytecodesfx=tuple(sorted({s.lower() for s in (*importlib.machinery.BYTECODE_SUFFIXES,'.pyc','.pyo') if s},key=len,reverse=True));"
+        "nativesfx=tuple(sorted({s.lower() for s in (*importlib.machinery.EXTENSION_SUFFIXES,'.so','.pyd') if s},key=len,reverse=True));"
+        "topmods=sorted(str(p) for p in srcroot.iterdir() if p!=pkg and p.is_file() and p.name.lower().endswith(importsfx));"
+        "toppkgs=sorted(str(i) for p in srcroot.iterdir() if p!=pkg and p.is_dir() for i in (p/('__init__'+s) for s in importsfx) if i.is_file());"
+        "bytecode=sorted(str(p) for p in pkg.rglob('*') if p.is_file() and p.name.lower().endswith(bytecodesfx));"
+        "native=sorted(str(p) for p in pkg.rglob('*') if p.is_file() and p.name.lower().endswith(nativesfx));"
+        "pkgdirs=sorted(str(i) for p in pkg.rglob('*') if p.is_dir() and p.name!='__pycache__' for i in (p/('__init__'+s) for s in importsfx) if i.is_file());"
+        "shadows=sorted(set(topmods+toppkgs+bytecode+native+pkgdirs));"
+        "shadows and (_ for _ in ()).throw(RuntimeError('authenticated package subprocess rejects importable source shadows before src is trusted: '+','.join(shadows)));"
+        "(not isinstance(source_manifest,dict) or not source_manifest) and (_ for _ in ()).throw(RuntimeError('authenticated package subprocess received an empty tracked-source manifest'));"
+        "sourcebad=sorted(rel for rel,digest in source_manifest.items() if ((p:=pkg.joinpath(*pathlib.PurePosixPath(rel).parts)).is_symlink() or not p.is_file() or hashlib.sha256(p.read_bytes()).hexdigest()!=digest));"
+        "sourcebad and (_ for _ in ()).throw(RuntimeError('authenticated package subprocess rejects tracked package source that does not match bound revision '+revision+': '+','.join(sourcebad)));"
+        "sys.path.insert(0,src);"
+        "[sys.path.append(p) for p in paths if p not in sys.path];"
+        "import qsol_geo_reason.no_site_subprocess as _qsol_ns;"
+        "_qsol_ns.install_authenticated_source_manifest(revision,source_manifest);"
+        "sys.argv=['qsol-geo-capture',*args];"
+        "from qsol_geo_reason.capture_cli import main;"
+        "raise SystemExit(main())"
+    )
+
+
+def _run(argv: list[str]) -> None:
+    root, revision, source_manifest = _authenticate_checkout()
+    command = [
+        sys.executable,
+        "-I",
+        "-S",
+        "-B",
+        "-c",
+        _authenticated_capture_bootstrap(),
+        str((root / "src").resolve()),
+        revision,
+        json.dumps(source_manifest, sort_keys=True, separators=(",", ":")),
+        *_literal_site_package_paths(),
+        "--",
+        *_bound_cli_arguments(argv, revision),
+    ]
+    os.execve(
+        sys.executable,
+        command,
+        _sanitized_capture_environment(),
+    )
+
+
+def main() -> int:
+    if __name__ != _STAGE0_MODULE_NAME:
+        print(
+            "qsol-geo-capture-python is an internal authenticated payload; use the installed qsol-geo-capture command",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        _run([str(value) for value in sys.argv[1:]])
+    except (
+        StandaloneCaptureBootstrapError,
+        OSError,
+        subprocess.CalledProcessError,
+        ValueError,
+    ) as exc:
+        print(f"qsol-geo-capture: {exc}", file=sys.stderr)
+        return 2
+    return 2  # pragma: no cover - execve does not return on success.
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

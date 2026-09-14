@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/QSOLKCB/QSOL-GEO-REASON/schemas/capture-execution-receipt.schema.json",
+  "title": "QSOL-GEO-REASON GEO-CAP-001 execution occurrence receipt",
+  "description": "A per-execution occurrence identity cryptographically bound to one verified canonical capture bundle without changing the frozen scientific request or its content-addressed run manifest identity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "protocol_id",
+    "execution_id",
+    "request_run_id",
+    "repository_commit",
+    "request_sha256",
+    "run_manifest_id",
+    "manifest_sha256",
+    "trajectory_sha256",
+    "capture_request_file_sha256",
+    "run_manifest_file_sha256",
+    "captured_trajectory_file_sha256",
+    "execution_receipt_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "protocol_id": {"const": "GEO-CAP-001"},
+    "execution_id": {"type": "string", "minLength": 1, "pattern": "\\S"},
+    "request_run_id": {"type": "string", "minLength": 1, "pattern": "\\S"},
+    "repository_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "request_sha256": {"$ref": "#/$defs/sha256"},
+    "run_manifest_id": {"$ref": "#/$defs/sha256"},
+    "manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "trajectory_sha256": {"$ref": "#/$defs/sha256"},
+    "capture_request_file_sha256": {"$ref": "#/$defs/sha256"},
+    "run_manifest_file_sha256": {"$ref": "#/$defs/sha256"},
+    "captured_trajectory_file_sha256": {"$ref": "#/$defs/sha256"},
+    "execution_receipt_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

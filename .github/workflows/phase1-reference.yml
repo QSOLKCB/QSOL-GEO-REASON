@@ -21,7 +21,222 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install package
         run: python -m pip install -e .
+      - name: Standalone capture bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          installed="$(command -v qsol-geo-capture)"
+          test "$(head -n 1 "$installed")" = '#!/bin/bash -p'
+          grep -F 'qsol_python_resolved=' "$installed"
+          grep -F 'does not resolve inside a trusted system/toolchain root' "$installed"
+          grep -F 'exec "$qsol_python" -I -S -B - "$qsol_script" "$@"' "$installed"
+          hook="$RUNNER_TEMP/qsol-standalone-site-hook"
+          marker="$RUNNER_TEMP/qsol-standalone-sitecustomize-ran"
+          mkdir -p "$hook"
+          cat > "$hook/sitecustomize.py" <<'PY'
+          import os
+          from pathlib import Path
+          marker = os.environ.get("QSOL_STANDALONE_SITE_MARKER")
+          if marker:
+              Path(marker).write_text("sitecustomize executed\n", encoding="utf-8")
+          PY
+          cd "$RUNNER_TEMP"
+          PYTHONPATH="$hook" QSOL_STANDALONE_SITE_MARKER="$marker" /bin/bash -p "$installed" --help >/dev/null
+          test ! -e "$marker"
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Verify frozen reference fixture
         run: python tools/verify_reference.py
+
+  posix-standalone-install-layouts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Conventional virtualenv capture bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="$PWD"
+          venv="$RUNNER_TEMP/qsol-capture-venv"
+          python -m venv "$venv"
+          "$venv/bin/python" -m pip install -e "$repo"
+          test -x "$venv/bin/qsol-geo-capture"
+          test -f "$venv/bin/qsol-geo-sim"
+
+          hook="$RUNNER_TEMP/qsol-venv-site-hook"
+          marker="$RUNNER_TEMP/qsol-venv-sitecustomize-ran"
+          mkdir -p "$hook"
+          cat > "$hook/sitecustomize.py" <<'PY'
+          import os
+          from pathlib import Path
+          marker = os.environ.get("QSOL_STANDALONE_SITE_MARKER")
+          if marker:
+              Path(marker).write_text("sitecustomize executed\n", encoding="utf-8")
+          PY
+
+          cd "$RUNNER_TEMP"
+          PYTHONPATH="$hook" QSOL_STANDALONE_SITE_MARKER="$marker" /bin/bash -p "$venv/bin/qsol-geo-capture" --help >/dev/null
+          test ! -e "$marker"
+      - name: User-site capture bootstrap and locator attack
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="$PWD"
+          userbase="$RUNNER_TEMP/qsol-userbase"
+          PYTHONUSERBASE="$userbase" python -m pip install --user -e "$repo"
+          command="$userbase/bin/qsol-geo-capture"
+          anchor="$userbase/bin/qsol-geo-sim"
+          test -x "$command"
+          test -f "$anchor"
+
+          hook="$RUNNER_TEMP/qsol-user-site-hook"
+          marker="$RUNNER_TEMP/qsol-user-sitecustomize-ran"
+          mkdir -p "$hook"
+          cat > "$hook/sitecustomize.py" <<'PY'
+          import os
+          from pathlib import Path
+          marker = os.environ.get("QSOL_STANDALONE_SITE_MARKER")
+          if marker:
+              Path(marker).write_text("sitecustomize executed\n", encoding="utf-8")
+          PY
+
+          cd "$RUNNER_TEMP"
+          PYTHONPATH="$hook" QSOL_STANDALONE_SITE_MARKER="$marker" /bin/bash -p "$command" --help >/dev/null
+          test ! -e "$marker"
+
+          fake="$RUNNER_TEMP/fake-python"
+          fake_marker="$RUNNER_TEMP/fake-python-ran"
+          cat > "$fake" <<'SH'
+          #!/bin/sh
+          printf '%s\n' ran > "$QSOL_FAKE_MARKER"
+          exit 0
+          SH
+          chmod +x "$fake"
+          printf '#!%s\n# malicious locator\n' "$fake" > "$anchor"
+          chmod +x "$anchor"
+          set +e
+          QSOL_FAKE_MARKER="$fake_marker" /bin/bash -p "$command" --help >/dev/null 2>&1
+          status=$?
+          set -e
+          test "$status" -eq 126
+          test ! -e "$fake_marker"
+
+  macos-standalone-capture:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install package
+        run: python -m pip install -e .
+      - name: macOS fixed-Bash standalone boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          installed="$(command -v qsol-geo-capture)"
+          test -f "$installed"
+          /bin/bash -p "$installed" --help >/dev/null
+
+          # A changed shebang is data under the canonical fixed-Bash invocation;
+          # complete wrapper-byte authentication must reject it before CLI import.
+          clean="$RUNNER_TEMP/qsol-geo-capture.clean"
+          cp "$installed" "$clean"
+          {
+            printf '%s\n' '#!/tmp/fake'
+            tail -n +2 "$clean"
+          } > "$installed"
+          chmod +x "$installed"
+          set +e
+          /bin/bash -p "$installed" --help >"$RUNNER_TEMP/shebang.out" 2>"$RUNNER_TEMP/shebang.err"
+          status=$?
+          set -e
+          test "$status" -ne 0
+          grep -F 'installed qsol-geo-capture wrapper does not match the bound Git revision' "$RUNNER_TEMP/shebang.err"
+
+  windows-standalone-capture:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install package
+        run: python -m pip install -e .
+      - name: Windows standalone capture bootstrap
+        shell: pwsh
+        run: |
+          $scriptsDir = (& python -c "import sysconfig; print(sysconfig.get_path('scripts'))").Trim()
+          $command = Join-Path $scriptsDir "qsol-geo-capture.cmd"
+          $stage0 = Join-Path $scriptsDir "qsol-geo-capture-windows.py"
+          if (-not (Test-Path -LiteralPath $command)) { throw "missing installed Windows capture wrapper: $command" }
+          if (-not (Test-Path -LiteralPath $stage0)) { throw "missing installed Windows capture stage0: $stage0" }
+
+          $hook = Join-Path $env:RUNNER_TEMP "qsol-windows-site-hook"
+          $marker = Join-Path $env:RUNNER_TEMP "qsol-windows-sitecustomize-ran"
+          New-Item -ItemType Directory -Force -Path $hook | Out-Null
+          @'
+          import os
+          from pathlib import Path
+          marker = os.environ.get("QSOL_STANDALONE_SITE_MARKER")
+          if marker:
+              Path(marker).write_text("sitecustomize executed\n", encoding="utf-8")
+          '@ | Set-Content -LiteralPath (Join-Path $hook "sitecustomize.py") -Encoding utf8
+
+          Push-Location $env:RUNNER_TEMP
+          try {
+            $env:PYTHONPATH = $hook
+            $env:QSOL_STANDALONE_SITE_MARKER = $marker
+            & $command --help | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Windows qsol-geo-capture --help failed with exit $LASTEXITCODE" }
+          }
+          finally {
+            Pop-Location
+          }
+          if (Test-Path -LiteralPath $marker) { throw "sitecustomize executed before the Windows isolated boundary" }
+
+  windows-user-site-capture:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Windows user-site standalone capture bootstrap
+        shell: pwsh
+        run: |
+          $repo = $PWD.Path
+          $userbase = Join-Path $env:RUNNER_TEMP "qsol-win-userbase"
+          $env:PYTHONUSERBASE = $userbase
+          & python -m pip install --user -e $repo
+          if ($LASTEXITCODE -ne 0) { throw "Windows user-site editable install failed" }
+          $command = Join-Path $userbase "Python311\Scripts\qsol-geo-capture.cmd"
+          $stage0 = Join-Path $userbase "Python311\Scripts\qsol-geo-capture-windows.py"
+          if (-not (Test-Path -LiteralPath $command)) { throw "missing Windows user-site capture wrapper: $command" }
+          if (-not (Test-Path -LiteralPath $stage0)) { throw "missing Windows user-site stage0: $stage0" }
+
+          $hook = Join-Path $env:RUNNER_TEMP "qsol-win-user-site-hook"
+          $marker = Join-Path $env:RUNNER_TEMP "qsol-win-user-sitecustomize-ran"
+          New-Item -ItemType Directory -Force -Path $hook | Out-Null
+          @'
+          import os
+          from pathlib import Path
+          marker = os.environ.get("QSOL_STANDALONE_SITE_MARKER")
+          if marker:
+              Path(marker).write_text("sitecustomize executed\n", encoding="utf-8")
+          '@ | Set-Content -LiteralPath (Join-Path $hook "sitecustomize.py") -Encoding utf8
+
+          Push-Location $env:RUNNER_TEMP
+          try {
+            $env:PYTHONPATH = $hook
+            $env:QSOL_STANDALONE_SITE_MARKER = $marker
+            & $command --help | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Windows user-site qsol-geo-capture --help failed with exit $LASTEXITCODE" }
+          }
+          finally {
+            Pop-Location
+          }
+          if (Test-Path -LiteralPath $marker) { throw "sitecustomize executed before the Windows user-site isolated boundary" }

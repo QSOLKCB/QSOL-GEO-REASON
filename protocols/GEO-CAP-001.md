@@ -318,12 +318,17 @@ cp examples/GEO-CAP-001.example.json /tmp/GEO-CAP-001-request.json
 
 Edit `/tmp/GEO-CAP-001-request.json`, replacing the placeholder Hub repository IDs and every zero revision with exact canonical `namespace/repository` identities and immutable 40-hex commits already present in the local Hugging Face cache. Freeze the step segmentation before inspecting target-labelled geometry.
 
-Run to a **new, nonexistent** bundle directory:
+On POSIX systems, canonical production evidence must **not** ask the kernel to execute the installed `qsol-geo-capture` payload by its mutable shebang. Invoke the known installed payload pathname through the fixed Bash executable instead. Stage 0 authenticates the complete installed wrapper bytes, including line 1, against the bound Git revision before importing the capture CLI. A changed shebang is therefore data under this boundary and causes fail-closed wrapper authentication rather than selecting a pre-authentication interpreter. Replace `/absolute/path/to/qsol-geo-capture` below with the actual payload installed by the environment you intend to use:
 
 ```bash
-qsol-geo-capture /tmp/GEO-CAP-001-request.json \
+/bin/bash -p /absolute/path/to/qsol-geo-capture \
+  /tmp/GEO-CAP-001-request.json \
   --output-dir /tmp/GEO-CAP-001/run-001
 ```
+
+On Windows, use the installed `qsol-geo-capture.cmd` wrapper; its platform stage-0 enters CPython with `-I -S -B` and authenticates the committed Windows bootstrap before the capture CLI is exposed.
+
+The installed POSIX stage-0 supports conventional virtualenv/prefix installs and validated `pip --user` layouts. Any user-site package directory used to locate the editable installation is carried explicitly into the isolated/no-site capture CLI and nested worker; this preserves user-site Torch/Transformers dependencies without enabling `site`, executing `.pth` files, or loading `sitecustomize`.
 
 For an archival result, copy the verified bundle into the repository or external evidence store only through an explicit later commit/artifact-record workflow that preserves the implementation revision used for capture.
 

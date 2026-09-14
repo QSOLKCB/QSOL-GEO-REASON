@@ -6,13 +6,17 @@ This document defines what GEO-CAP-001 does and does not claim to defend against
 
 ## 1. Chosen architecture
 
-The canonical user-facing production path is a **trusted local CLI that launches a fresh isolated Python worker** for each `OBSERVATION`.
+The canonical user-facing production path is an **authenticated Git-blob bootstrap that enters a trusted local CLI and launches fresh isolated Python workers** for evidence-producing dependency work and each `OBSERVATION`.
 
-`qsol-geo-capture` performs request validation and optional online Hub-tree preparation in its command process. For an actual observation it launches `qsol_geo_reason.capture_worker` with CPython isolated mode (`-I`) and bytecode writes disabled (`-B`). The parent strips Python-path/startup controls and common native-loader injection variables before launch, forces Hugging Face and Transformers offline mode, and passes only the frozen request path, output path, and optional implementation revision.
+The mutable working-tree `tools/run_first_production_observation.py` pathname is **not itself a trust root and must not be executed directly for production evidence**. Canonical invocation first defines and uses the authenticated `qsol_first_observation` Git-blob bootstrap documented in [`experiments/GEO-CAP-001-EXP-001.md#authenticated-launcher-bootstrap`](../experiments/GEO-CAP-001-EXP-001.md#authenticated-launcher-bootstrap), then runs `qsol_first_observation prepare ...` or `qsol_first_observation observe ...`. Before the first Python interpreter is started, that Bash wrapper uses only shell built-ins to clear every `LD_*`, `DYLD_*`, `_RLD_*`, and `LDR_*` variable plus `GLIBC_TUNABLES`, `LIBPATH`, and `SHLIB_PATH`; no helper executable is launched while those loader controls remain present. Every `unset` result is checked, the loader namespace is re-enumerated after the scrub, and any failed removal or surviving loader variable aborts the subshell before Python can start. The resulting independent `python -I -S -B -c` boundary resolves one immutable `HEAD^{commit}` through trusted system Git **before** reading the launcher, reads `<that-commit>:tools/run_first_production_observation.py`, hashes those exact committed launcher bytes, and injects both the commit and launcher digest into the committed launcher namespace. The working-tree launcher bytes are never loaded by this first boundary. The committed launcher independently reauthenticates the same commit/blob identity, validates the original launcher pathname and checkout-local ancestors without following symlinks, authenticates tracked package source against that same bootstrap-bound commit, strips Python/native-loader/Git/transport overrides, and `execve`s a second `-I -S -B` interpreter that bootstraps only the checked-out `src` tree plus literal interpreter package directories without executing `.pth` files. Git index hints such as `assume-unchanged` and `skip-worktree` are not trusted. The complete reference lock is authenticated at the same bound revision, and the bootstrap commit is forced through the package facade as the implementation revision. A concurrent movement of ambient `HEAD` therefore cannot silently reattribute already-executing launcher bytes to a different checkout revision.
 
-The worker rejects execution unless it is in isolated mode and unless Torch, Transformers, Hugging Face Hub, Tokenizers, and Safetensors are absent from `sys.modules` before the canonical backend stack is imported.
+Online Hugging Face preparation does not import Hub code in the long-lived orchestrator. It launches a fresh `-I -S -B` preparation child. Before importing `huggingface_hub`, the child content-binds the Hub package itself and the complete locked external Hub execution closure: filelock, fsspec, packaging, PyYAML, Requests, tqdm, typing-extensions, urllib3, certifi, charset-normalizer, and idna. Each dependency must be absent from `sys.modules` before its authenticated import. The child verifies identical distribution-owned runtime content after Hub import and again after online work, performs the canonical-endpoint warm-up, and returns the two Hub-tree receipts plus the complete dependency-content provenance. Distribution ownership covers runtime files outside the import package directory, including sibling wheel native-library directories. The parent independently measures the same Hub execution closure as part of the preparation reference-environment receipt and rejects preparation unless the child's provenance exactly matches that parent measurement.
 
-This fresh-process boundary is the normal production architecture. The library API remains available for software tests and trusted embedding, but arbitrary hostile mutation inside an already-running embedding process is **not** the security boundary claimed by GEO-CAP-001.
+For an actual observation, `qsol-geo-capture` launches `qsol_geo_reason.capture_worker` with CPython isolated/no-site mode and bytecode writes disabled. The parent strips Python-path/startup controls and common native-loader injection variables before launch, forces Hugging Face and Transformers offline mode, and passes only the frozen request path, output path, occurrence identity, receipt destination, and implementation revision.
+
+The observation worker rejects execution unless it is in the authenticated isolated boundary and unless Torch, Transformers, Hugging Face Hub, Tokenizers, and Safetensors are absent from `sys.modules` before the canonical backend stack is imported. A requested execution identity is validated as non-empty before its receipt path is reserved, before production dependencies are imported, and before model work begins. The preparation reference-environment receipt independently content-binds Torch, Transformers, Tokenizers, and Safetensors, so observation must match the direct capture-package bytes frozen during preparation rather than merely producing two mutually consistent replay runs.
+
+These fresh-process boundaries are the normal production architecture. The library API remains available for software tests and trusted embedding, but arbitrary hostile mutation inside an already-running embedding process is **not** the security boundary claimed by GEO-CAP-001.
 
 ## 2. Trusted components and assumptions
 
@@ -23,6 +27,7 @@ GEO-CAP-001 assumes the following are trusted for the duration of one observatio
 - the selected CPython executable and its system installation;
 - the QSOL-GEO-REASON checkout being authenticated;
 - the system Git executable selected by the source-provenance implementation;
+- the directly authenticated canonical launcher and reference-lock bytes;
 - the local Hugging Face cache after its commit-tree receipts have been frozen;
 - hardware and firmware below the observable runtime interfaces;
 - the administrator/user not to grant a concurrent attacker equal or greater OS privileges during capture.
@@ -35,8 +40,18 @@ Within the trusted-host model, the instrument fails closed on many accidental or
 
 - dirty, mismatched, ignored, or substituted importable QSOL source;
 - replacement Git objects and untrusted Git execution paths;
-- preloaded production Python dependencies at the fresh-import boundary;
-- changed PyTorch, Transformers, Hugging Face Hub, Tokenizers, and Safetensors execution dependencies where receipts are defined;
+- a modified canonical production launcher or reference lock hidden by Git index stat hints;
+- launcher/package revision drift if the checkout moves after the authenticated bootstrap has selected its commit;
+- native-loader injection controls inherited by the documented bootstrap command before the first Python interpreter starts, including loader names that cannot be unset because the invoking Bash marks them readonly;
+- Python startup customization in the initial launcher or online preparation child;
+- preloaded production Python dependencies at the fresh observation-import boundary;
+- observation-time Torch, Transformers, Tokenizers, or Safetensors content that differs from the direct package provenance frozen during preparation;
+- online Hub preparation whose content-bound `huggingface_hub` or complete filelock/fsspec/packaging/PyYAML/Requests/tqdm/typing-extensions/HTTP-TLS dependency closure differs from the parent reference-environment measurement;
+- changed distribution-owned runtime files in the locked transitive closure, including sibling native-library payloads such as `numpy.libs/*.so` that sit outside `numpy/` but are owned by the NumPy wheel;
+- a Python runtime or installed distribution closure that differs from the prepared complete reference-environment receipt;
+- preparation request/receipt destinations inside the authenticated source checkout;
+- observation output roots inside the authenticated source checkout;
+- blank or otherwise missing paired execution occurrence identities before receipt reservation or model work;
 - snapshot bytes that do not match the frozen QSOL Hub commit-tree receipt;
 - transient package/snapshot/runtime-library replacement evidence covered by stat/change-time and mapped-image stability receipts;
 - registered Python/PyTorch execution hooks and supported execution-surface substitutions;
@@ -52,12 +67,14 @@ Python objects and module dictionaries are mutable by design. A caller that alre
 
 For that reason, production documentation must distinguish:
 
-- **canonical CLI observation** — fresh isolated worker plus provenance checks; and
+- **canonical CLI observation** — authenticated Git-blob bootstrap, fresh isolated worker, and provenance checks; and
 - **direct in-process library use** — trusted embedding/test surface with defense-in-depth mutation detection, but no claim of protection against an adversary already executing arbitrary code in that interpreter.
 
 ## 5. Filesystem concurrency
 
-The implementation authenticates package, snapshot, source, and mapped-runtime state at multiple points and uses file identity/change-time evidence to detect many write/restore races. This is intended to catch accidental changes and concurrent mutations visible to the process.
+The implementation authenticates package, snapshot, source, launcher, lock, and mapped-runtime state at multiple points and uses file identity/change-time evidence to detect many write/restore races. This is intended to catch accidental changes and concurrent mutations visible to the process.
+
+Preparation rejects an output path that resolves to the source checkout or any descendant before revision resolution, Hub contact, or publication. Preparation then publishes provenance receipt first and final request second using no-replace durable publication. A durable receipt-only state is intentionally recoverable. A request+receipt pair left visible after a post-link directory-fsync failure is also recoverable only after both immutable artifacts are revalidated, the live reference environment and repository inputs are reauthenticated, both files are rechecked for stability, and the containing directory is resynced. Recovery never overwrites the pair or repeats Hub warm-up. A publisher that later loses a concurrent race to publish the final request never deletes the shared receipt, because another process may already have used it to recover the request. This makes receipt-first publication monotonic across abrupt crashes and concurrent recovery.
 
 It is not a proof against an administrator/root attacker able to manipulate filesystem, kernel, mount namespace, process memory, or clock/stat semantics beneath those measurements. Such an attacker is outside scope.
 
@@ -66,18 +83,26 @@ It is not a proof against an administrator/root attacker able to manipulate file
 A receipt proves only the bytes/state actually covered by its documented measurement and the consistency relations checked by the canonical verifier. In particular:
 
 - repository commit provenance binds the authenticated checkout under the source-identity rules;
-- package receipts bind enumerated package artifacts;
+- the bootstrap/launcher relation binds the executing committed launcher blob, tracked package source, and facade implementation revision to one selected Git commit for each invocation, after the documented shell wrapper has successfully removed native-loader injection controls and verified none survive before starting the bootstrap interpreter;
+- direct tracked-artifact checks bind the frozen experiment template, launcher, and complete reference lock to the executing revision independently of Git index hints;
+- the preparation receipt binds the canonical Hub endpoint, immutable model/tokenizer tree receipts, exact content receipts for `huggingface_hub`, the complete locked Hub execution dependency closure, the direct Torch/Transformers/Tokenizers/Safetensors capture packages, and the complete measured reference environment;
+- reference-environment package receipts combine an authenticated import surface with the installed distribution-owned runtime-file inventory, so wheel-owned sibling payloads outside the import directory are included;
 - Hub tree receipts bind the exported commit-tree metadata and snapshot contents checked against it;
 - runtime receipts bind the mapped runtime libraries selected by each platform-specific enumerator;
-- manifest and trajectory hashes bind the canonical JSON artifacts.
+- manifest and trajectory hashes bind the canonical JSON artifacts;
+- the replay verdict binds both the semantic preparation-receipt hash and its raw archived file hash, which transitively binds the nested reference-environment, online Hub dependency, direct capture package, and transitive distribution runtime receipts into successful replay evidence.
 
 A receipt does **not** prove that upstream maintainers, package indexes, compilers, hardware, firmware, the operating system, or the complete software supply chain are trustworthy.
 
 ## 7. Dependency/reference environment
 
-The repository publishes `constraints/capture-reference-py311.txt` as the Phase 2A reference CPU integration environment. CI installs that exact direct dependency set, builds a tiny local GPT-2-style model and fast tokenizer without downloading model weights, performs two real canonical CLI observations, validates their JSON schemas and semantic bundle verification, and requires deterministic equality.
+The repository publishes `constraints/capture-reference-py311.txt` as the Phase 2A Python 3.11 Linux x86_64 CPU reference runtime lock. It contains the complete resolved runtime closure used by the reference lane, not only the top-level capture packages. CI applies that lock to the CPU PyTorch installation and to the editable capture installation, then runs `tools/verify_capture_reference_environment.py`, which rejects missing pins, version mismatches, unexpected non-bootstrap runtime distributions, non-CPython interpreters, interpreters outside Python 3.11, platforms outside Linux x86_64, malformed Hub package-content provenance, malformed/incomplete Hub execution provenance, malformed/incomplete direct capture-package provenance, and malformed/incomplete transitive package provenance before the real backend integration begins.
 
-Production manifests already record exact package versions plus content receipts for the principal execution packages. The reference integration request additionally binds the SHA-256 of the constraints file in its `notes` field so the test artifact identifies the resolved reference environment without changing the GEO-CAP-001 schema.
+The standalone verifier is a convenience preflight. Canonical `prepare` independently measures the exact live environment and embeds a self-hashed `reference_environment` object in `preparation-receipt.json`, including the CPython patch version, complete normalized distribution/version map, distribution count, lock SHA-256, content-bound `huggingface_hub` runtime provenance, the complete locked Hub execution dependency closure, direct content provenance for Torch/Transformers/Tokenizers/Safetensors, and content-bound provenance for the remaining locked transitive capture distributions. The distribution receipt enumerates installed runtime files owned beneath the distribution's installation root and composes that inventory with the authenticated Python import-surface receipt; this includes sibling wheel native-library directories such as `numpy.libs`. The no-site preparation child must report identical Hub dependency provenance before its tree receipts are accepted. Canonical `observe` requires its live environment to exactly equal that prepared receipt before creating an observation attempt and rechecks the equality before replay-verdict publication. The replay verdict's existing preparation-receipt hashes therefore bind the complete environment, online Hub-code evidence, and direct capture-package identity without a separate loose sidecar.
+
+CI then builds a tiny local GPT-2-style model and fast tokenizer without downloading model weights, performs two real canonical CLI observations, validates their JSON schemas and semantic bundle verification, and requires deterministic equality. The integration request additionally binds the SHA-256 of the complete lock file in its `notes` field.
+
+The complete runtime lock plus distribution-owned content receipts strengthen reproducibility of the selected reference lane; they do not by themselves establish trust in package indexes, upstream releases, the Python interpreter, the operating system, or the wider software supply chain.
 
 ## 8. Historical Round modules
 

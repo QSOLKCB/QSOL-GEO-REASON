@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import importlib.util
 import io
 import marshal
+import re
 import types
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 from .canonical import sha256_json
@@ -23,7 +25,7 @@ _BYTECODE_SUFFIXES = frozenset({".pyc", ".pyo"})
 
 def _hash_regular_file(path: Path, where: str) -> str:
     try:
-        if not path.is_file():
+        if path.is_symlink() or not path.is_file():
             raise CaptureContractError(f"{where} contains a non-regular package artifact: {path}")
         digest = hashlib.sha256()
         with path.open("rb") as handle:
@@ -140,6 +142,303 @@ def _python_package_provenance(module: Any, where: str) -> dict[str, Any]:
     }
 
 
+def _single_module_provenance_without_import(origin: Path, where: str) -> dict[str, Any]:
+    """Content-bind a single-file module plus any executable caches without importing it."""
+    try:
+        source = origin.resolve(strict=True)
+        if source.is_symlink() or not source.is_file() or source.suffix != ".py":
+            raise CaptureContractError(
+                f"{where} single-module origin is not a regular Python source file: {origin}"
+            )
+        root = source.parent
+        source_bytes = source.read_bytes()
+    except OSError as exc:
+        raise CaptureContractError(f"unable to read {where} single-module source") from exc
+
+    hashes = {source.name: hashlib.sha256(source_bytes).hexdigest()}
+    caches: set[Path] = set()
+    pycache = root / "__pycache__"
+    try:
+        if pycache.is_dir():
+            caches.update(pycache.glob(f"{source.stem}.*.pyc"))
+            caches.update(pycache.glob(f"{source.stem}.*.pyo"))
+        for suffix in (".pyc", ".pyo"):
+            candidate = source.with_suffix(suffix)
+            if candidate.is_file():
+                caches.add(candidate)
+    except OSError as exc:
+        raise CaptureContractError(
+            f"unable to inspect executable caches for {where}"
+        ) from exc
+    for cache in sorted(caches, key=lambda value: value.as_posix()):
+        _authenticate_package_bytecode(root, cache, hashes, where)
+    return {
+        "file_count": 1,
+        "receipt_sha256": sha256_json(hashes),
+    }
+
+
+def _canonical_distribution_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _find_one_distribution(distribution_name: str, where: str) -> importlib.metadata.Distribution:
+    canonical = _canonical_distribution_name(distribution_name)
+    matches: list[importlib.metadata.Distribution] = []
+    for distribution in importlib.metadata.distributions():
+        observed_name = distribution.metadata.get("Name")
+        if observed_name and _canonical_distribution_name(observed_name) == canonical:
+            matches.append(distribution)
+    if len(matches) != 1:
+        raise CaptureContractError(
+            f"{where} requires exactly one installed {distribution_name} distribution; observed {len(matches)}"
+        )
+    return matches[0]
+
+
+def _runtime_path_identity(base: Path, path: Path, where: str) -> tuple[Path, str]:
+    """Resolve one runtime path beneath the distribution root without following a symlink leaf."""
+    try:
+        if path.is_symlink():
+            raise CaptureContractError(
+                f"{where} independently discovered runtime artifact must not be a symlink: {path}"
+            )
+        resolved = path.resolve(strict=True)
+        relative = resolved.relative_to(base)
+    except FileNotFoundError as exc:
+        raise CaptureContractError(f"{where} runtime artifact disappeared during enumeration: {path}") from exc
+    except ValueError as exc:
+        raise CaptureContractError(f"{where} runtime artifact escapes its distribution root: {path}") from exc
+    except OSError as exc:
+        raise CaptureContractError(f"unable to inspect {where} runtime artifact: {path}") from exc
+    key = relative.as_posix()
+    if not key or key.startswith("/") or "\\" in key or any(
+        part in {"", ".", ".."} for part in relative.parts
+    ):
+        raise CaptureContractError(f"{where} contains a noncanonical runtime path: {key!r}")
+    return resolved, key
+
+
+def _hash_independent_runtime_root(
+    root: Path,
+    base: Path,
+    where: str,
+    hashes: dict[str, str],
+) -> None:
+    """Hash one import/runtime root without consulting wheel RECORD ownership."""
+    if not root.exists() and not root.is_symlink():
+        return
+    resolved_root, root_key = _runtime_path_identity(base, root, where)
+    if resolved_root.is_file():
+        if resolved_root.suffix.lower() not in _BYTECODE_SUFFIXES:
+            hashes[root_key] = _hash_regular_file(resolved_root, where)
+        return
+    if not resolved_root.is_dir():
+        raise CaptureContractError(f"{where} runtime root is neither a file nor directory: {root}")
+    try:
+        paths = sorted(resolved_root.rglob("*"), key=lambda value: value.as_posix())
+    except OSError as exc:
+        raise CaptureContractError(f"unable to enumerate {where} runtime root: {root}") from exc
+    for path in paths:
+        resolved, key = _runtime_path_identity(base, path, where)
+        if resolved.is_dir():
+            continue
+        if resolved.suffix.lower() in _BYTECODE_SUFFIXES:
+            continue
+        hashes[key] = _hash_regular_file(resolved, where)
+
+
+def _independently_enumerated_runtime_hashes(
+    distribution: importlib.metadata.Distribution,
+    distribution_name: str,
+    import_name: str,
+    spec: Any,
+    where: str,
+) -> dict[str, str]:
+    """Discover import roots and conventional wheel sibling runtime roots without RECORD.
+
+    ``Distribution.files`` is normally backed by wheel ``RECORD`` and is therefore not
+    an independent authority: a locally edited RECORD can omit a patched native file.
+    This pass derives roots from the import spec plus deterministic wheel layout names
+    and walks the filesystem directly. The RECORD-derived inventory is checked against
+    this independently discovered set by ``_distribution_package_provenance``.
+    """
+    try:
+        base = Path(distribution.locate_file("")).resolve(strict=True)
+    except OSError as exc:
+        raise CaptureContractError(f"unable to resolve {where} distribution installation root") from exc
+
+    roots: set[Path] = set()
+    if spec.submodule_search_locations is None:
+        roots.add(Path(spec.origin))
+    else:
+        locations = tuple(spec.submodule_search_locations)
+        if not locations:
+            raise CaptureContractError(f"{where} import package exposes no search locations")
+        roots.update(Path(location) for location in locations)
+
+    observed_name = distribution.metadata.get("Name") or distribution_name
+    stems = {
+        import_name.split(".", 1)[0],
+        re.sub(r"[-.]+", "_", distribution_name),
+        re.sub(r"[-.]+", "_", observed_name),
+    }
+    for stem in tuple(stems):
+        if not stem or "/" in stem or "\\" in stem:
+            raise CaptureContractError(f"{where} has an invalid runtime stem {stem!r}")
+        roots.add(base / f"{stem}.libs")
+        roots.add(base / f"{stem}.data")
+
+    hashes: dict[str, str] = {}
+    for root in sorted(roots, key=lambda value: value.as_posix()):
+        _hash_independent_runtime_root(root, base, where, hashes)
+    if not hashes:
+        raise CaptureContractError(f"{where} independent runtime enumeration found no files")
+    return hashes
+
+
+def _distribution_owned_file_hashes(
+    distribution: importlib.metadata.Distribution,
+    where: str,
+) -> dict[str, str]:
+    """Hash every RECORD-owned runtime file beneath the distribution installation root.
+
+    This inventory remains useful for distributions that expose more than one import
+    surface, but it is not trusted for completeness. ``_distribution_package_provenance``
+    independently enumerates the active import roots and conventional sibling wheel
+    runtime directories, then requires RECORD to contain every independently observed
+    runtime file before this inventory may contribute to canonical evidence.
+    """
+    files = distribution.files
+    if not files:
+        raise CaptureContractError(f"{where} distribution does not expose an installed file inventory")
+    try:
+        base = Path(distribution.locate_file("")).resolve(strict=True)
+    except OSError as exc:
+        raise CaptureContractError(f"unable to resolve {where} distribution installation root") from exc
+
+    hashes: dict[str, str] = {}
+    for entry in sorted(files, key=lambda value: str(value).replace("\\", "/")):
+        metadata_path = PurePosixPath(str(entry).replace("\\", "/"))
+        if not metadata_path.parts:
+            continue
+        if any(part.endswith((".dist-info", ".egg-info")) for part in metadata_path.parts):
+            continue
+        if metadata_path.suffix.lower() in _BYTECODE_SUFFIXES:
+            continue
+        located = Path(distribution.locate_file(entry))
+        try:
+            if located.is_symlink():
+                raise CaptureContractError(
+                    f"{where} distribution-owned runtime file must not be a symlink: {entry}"
+                )
+            resolved = located.resolve(strict=True)
+            relative = resolved.relative_to(base)
+        except FileNotFoundError as exc:
+            raise CaptureContractError(
+                f"{where} distribution-owned runtime file is missing: {entry}"
+            ) from exc
+        except ValueError:
+            # Console entrypoints may be recorded outside site-packages. They are not
+            # imported by the capture runtime and are outside this executable closure.
+            continue
+        except OSError as exc:
+            raise CaptureContractError(
+                f"unable to inspect {where} distribution-owned runtime file: {entry}"
+            ) from exc
+        key = relative.as_posix()
+        if not key or key.startswith("/") or "\\" in key or any(
+            part in {"", ".", ".."} for part in relative.parts
+        ):
+            raise CaptureContractError(
+                f"{where} distribution contains a noncanonical runtime path: {key!r}"
+            )
+        if resolved.is_dir():
+            continue
+        hashes[key] = _hash_regular_file(resolved, where)
+    if not hashes:
+        raise CaptureContractError(f"{where} distribution contains no receipt-bound runtime files")
+    return hashes
+
+
+def _distribution_package_provenance(
+    distribution_name: str,
+    import_name: str,
+    where: str,
+    *,
+    module: Any | None = None,
+) -> dict[str, Any]:
+    """Bind the import surface and independently checked distribution runtime payload.
+
+    RECORD-derived ownership covers the broad installed distribution, while an
+    independent filesystem walk covers the active import root and conventional sibling
+    ``*.libs``/``*.data`` wheel roots. RECORD is rejected if it omits anything found by
+    that independent walk, so editing RECORD cannot hide a patched NumPy native library.
+    """
+    try:
+        spec = importlib.util.find_spec(import_name)
+    except (ImportError, AttributeError, ValueError) as exc:
+        raise CaptureContractError(
+            f"{where} cannot locate the locked {import_name} package"
+        ) from exc
+    if spec is None or not isinstance(spec.origin, str) or not spec.origin.strip():
+        raise CaptureContractError(
+            f"{where} cannot locate the locked {import_name} package"
+        )
+
+    distribution = _find_one_distribution(distribution_name, where)
+    owned_hashes = _distribution_owned_file_hashes(distribution, where)
+    independent_hashes = _independently_enumerated_runtime_hashes(
+        distribution,
+        distribution_name,
+        import_name,
+        spec,
+        where,
+    )
+    missing_from_inventory = sorted(set(independent_hashes) - set(owned_hashes))
+    if missing_from_inventory:
+        raise CaptureContractError(
+            f"{where} distribution file inventory omits independently discovered runtime files: "
+            + ",".join(missing_from_inventory)
+        )
+    for key, digest in independent_hashes.items():
+        if owned_hashes[key] != digest:
+            raise CaptureContractError(
+                f"{where} distribution inventory/runtime digest disagreement for {key}"
+            )
+
+    try:
+        base = Path(distribution.locate_file("")).resolve(strict=True)
+        origin = Path(spec.origin).resolve(strict=True)
+        origin_key = origin.relative_to(base).as_posix()
+    except (OSError, ValueError) as exc:
+        raise CaptureContractError(
+            f"{where} import origin is not owned by the locked {distribution_name} distribution"
+        ) from exc
+    if origin_key not in independent_hashes or origin_key not in owned_hashes:
+        raise CaptureContractError(
+            f"{where} import origin is absent from the independently authenticated distribution runtime receipt"
+        )
+
+    if module is not None:
+        import_receipt = _python_package_provenance(module, where)
+    elif spec.submodule_search_locations is None:
+        import_receipt = _single_module_provenance_without_import(Path(spec.origin), where)
+    else:
+        probe = types.SimpleNamespace(__file__=spec.origin)
+        import_receipt = _python_package_provenance(probe, where)
+
+    composite = {
+        "distribution_owned_files": owned_hashes,
+        "independent_runtime_files": independent_hashes,
+        "import_surface": import_receipt,
+    }
+    return {
+        "file_count": len(owned_hashes),
+        "receipt_sha256": sha256_json(composite),
+    }
+
+
 def _validate_python_package_provenance(
     observed: dict[str, Any] | Any, *, count_field: str, receipt_field: str, where: str
 ) -> None:
@@ -155,4 +454,8 @@ def _validate_python_package_provenance(
         raise CaptureContractError(f"{where} package receipt must be a lowercase SHA-256 digest")
 
 
-__all__ = ["_python_package_provenance", "_validate_python_package_provenance"]
+__all__ = [
+    "_distribution_package_provenance",
+    "_python_package_provenance",
+    "_validate_python_package_provenance",
+]

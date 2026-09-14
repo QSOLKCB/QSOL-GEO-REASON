@@ -1,10 +1,11 @@
 """Real offline production-backend integration for the Phase 2A reference lane.
 
 The script builds a tiny GPT-2-style model and fast tokenizer locally, arranges them
-as Hugging Face cache snapshots with QSOL commit-tree receipts, then invokes the real
-qsol-geo-capture CLI twice.  No model weights are downloaded.  Both bundles must pass
-Draft 2020-12 schema validation, the canonical semantic verifier, and byte-for-byte
-JSON equality across the replay.
+as Hugging Face cache snapshots with QSOL commit-tree receipts, then invokes the
+installed ``qsol-geo-capture`` payload twice through its canonical POSIX fixed-Bash
+standalone source-authenticating boundary. No model weights are downloaded. Both
+bundles must pass Draft 2020-12 schema validation, the canonical semantic verifier,
+and byte-for-byte JSON equality across replay.
 """
 from __future__ import annotations
 
@@ -13,7 +14,6 @@ import importlib.metadata
 import json
 import os
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -213,12 +213,23 @@ def _request(model_tree: str, tokenizer_tree: str, constraints_sha256: str) -> d
     }
 
 
+def _installed_capture_payload() -> Path:
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not directory:
+            continue
+        candidate = Path(directory) / "qsol-geo-capture"
+        if candidate.is_file():
+            return candidate.resolve(strict=True)
+    raise RuntimeError("installed qsol-geo-capture payload is unavailable on PATH")
+
+
 def _run_cli(request_path: Path, output_dir: Path, environment: dict[str, str]) -> str:
+    capture_payload = _installed_capture_payload()
     completed = subprocess.run(
         [
-            sys.executable,
-            "-m",
-            "qsol_geo_reason.capture_cli",
+            "/bin/bash",
+            "-p",
+            str(capture_payload),
             str(request_path),
             "--output-dir",
             str(output_dir),

@@ -1,9 +1,34 @@
-# Phase 2A canonical CPU integration reference environment (Python 3.11)
-# Direct execution dependencies are pinned so CI/review can reproduce the tested lane.
-torch==2.2.2
-transformers==4.40.2
+# Phase 2A canonical CPU reference runtime lock (Python 3.11, Linux x86_64 CPU lane)
+#
+# Complete resolved runtime closure captured from successful capture-production-integration
+# run #33 on 2026-09-11. Every non-comment line is an exact pin. Apply this file as a
+# constraint to every installation step in the reference lane, then run
+# tools/verify_capture_reference_environment.py before preparation or observation.
+attrs==26.1.0
+certifi==2026.7.22
+charset-normalizer==3.5.1
+filelock==3.32.3
+fsspec==2026.7.0
 huggingface-hub==0.23.5
-tokenizers==0.19.1
-safetensors==0.4.3
-numpy==1.26.4
+idna==3.19
+Jinja2==3.1.6
 jsonschema==4.23.0
+jsonschema-specifications==2025.9.1
+MarkupSafe==3.0.3
+mpmath==1.3.0
+networkx==3.6.1
+numpy==1.26.4
+packaging==26.3
+PyYAML==6.0.3
+referencing==0.37.0
+regex==2026.9.10
+requests==2.34.2
+rpds-py==2026.6.3
+safetensors==0.4.3
+sympy==1.14.0
+tokenizers==0.19.1
+torch==2.2.2+cpu
+tqdm==4.70.1
+transformers==4.40.2
+typing_extensions==4.16.0
+urllib3==2.7.0
