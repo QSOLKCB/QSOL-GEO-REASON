@@ -30,13 +30,14 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
         ):
             self.assertIn(prefix_expansion, function)
         self.assertIn("GLIBC_TUNABLES LIBPATH SHLIB_PATH; do", function)
-        self.assertIn('! unset "$qsol_loader_var" 2>/dev/null', function)
-        self.assertIn("exit 126", function)
+        self.assertIn('! \\unset "$qsol_loader_var" 2>/dev/null', function)
+        self.assertIn("\\exit 126", function)
         self.assertIn("loader variable survived scrub", function)
         self.assertNotIn("env -u", function)
 
+        self.assertIn("\\local qsol_loader_var qsol_python", function)
         self.assertIn(
-            'qsol_python="$(command type -P python 2>/dev/null)" || qsol_python=',
+            'qsol_python="$(\\command type -P python 2>/dev/null)" || qsol_python=',
             function,
         )
         self.assertIn('"$qsol_python" != /*', function)
@@ -47,14 +48,18 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
             '\n    python -I -S -B -c "$QSOL_FIRST_OBSERVATION_BOOTSTRAP"',
             function,
         )
+        self.assertNotIn(
+            '\n    command "$qsol_python" -I -S -B -c "$QSOL_FIRST_OBSERVATION_BOOTSTRAP"',
+            function,
+        )
 
         python_start = function.index(
-            'command "$qsol_python" -I -S -B -c "$QSOL_FIRST_OBSERVATION_BOOTSTRAP"'
+            '\\command "$qsol_python" -I -S -B -c "$QSOL_FIRST_OBSERVATION_BOOTSTRAP"'
         )
         self.assertLess(function.index("${!LD_@}"), python_start)
-        self.assertLess(function.index("! unset"), python_start)
+        self.assertLess(function.index("! \\unset"), python_start)
         self.assertLess(function.index("loader variable survived scrub"), python_start)
-        self.assertLess(function.index("command type -P python"), python_start)
+        self.assertLess(function.index("\\command type -P python"), python_start)
 
         self.assertIn(
             "Before starting any Python process",
@@ -70,6 +75,10 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
         )
         self.assertIn(
             "path-only lookup, which ignores shell functions",
+            text,
+        )
+        self.assertIn(
+            "backslash-escaped at every command position",
             text,
         )
 
@@ -133,6 +142,56 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
             self.assertFalse(
                 marker.exists(),
                 "python shell function intercepted the authenticated bootstrap",
+            )
+
+    def test_interactive_aliases_cannot_rewrite_bootstrap_function_definition(self) -> None:
+        function_body = _documented_bootstrap_function()
+        function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            python_path = tmp_path / "python"
+            python_path.symlink_to(Path(sys.executable).resolve())
+            marker = tmp_path / "alias-intercepted"
+            marker_shell = shlex.quote(str(marker))
+            path_shell = shlex.quote(str(tmp_path))
+            alias_payload = "printf intercepted > " + marker_shell + "; false"
+            script = (
+                "shopt -s expand_aliases\n"
+                + "alias command="
+                + shlex.quote(alias_payload)
+                + "\n"
+                + "alias local="
+                + shlex.quote(alias_payload)
+                + "\n"
+                + "alias unset="
+                + shlex.quote(alias_payload)
+                + "\n"
+                + "alias printf="
+                + shlex.quote(alias_payload)
+                + "\n"
+                + "alias exit="
+                + shlex.quote(alias_payload)
+                + "\n"
+                + "PATH="
+                + path_shell
+                + "\n"
+                + function_definition
+                + "QSOL_FIRST_OBSERVATION_BOOTSTRAP='import sys; sys.exit(29)'\n"
+                + "qsol_first_observation\n"
+            )
+            completed = subprocess.run(
+                ["/bin/bash", "--noprofile", "--norc"],
+                input=script,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 29, completed.stderr)
+            self.assertFalse(
+                marker.exists(),
+                "interactive alias expansion rewrote the authenticated bootstrap wrapper",
             )
 
 
