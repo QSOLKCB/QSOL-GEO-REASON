@@ -1,15 +1,14 @@
-#!/usr/bin/python3 -ISB
-"""Installed authenticated bootstrap for the standalone GEO-CAP-001 capture CLI.
+"""Authenticated Python payload for the installed ``qsol-geo-capture`` wrapper.
 
-The shebang deliberately uses the single CPython option cluster ``-ISB`` so the
-first interpreter starts isolated, without ``site`` initialization, and without
-bytecode writes before any Python bootstrap code can execute. Setuptools may rewrite
-the interpreter pathname when installing this script, but the option cluster remains
-part of the shebang. The bootstrap imports no ``qsol_geo_reason`` module in that
-first process. It binds one immutable Git revision through a fixed trusted Git
-executable, authenticates this installed bootstrap body and every tracked package
-file against that revision, and only then execs a fresh ``-I -S -B`` interpreter.
-The child re-hashes the complete package manifest and rejects importable shadows,
+This file is not a user-facing entry point. The installed Bash wrapper starts an
+adjacent CPython as ``-I -S -B``, authenticates one Git commit, reads this payload
+from that commit with trusted Git, executes it under the private stage-0 module
+identity, and only then calls ``main()``. Direct execution of this tracked file fails
+closed so it cannot recreate the pre-site-startup bypass under another filename.
+
+The payload imports no ``qsol_geo_reason`` module before authenticating the installed
+wrapper and every tracked package file against the same bound revision. Its child
+then re-hashes the complete package manifest and rejects importable shadows,
 including package-local native extensions, before exposing ``src`` on ``sys.path``
 or importing ``qsol_geo_reason.capture_cli``.
 """
@@ -28,6 +27,7 @@ from typing import Any
 
 _PACKAGE_GIT_ROOT = "src/qsol_geo_reason"
 _BOOTSTRAP_GIT_PATH = "scripts/qsol-geo-capture"
+_STAGE0_MODULE_NAME = "qsol_standalone_authenticated_payload"
 _LOADER_ENV_PREFIXES = ("LD_", "DYLD_", "_RLD_", "LDR_")
 _LOADER_ENV_NAMES = frozenset({"GLIBC_TUNABLES", "LIBPATH", "SHLIB_PATH"})
 
@@ -484,6 +484,12 @@ def _run(argv: list[str]) -> None:
 
 
 def main() -> int:
+    if __name__ != _STAGE0_MODULE_NAME:
+        print(
+            "qsol-geo-capture-python is an internal authenticated payload; use the installed qsol-geo-capture command",
+            file=sys.stderr,
+        )
+        return 2
     try:
         _run([str(value) for value in sys.argv[1:]])
     except (
