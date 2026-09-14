@@ -4,10 +4,10 @@ Evidence-producing subprocesses must not execute ``sitecustomize``, ``usercustom
 executable ``.pth`` files, or mutable checkout package code before the launcher-bound
 QSOL source identity has been rechecked.  This module carries the authenticated Git
 revision and complete tracked-package SHA-256 manifest into each ``-I -S -B`` child.
-The child rejects import shadows/bytecode and re-hashes every manifest entry before
-prepending ``src`` or importing any ``qsol_geo_reason`` module.  It then installs the
-same verified identity in the child so nested authenticated subprocesses retain the
-original trust root.
+The child rejects import shadows, bytecode, and package-local native extensions and
+re-hashes every manifest entry before prepending ``src`` or importing any
+``qsol_geo_reason`` module.  It then installs the same verified identity in the child
+so nested authenticated subprocesses retain the original trust root.
 """
 from __future__ import annotations
 
@@ -151,11 +151,13 @@ def _authenticated_bootstrap(module_name: str, callable_name: str) -> str:
         "(srcroot.is_symlink() or pkg.is_symlink()) and (_ for _ in ()).throw(RuntimeError('authenticated package subprocess rejects symlinked src/package roots'));"
         "importsfx=tuple(sorted({s.lower() for s in (*importlib.machinery.SOURCE_SUFFIXES,*importlib.machinery.BYTECODE_SUFFIXES,*importlib.machinery.EXTENSION_SUFFIXES,'.py','.pyc','.pyo','.so','.pyd') if s},key=len,reverse=True));"
         "bytecodesfx=tuple(sorted({s.lower() for s in (*importlib.machinery.BYTECODE_SUFFIXES,'.pyc','.pyo') if s},key=len,reverse=True));"
+        "nativesfx=tuple(sorted({s.lower() for s in (*importlib.machinery.EXTENSION_SUFFIXES,'.so','.pyd') if s},key=len,reverse=True));"
         "topmods=sorted(str(p) for p in srcroot.iterdir() if p!=pkg and p.is_file() and p.name.lower().endswith(importsfx));"
         "toppkgs=sorted(str(i) for p in srcroot.iterdir() if p!=pkg and p.is_dir() for i in (p/('__init__'+s) for s in importsfx) if i.is_file());"
         "bytecode=sorted(str(p) for p in pkg.rglob('*') if p.is_file() and p.name.lower().endswith(bytecodesfx));"
+        "native=sorted(str(p) for p in pkg.rglob('*') if p.is_file() and p.name.lower().endswith(nativesfx));"
         "pkgdirs=sorted(str(i) for p in pkg.rglob('*') if p.is_dir() and p.name!='__pycache__' for i in (p/('__init__'+s) for s in importsfx) if i.is_file());"
-        "shadows=sorted(set(topmods+toppkgs+bytecode+pkgdirs));"
+        "shadows=sorted(set(topmods+toppkgs+bytecode+native+pkgdirs));"
         "shadows and (_ for _ in ()).throw(RuntimeError('authenticated package subprocess rejects importable source shadows before src is trusted: '+','.join(shadows)));"
         "(not isinstance(source_manifest,dict) or not source_manifest) and (_ for _ in ()).throw(RuntimeError('authenticated package subprocess received an empty tracked-source manifest'));"
         "sourcebad=sorted(rel for rel,digest in source_manifest.items() if ((p:=pkg.joinpath(*pathlib.PurePosixPath(rel).parts)).is_symlink() or not p.is_file() or hashlib.sha256(p.read_bytes()).hexdigest()!=digest));"
