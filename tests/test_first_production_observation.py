@@ -117,7 +117,11 @@ class FirstProductionObservationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "nested" / "final-request.json"
             with (
-                mock.patch.object(TOOL, "prepare_tree_receipts", return_value=receipts),
+                mock.patch.object(
+                    TOOL,
+                    "prepare_tree_receipts",
+                    return_value=receipts,
+                ) as warmup,
                 mock.patch.object(
                     TOOL,
                     "resolve_implementation_revision",
@@ -166,8 +170,24 @@ class FirstProductionObservationTests(unittest.TestCase):
                 self.assertGreaterEqual(len(lock_calls), 2)
                 self.assertGreaterEqual(self.launcher_auth.call_count, 2)
                 self.assertEqual(self.environment_auth.call_count, 2)
-                with self.assertRaises(CaptureContractError):
-                    TOOL.prepare(output)
+
+                # A retry of the exact immutable request+receipt pair is now a
+                # crash-recovery operation: revalidate provenance/environment,
+                # resync the directory, and return the same identity without
+                # overwriting either file or repeating online Hub work.
+                retry_sha256 = TOOL.prepare(output)
+                self.assertEqual(retry_sha256, request_sha256)
+                self.assertEqual(warmup.call_count, 1)
+                self.assertEqual(resolver.call_count, 4)
+                self.assertEqual(self.environment_auth.call_count, 3)
+                self.assertEqual(
+                    json.loads(output.read_text(encoding="utf-8")),
+                    written,
+                )
+                self.assertEqual(
+                    json.loads(preparation_path.read_text(encoding="utf-8")),
+                    preparation,
+                )
 
     def test_concurrent_request_publication_failure_never_deletes_shared_preparation_receipt(self) -> None:
         receipts = {
