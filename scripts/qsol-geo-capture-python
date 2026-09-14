@@ -9,7 +9,9 @@ The payload imports no ``qsol_geo_reason`` module before authenticating the inst
 platform wrapper and every tracked package file against the same bound revision. Its
 child then re-hashes the complete package manifest and rejects importable shadows,
 including package-local native extensions, before exposing ``src`` on ``sys.path``
-or importing ``qsol_geo_reason.capture_cli``.
+or importing ``qsol_geo_reason.capture_cli``. Package directories validated by the
+platform stage-0 are carried through the isolated child so ``--user`` dependencies
+remain available without enabling ``site`` or executing ``.pth`` files.
 """
 from __future__ import annotations
 
@@ -28,6 +30,7 @@ _PACKAGE_GIT_ROOT = "src/qsol_geo_reason"
 _STAGE0_MODULE_NAME = "qsol_standalone_authenticated_payload"
 _STAGE0_ROOT_NAME = "_QSOL_STANDALONE_AUTHENTICATED_ROOT"
 _STAGE0_BOOTSTRAP_PATH_NAME = "_QSOL_STANDALONE_BOOTSTRAP_GIT_PATH"
+_STAGE0_PACKAGE_PATHS_NAME = "_QSOL_STANDALONE_PACKAGE_PATHS"
 _ALLOWED_BOOTSTRAP_GIT_PATHS = frozenset(
     {"scripts/qsol-geo-capture", "scripts/qsol-geo-capture.cmd"}
 )
@@ -65,6 +68,38 @@ def _stage0_bootstrap_git_path() -> str:
             "standalone capture received an unsupported authenticated wrapper identity"
         )
     return value
+
+
+def _stage0_package_paths() -> tuple[Path, ...]:
+    value = globals().get(_STAGE0_PACKAGE_PATHS_NAME)
+    if not isinstance(value, (list, tuple)) or not value:
+        raise StandaloneCaptureBootstrapError(
+            "standalone capture requires stage0-validated package directories"
+        )
+    observed: list[Path] = []
+    for raw in value:
+        if not isinstance(raw, str) or not raw.strip():
+            raise StandaloneCaptureBootstrapError(
+                "standalone stage0 package paths must be non-empty strings"
+            )
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            raise StandaloneCaptureBootstrapError(
+                "standalone stage0 package paths must be absolute"
+            )
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError as exc:
+            raise StandaloneCaptureBootstrapError(
+                f"unable to resolve stage0 package directory {candidate}"
+            ) from exc
+        if not resolved.is_dir():
+            raise StandaloneCaptureBootstrapError(
+                f"stage0 package path is not a directory: {resolved}"
+            )
+        if resolved not in observed:
+            observed.append(resolved)
+    return tuple(observed)
 
 
 def _system_git_candidates() -> tuple[Path, ...]:
@@ -256,19 +291,10 @@ def _authenticate_installed_bootstrap(
             "unable to authenticate the installed qsol-geo-capture bootstrap"
         ) from exc
     installed = _read_stable_regular(Path(__file__), "installed bootstrap")
-    if bootstrap_git_path.endswith(".cmd"):
-        matches = installed == committed
-    else:
-        committed_parts = committed.split(b"\n", 1)
-        installed_parts = installed.split(b"\n", 1)
-        matches = (
-            len(committed_parts) == 2
-            and len(installed_parts) == 2
-            and committed_parts[0].startswith(b"#!")
-            and installed_parts[0].startswith(b"#!")
-            and committed_parts[1] == installed_parts[1]
-        )
-    if not matches:
+    # Platform wrappers are authenticated byte-for-byte, including the POSIX
+    # shebang. Canonical POSIX production invocation uses a fixed Bash executable,
+    # so line 1 is data at process start and can safely be included in this check.
+    if installed != committed:
         raise StandaloneCaptureBootstrapError(
             "installed qsol-geo-capture bootstrap does not match the bound Git revision"
         )
@@ -395,19 +421,21 @@ def _authenticate_checkout() -> tuple[Path, str, dict[str, str]]:
 
 def _literal_site_package_paths() -> list[str]:
     paths: list[str] = []
+    candidates: list[Path] = list(_stage0_package_paths())
     executable = Path(sys.executable)
     venv_root = executable.parent.parent
     if (venv_root / "pyvenv.cfg").is_file():
         if os.name == "nt":
-            candidates = [venv_root / "Lib" / "site-packages"]
+            candidates.append(venv_root / "Lib" / "site-packages")
         else:
             version = f"python{sys.version_info.major}.{sys.version_info.minor}"
-            candidates = [
-                venv_root / "lib" / version / "site-packages",
-                venv_root / "lib64" / version / "site-packages",
-            ]
+            candidates.extend(
+                (
+                    venv_root / "lib" / version / "site-packages",
+                    venv_root / "lib64" / version / "site-packages",
+                )
+            )
     else:
-        candidates = []
         for key in ("purelib", "platlib"):
             value = sysconfig.get_paths().get(key)
             if isinstance(value, str) and value.strip():
