@@ -1,0 +1,9 @@
+# Evidence-critical Python/source bootstrap files are authenticated byte-for-byte.
+# Keep their working-tree bytes identical to Git blobs on Windows as well as POSIX.
+*.py text eol=lf
+scripts/qsol-geo-capture text eol=lf
+scripts/qsol-geo-capture-python text eol=lf
+
+# The native Windows batch wrapper is committed with CRLF bytes and must not be
+# rewritten by checkout filters before its stage-0 verifies the committed blob.
+*.cmd -text
