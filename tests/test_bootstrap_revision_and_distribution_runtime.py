@@ -16,6 +16,7 @@ from qsol_geo_reason import capture_package as PACKAGE
 ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = ROOT / "tools" / "run_first_production_observation.py"
 EXPERIMENT = ROOT / "experiments" / "GEO-CAP-001-EXP-001.md"
+REFERENCE_PYTHON = "/tmp/qsol-geo-reason-capture-py311/bin/python"
 
 
 def _load_launcher():
@@ -33,7 +34,7 @@ def _load_launcher():
 def _documented_bootstrap_literal() -> str:
     text = EXPERIMENT.read_text(encoding="utf-8")
     function = text.split("qsol_first_observation() {", 1)[1].split("\n}\n```", 1)[0]
-    marker = "' qsol_first_observation \"${VIRTUAL_ENV-}\" '"
+    marker = f"' qsol_first_observation {REFERENCE_PYTHON} '"
     return function.split(marker, 1)[1].split("' \"$@\"", 1)[0]
 
 
