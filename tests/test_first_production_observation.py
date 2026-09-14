@@ -274,6 +274,7 @@ class FirstProductionObservationTests(unittest.TestCase):
                     stderr="",
                 )
 
+            isolated_globals = TOOL._run_capture.__globals__["isolated_package_command"].__globals__
             with (
                 mock.patch.object(TOOL.subprocess, "run", side_effect=fake_run),
                 mock.patch.dict(
@@ -281,6 +282,14 @@ class FirstProductionObservationTests(unittest.TestCase):
                     {
                         "PYTHONPATH": "/tmp/adversarial",
                         "PYTHONHOME": "/tmp/fake-home",
+                    },
+                    clear=False,
+                ),
+                mock.patch.dict(
+                    isolated_globals,
+                    {
+                        "_AUTHENTICATED_SOURCE_REVISION": "f" * 40,
+                        "_AUTHENTICATED_SOURCE_MANIFEST": {"__init__.py": "b" * 64},
                     },
                     clear=False,
                 ),
@@ -296,6 +305,8 @@ class FirstProductionObservationTests(unittest.TestCase):
             command = seen["command"]
             self.assertEqual(command[:5], [sys.executable, "-I", "-S", "-B", "-c"])
             self.assertIn("qsol_geo_reason.capture_cli", command[5])
+            self.assertIn("source_manifest=json.loads(sys.argv[3])", command[5])
+            self.assertIn("f" * 40, command)
             self.assertIn("--", command)
             environment = seen["env"]
             self.assertFalse(
