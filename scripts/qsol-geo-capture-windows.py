@@ -4,7 +4,9 @@ This file is started only by qsol-geo-capture.cmd under CPython -I -S -B. It
 uses stdlib metadata to locate the editable checkout without executing .pth
 files, binds one Git commit through a fixed Git-for-Windows executable,
 authenticates both installed Windows bootstrap files against that commit, then
-loads the shared authenticated Python payload from the same Git commit.
+loads the shared authenticated Python payload from the same Git commit. Literal
+package directories validated here are carried into the next isolated child so
+Windows user-site capture dependencies remain importable without enabling site.
 """
 from __future__ import annotations
 
@@ -57,8 +59,8 @@ def _literal_site_package_paths() -> tuple[pathlib.Path, ...]:
                 candidates.append(pathlib.Path(value))
 
         # nt_user installs raw scripts at <userbase>/PythonXY/Scripts and
-        # metadata at the sibling site-packages directory. This path is derived
-        # from the installed wrapper, not HOME/PYTHONUSERBASE/PATH.
+        # metadata/dependencies at the sibling site-packages directory. This path
+        # is derived from the installed wrapper, not HOME/PYTHONUSERBASE/PATH.
         if wrapper.parent.name.lower() == "scripts":
             candidates.append(wrapper.parent.parent / "site-packages")
     observed: list[pathlib.Path] = []
@@ -153,6 +155,7 @@ def _git_environment() -> dict[str, str]:
     return environment
 
 
+package_paths = _literal_site_package_paths()
 root = _editable_checkout_root()
 git, git_digest = _trusted_git_identity()
 
@@ -193,6 +196,7 @@ namespace = {
     "__package__": None,
     "_QSOL_STANDALONE_AUTHENTICATED_ROOT": str(root),
     "_QSOL_STANDALONE_BOOTSTRAP_GIT_PATH": "scripts/qsol-geo-capture.cmd",
+    "_QSOL_STANDALONE_PACKAGE_PATHS": [str(path) for path in package_paths],
 }
 exec(compile(payload, str(wrapper), "exec"), namespace, namespace)
 raise SystemExit(namespace["main"]())
