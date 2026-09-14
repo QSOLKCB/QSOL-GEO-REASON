@@ -1,22 +1,23 @@
 #!/bin/bash -p
 set -euo pipefail
 
-# POSIX installed qsol-geo-capture trust boundary. Python starts only after
-# ambient Python/native-loader controls have been cleared, and always under
-# isolated/no-site/no-bytecode flags.
+# POSIX installed qsol-geo-capture payload. Canonical production invocation enters
+# this file through a fixed Bash executable rather than asking the kernel to trust
+# this mutable file's shebang. Python starts only after ambient Python/native-loader
+# controls have been cleared, and always under isolated/no-site/no-bytecode flags.
 for qsol_name in ${!PYTHON@} ${!LD_@} ${!DYLD_@} ${!_RLD_@} ${!LDR_@}; do
     unset "$qsol_name" || {
         printf '%s\n' "qsol-geo-capture: unable to clear pre-interpreter environment control $qsol_name" >&2
         exit 126
     }
 done
+# Unsetting an absent variable succeeds and is compatible with the Bash 3.2 shipped
+# by macOS; do not use the newer [[ -v ... ]] operator at this boundary.
 for qsol_name in GLIBC_TUNABLES LIBPATH SHLIB_PATH; do
-    if [[ -v $qsol_name ]]; then
-        unset "$qsol_name" || {
-            printf '%s\n' "qsol-geo-capture: unable to clear pre-interpreter loader control $qsol_name" >&2
-            exit 126
-        }
-    fi
+    unset "$qsol_name" || {
+        printf '%s\n' "qsol-geo-capture: unable to clear pre-interpreter loader control $qsol_name" >&2
+        exit 126
+    }
 done
 
 qsol_script=$0
@@ -64,10 +65,9 @@ if [[ $qsol_python != /* || ! -f $qsol_python || ! -x $qsol_python ]]; then
     exit 126
 fi
 
-# Follow the selected interpreter only through a fixed system readlink binary. The
-# locator is not an authority: a rewritten shebang such as /tmp/fake-python fails
-# here before any Python process starts. The lexical venv path remains the executed
-# pathname so CPython preserves the active virtualenv prefix.
+# Resolve interpreter symlinks without GNU readlink -f (which stock macOS lacks).
+# Only a fixed system readlink binary is executed and the lexical venv pathname is
+# still the pathname passed to CPython, preserving virtualenv prefix semantics.
 qsol_readlink=""
 for qsol_candidate in /usr/bin/readlink /bin/readlink /run/current-system/sw/bin/readlink; do
     if [[ -f $qsol_candidate && -x $qsol_candidate ]]; then
@@ -79,12 +79,35 @@ if [[ -z $qsol_readlink ]]; then
     printf '%s\n' "qsol-geo-capture: cannot locate fixed system readlink for interpreter authentication" >&2
     exit 126
 fi
-qsol_python_resolved=$($qsol_readlink -f -- "$qsol_python") || {
-    printf '%s\n' "qsol-geo-capture: unable to resolve selected Python interpreter" >&2
+qsol_python_resolved=$qsol_python
+qsol_link_hops=0
+while [[ -L $qsol_python_resolved ]]; do
+    qsol_link_hops=$((qsol_link_hops + 1))
+    if (( qsol_link_hops > 32 )); then
+        printf '%s\n' "qsol-geo-capture: selected Python interpreter has an excessive symlink chain" >&2
+        exit 126
+    fi
+    qsol_link_target=$($qsol_readlink "$qsol_python_resolved") || {
+        printf '%s\n' "qsol-geo-capture: unable to resolve selected Python interpreter symlink" >&2
+        exit 126
+    }
+    case "$qsol_link_target" in
+        /*) qsol_python_resolved=$qsol_link_target ;;
+        *) qsol_python_resolved=${qsol_python_resolved%/*}/$qsol_link_target ;;
+    esac
+done
+qsol_python_dir=${qsol_python_resolved%/*}
+qsol_python_base=${qsol_python_resolved##*/}
+qsol_python_resolved=$(cd -P "$qsol_python_dir" 2>/dev/null && printf '%s/%s\n' "$PWD" "$qsol_python_base") || {
+    printf '%s\n' "qsol-geo-capture: unable to canonicalize selected Python interpreter" >&2
     exit 126
 }
+
+# Accept the fixed system/toolchain roots used by Linux/Nix, GitHub-hosted runners,
+# python.org macOS installers, and Homebrew on both Apple Silicon and Intel. The
+# locator may name a path elsewhere, but such a target never receives stage-0.
 case "$qsol_python_resolved" in
-    /usr/bin/python*|/bin/python*|/usr/local/bin/python*|/opt/hostedtoolcache/Python/*/bin/python*|/run/current-system/sw/bin/python*) ;;
+    /usr/bin/python*|/bin/python*|/usr/local/bin/python*|/opt/hostedtoolcache/Python/*/bin/python*|/Users/runner/hostedtoolcache/Python/*/bin/python*|/run/current-system/sw/bin/python*|/Library/Frameworks/Python.framework/Versions/*/bin/python*|/opt/homebrew/Cellar/python*/*/Frameworks/Python.framework/Versions/*/bin/python*|/opt/homebrew/Cellar/python*/*/bin/python*|/usr/local/Cellar/python*/*/Frameworks/Python.framework/Versions/*/bin/python*|/usr/local/Cellar/python*/*/bin/python*) ;;
     *)
         printf '%s\n' "qsol-geo-capture: selected Python interpreter does not resolve inside a trusted system/toolchain root" >&2
         exit 126
@@ -142,15 +165,15 @@ def literal_site_package_paths() -> tuple[pathlib.Path, ...]:
             if isinstance(value, str) and value.strip():
                 candidates.append(pathlib.Path(value))
 
-        # For a POSIX --user install, raw scripts land under <userbase>/bin while
-        # distribution metadata lands under <userbase>/lib/pythonX.Y/site-packages.
-        # Derive that path from the installed wrapper itself rather than HOME,
-        # PYTHONUSERBASE, PATH, or another ambient selector.
+        # POSIX --user layouts derive from the installed wrapper rather than HOME,
+        # PYTHONUSERBASE, PATH, or site initialization. Linux commonly uses
+        # lib/pythonX.Y/site-packages; python.org macOS uses lib/python/site-packages.
         install_prefix = wrapper.parent.parent
         candidates.extend(
             (
                 install_prefix / "lib" / version / "site-packages",
                 install_prefix / "lib64" / version / "site-packages",
+                install_prefix / "lib" / "python" / "site-packages",
             )
         )
     observed: list[pathlib.Path] = []
@@ -215,6 +238,7 @@ for candidate in (
 if git_identity is None:
     raise RuntimeError("qsol-geo-capture requires a trusted system Git executable") from last_error
 git, git_digest = git_identity
+package_paths = literal_site_package_paths()
 root = editable_checkout_root()
 
 environment: dict[str, str] = {}
@@ -270,6 +294,7 @@ namespace = {
     "__package__": None,
     "_QSOL_STANDALONE_AUTHENTICATED_ROOT": str(root),
     "_QSOL_STANDALONE_BOOTSTRAP_GIT_PATH": "scripts/qsol-geo-capture",
+    "_QSOL_STANDALONE_PACKAGE_PATHS": [str(path) for path in package_paths],
 }
 exec(compile(payload, str(wrapper), "exec"), namespace, namespace)
 raise SystemExit(namespace["main"]())
