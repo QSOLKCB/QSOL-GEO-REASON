@@ -13,7 +13,9 @@ transport trust overrides, and execs a second ``-I -S -B`` interpreter. Before e
 process imports ``qsol_geo_reason``, the launcher rejects import shadows/bytecode and
 directly authenticates every tracked package file against the bootstrap-bound Git
 revision independently of index flags. The second interpreter re-hashes the
-authenticated source manifest immediately before prepending ``src`` to ``sys.path``.
+authenticated source manifest immediately before prepending ``src`` to ``sys.path``
+and installs that immutable identity into ``no_site_subprocess`` so every later Hub
+or capture child must repeat the same pre-import source verification.
 """
 from __future__ import annotations
 
@@ -153,6 +155,8 @@ _ORCHESTRATOR_BOOTSTRAP = (
     "sourcebad and (_ for _ in ()).throw(RuntimeError('canonical production launcher rejects tracked package source that does not match bound revision '+revision+': '+','.join(sourcebad)));"
     "sys.path.insert(0,src);"
     "[sys.path.append(p) for p in paths if p not in sys.path];"
+    "import qsol_geo_reason.no_site_subprocess as _qsol_ns;"
+    "_qsol_ns.install_authenticated_source_manifest(revision,source_manifest);"
     "sys.argv=['qsol_geo_reason.first_production_observation',*args,'--implementation-revision',revision];"
     "from qsol_geo_reason.first_production_observation import main;"
     "raise SystemExit(main())"
