@@ -20,10 +20,10 @@ capture = [
 
 [project.scripts]
 qsol-geo-sim = "qsol_geo_reason.cli:main"
-qsol-geo-capture = "qsol_geo_reason.capture_cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+script-files = ["scripts/qsol-geo-capture"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
