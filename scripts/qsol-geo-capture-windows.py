@@ -1,6 +1,6 @@
 """Windows stage-0 for the installed qsol-geo-capture command.
 
-This file is started only by qsol-geo-capture.cmd under CPython -I -S -B.  It
+This file is started only by qsol-geo-capture.cmd under CPython -I -S -B. It
 uses stdlib metadata to locate the editable checkout without executing .pth
 files, binds one Git commit through a fixed Git-for-Windows executable,
 authenticates both installed Windows bootstrap files against that commit, then
@@ -38,7 +38,12 @@ stage0 = pathlib.Path(__file__).resolve(strict=True)
 
 
 def _literal_site_package_paths() -> tuple[pathlib.Path, ...]:
-    executable = pathlib.Path(sys.executable).resolve(strict=True)
+    # Keep the lexical interpreter path where possible so venv installs retain
+    # their own Lib/site-packages. A --user wrapper is handled independently by
+    # deriving <userbase>/PythonXY/site-packages from the installed Scripts path.
+    executable = pathlib.Path(sys.executable)
+    if not executable.is_absolute():
+        raise RuntimeError("Windows isolated stage0 requires an absolute interpreter pathname")
     venv_root = executable.parent.parent
     candidates: list[pathlib.Path] = []
     if (venv_root / "pyvenv.cfg").is_file():
@@ -50,6 +55,12 @@ def _literal_site_package_paths() -> tuple[pathlib.Path, ...]:
             value = sysconfig.get_paths().get(key)
             if isinstance(value, str) and value.strip():
                 candidates.append(pathlib.Path(value))
+
+        # nt_user installs raw scripts at <userbase>/PythonXY/Scripts and
+        # metadata at the sibling site-packages directory. This path is derived
+        # from the installed wrapper, not HOME/PYTHONUSERBASE/PATH.
+        if wrapper.parent.name.lower() == "scripts":
+            candidates.append(wrapper.parent.parent / "site-packages")
     observed: list[pathlib.Path] = []
     for candidate in candidates:
         resolved = candidate.resolve(strict=False)
