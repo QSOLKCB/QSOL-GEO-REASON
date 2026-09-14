@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from reference_environment_fixture import (
+    capture_direct_package_provenance,
     capture_transitive_package_provenance,
     hub_package_provenance,
     hub_transport_package_provenance,
@@ -42,6 +43,11 @@ def _reference_platform_patches(verifier):
             verifier,
             "_current_hub_transport_package_provenance",
             return_value=hub_transport_package_provenance(),
+        ),
+        mock.patch.object(
+            verifier,
+            "_current_capture_direct_package_provenance",
+            return_value=capture_direct_package_provenance(),
         ),
         mock.patch.object(
             verifier,
@@ -83,15 +89,7 @@ class CaptureReferenceLockTests(unittest.TestCase):
         patches = _reference_platform_patches(verifier)
         with (
             mock.patch.object(verifier, "_installed_runtime_versions", return_value=actual),
-            patches[0],
-            patches[1],
-            patches[2],
-            patches[3],
-            patches[4],
-            patches[5],
-            patches[6],
-            patches[7],
-            patches[8],
+            *patches,
         ):
             with self.assertRaisesRegex(RuntimeError, "unexpected=.*surprise-package"):
                 verifier.verify_reference_environment()
@@ -103,7 +101,7 @@ class CaptureReferenceLockTests(unittest.TestCase):
         with (
             mock.patch.object(verifier, "_installed_runtime_versions", return_value=dict(locked)),
             mock.patch.object(verifier, "_current_python_version", return_value=(3, 12, 9)),
-            patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8],
+            *patches[1:],
         ):
             with self.assertRaisesRegex(RuntimeError, "requires Python 3.11"):
                 verifier.verify_reference_environment()
@@ -117,7 +115,7 @@ class CaptureReferenceLockTests(unittest.TestCase):
             patches[0],
             mock.patch.object(verifier, "_current_python_releaselevel", return_value="candidate"),
             mock.patch.object(verifier, "_current_python_serial", return_value=1),
-            patches[3], patches[4], patches[5], patches[6], patches[7], patches[8],
+            *patches[3:],
         ):
             with self.assertRaisesRegex(RuntimeError, "requires a final CPython release"):
                 verifier.verify_reference_environment()
@@ -128,15 +126,7 @@ class CaptureReferenceLockTests(unittest.TestCase):
         patches = _reference_platform_patches(verifier)
         with (
             mock.patch.object(verifier, "_installed_runtime_versions", return_value=dict(locked)),
-            patches[0],
-            patches[1],
-            patches[2],
-            patches[3],
-            patches[4],
-            patches[5],
-            patches[6],
-            patches[7],
-            patches[8],
+            *patches,
         ):
             receipt = verifier.verify_reference_environment()
         self.assertEqual(receipt["distribution_count"], 28)
@@ -147,6 +137,16 @@ class CaptureReferenceLockTests(unittest.TestCase):
         self.assertEqual(
             receipt["hub_transport_package_provenance"],
             hub_transport_package_provenance(),
+        )
+        for required in ("filelock", "fsspec", "packaging", "pyyaml", "tqdm", "typing-extensions"):
+            self.assertIn(required, receipt["hub_transport_package_provenance"])
+        self.assertEqual(
+            receipt["capture_direct_package_provenance"],
+            capture_direct_package_provenance(),
+        )
+        self.assertEqual(
+            set(receipt["capture_direct_package_provenance"]),
+            {"torch", "transformers", "tokenizers", "safetensors"},
         )
         self.assertEqual(
             receipt["capture_transitive_package_provenance"],
@@ -161,19 +161,38 @@ class CaptureReferenceLockTests(unittest.TestCase):
         verifier = _load_verifier()
         locked = verifier._locked_versions()
         transport = hub_transport_package_provenance()
-        transport.pop("certifi")
+        transport.pop("filelock")
         patches = _reference_platform_patches(verifier)
         with (
             mock.patch.object(verifier, "_installed_runtime_versions", return_value=dict(locked)),
-            patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6],
+            *patches[:7],
             mock.patch.object(
                 verifier,
                 "_current_hub_transport_package_provenance",
                 return_value=transport,
             ),
-            patches[8],
+            *patches[8:],
         ):
-            with self.assertRaisesRegex(RuntimeError, "transport package provenance keys"):
+            with self.assertRaisesRegex(RuntimeError, "execution package provenance keys"):
+                verifier.verify_reference_environment()
+
+    def test_reference_receipt_rejects_missing_direct_package_provenance(self) -> None:
+        verifier = _load_verifier()
+        locked = verifier._locked_versions()
+        direct = capture_direct_package_provenance()
+        direct.pop("torch")
+        patches = _reference_platform_patches(verifier)
+        with (
+            mock.patch.object(verifier, "_installed_runtime_versions", return_value=dict(locked)),
+            *patches[:8],
+            mock.patch.object(
+                verifier,
+                "_current_capture_direct_package_provenance",
+                return_value=direct,
+            ),
+            patches[9],
+        ):
+            with self.assertRaisesRegex(RuntimeError, "capture direct package provenance keys"):
                 verifier.verify_reference_environment()
 
     def test_reference_receipt_rejects_missing_transitive_package_provenance(self) -> None:
@@ -184,7 +203,7 @@ class CaptureReferenceLockTests(unittest.TestCase):
         patches = _reference_platform_patches(verifier)
         with (
             mock.patch.object(verifier, "_installed_runtime_versions", return_value=dict(locked)),
-            patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7],
+            *patches[:9],
             mock.patch.object(
                 verifier,
                 "_current_capture_transitive_package_provenance",
