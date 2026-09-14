@@ -534,6 +534,7 @@ def observe(
     }
     _core._create_output_root_durable(output_root)
     replay_verdict_published = False
+    verdict_path = output_root / "replay-verdict.json"
 
     try:
         validated_request_path = output_root / "validated-request.json"
@@ -596,7 +597,6 @@ def observe(
             run_b_manifest_receipt=manifest_b,
             experiment_id=_core.EXPERIMENT_ID,
         )
-        verdict_path = output_root / "replay-verdict.json"
         _core._exclusive_write_json(verdict_path, verdict)
         replay_verdict_published = True
         persisted = _core._read_json(verdict_path)
@@ -617,6 +617,11 @@ def observe(
         )
         return persisted, 0 if persisted["replay_outcome"] == "byte_identical" else 2
     except BaseException as exc:
+        if not replay_verdict_published:
+            try:
+                replay_verdict_published = verdict_path.is_file()
+            except OSError:
+                replay_verdict_published = False
         failed_path = _core._preserve_failed_attempt(
             output_root,
             exc,
