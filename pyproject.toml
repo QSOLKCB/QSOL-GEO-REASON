@@ -23,7 +23,14 @@ qsol-geo-sim = "qsol_geo_reason.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-script-files = ["scripts/qsol-geo-capture"]
+# POSIX resolves the extensionless privileged-Bash wrapper; Windows command
+# lookup resolves qsol-geo-capture.cmd.  The Windows .py file is an internal
+# isolated/no-site stage-0 used only by that .cmd wrapper.
+script-files = [
+    "scripts/qsol-geo-capture",
+    "scripts/qsol-geo-capture.cmd",
+    "scripts/qsol-geo-capture-windows.py",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
