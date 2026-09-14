@@ -17,8 +17,16 @@ def _documented_bootstrap_function() -> str:
     return text.split("qsol_first_observation() {", 1)[1].split("\n}\n```", 1)[0]
 
 
+def _make_reference_venv(tmp_path: Path) -> Path:
+    venv = tmp_path / "venv"
+    bin_dir = venv / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "python").symlink_to(Path(sys.executable).resolve())
+    return venv
+
+
 class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
-    def test_documented_bootstrap_scrubs_loader_injection_before_python(self) -> None:
+    def test_documented_bootstrap_scrubs_loader_then_enters_function_free_shell(self) -> None:
         text = EXPERIMENT.read_text(encoding="utf-8")
         function = _documented_bootstrap_function()
 
@@ -35,65 +43,56 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
         self.assertIn("loader variable survived scrub", function)
         self.assertNotIn("env -u", function)
 
-        self.assertIn("\\local qsol_loader_var qsol_python", function)
-        self.assertIn(
-            'qsol_python="$(\\command type -P python 2>/dev/null)" || qsol_python=',
-            function,
-        )
+        clean_shell = "/bin/bash --noprofile --norc -p -c"
+        self.assertIn(clean_shell, function)
+        self.assertIn("qsol_venv=$1", function)
+        self.assertIn("qsol_bootstrap=$2", function)
+        self.assertIn('qsol_python="$qsol_venv/bin/python"', function)
         self.assertIn('"$qsol_python" != /*', function)
         self.assertIn('! -f "$qsol_python"', function)
         self.assertIn('! -x "$qsol_python"', function)
-        self.assertIn("cannot resolve an absolute executable", function)
-        self.assertNotIn(
-            '\n    python -I -S -B -c "$QSOL_FIRST_OBSERVATION_BOOTSTRAP"',
+        self.assertIn("cannot resolve the activated virtualenv Python executable", function)
+        self.assertIn(
+            '"$qsol_python" -I -S -B -c "$qsol_bootstrap" "$@"',
             function,
         )
-        self.assertNotIn(
-            '\n    command "$qsol_python" -I -S -B -c "$QSOL_FIRST_OBSERVATION_BOOTSTRAP"',
-            function,
-        )
+        self.assertIn('"${VIRTUAL_ENV-}" "$QSOL_FIRST_OBSERVATION_BOOTSTRAP" "$@"', function)
+        self.assertNotIn("command type -P python", function)
+        self.assertNotIn('\\command "$qsol_python"', function)
 
         python_start = function.index(
-            '\\command "$qsol_python" -I -S -B -c "$QSOL_FIRST_OBSERVATION_BOOTSTRAP"'
+            '"$qsol_python" -I -S -B -c "$qsol_bootstrap" "$@"'
         )
         self.assertLess(function.index("${!LD_@}"), python_start)
         self.assertLess(function.index("! \\unset"), python_start)
         self.assertLess(function.index("loader variable survived scrub"), python_start)
-        self.assertLess(function.index("\\command type -P python"), python_start)
+        self.assertLess(function.index(clean_shell), python_start)
 
-        self.assertIn(
-            "Before starting any Python process",
-            text,
-        )
-        self.assertIn(
-            "uses only Bash built-ins",
-            text,
-        )
-        self.assertIn(
-            "Every `unset` is checked",
-            text,
-        )
-        self.assertIn(
-            "path-only lookup, which ignores shell functions",
-            text,
-        )
-        self.assertIn(
-            "backslash-escaped at every command position",
-            text,
-        )
+        self.assertIn("Before starting any Python process", text)
+        self.assertIn("uses only Bash built-ins", text)
+        self.assertIn("Every `unset` is checked", text)
+        self.assertIn("privileged Bash", text)
+        self.assertIn("does not import shell functions", text)
+        self.assertIn("activated virtual environment", text)
 
     def test_readonly_loader_variable_aborts_before_python(self) -> None:
         function_body = _documented_bootstrap_function()
         function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
 
         with tempfile.TemporaryDirectory() as tmp:
-            marker = Path(tmp) / "python-called"
+            tmp_path = Path(tmp)
+            venv = _make_reference_venv(tmp_path)
+            marker = tmp_path / "python-called"
             marker_shell = shlex.quote(str(marker))
+            venv_shell = shlex.quote(str(venv))
             script = (
                 function_definition
                 + "\npython() { printf 'called\\n' > "
                 + marker_shell
                 + "; }\n"
+                + "VIRTUAL_ENV="
+                + venv_shell
+                + "\n"
                 + "export LD_PRELOAD=/tmp/qsol-readonly-loader-test.so\n"
                 + "readonly LD_PRELOAD\n"
                 + "qsol_first_observation\n"
@@ -115,19 +114,19 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            python_path = tmp_path / "python"
-            python_path.symlink_to(Path(sys.executable).resolve())
+            venv = _make_reference_venv(tmp_path)
             marker = tmp_path / "python-function-called"
             marker_shell = shlex.quote(str(marker))
-            path_shell = shlex.quote(str(tmp_path))
+            venv_shell = shlex.quote(str(venv))
             script = (
                 function_definition
-                + "\nPATH="
-                + path_shell
+                + "\nVIRTUAL_ENV="
+                + venv_shell
                 + "\n"
                 + "python() { printf 'intercepted\\n' > "
                 + marker_shell
                 + "; return 0; }\n"
+                + "export -f python\n"
                 + "QSOL_FIRST_OBSERVATION_BOOTSTRAP='import sys; sys.exit(23)'\n"
                 + "qsol_first_observation\n"
             )
@@ -144,17 +143,51 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
                 "python shell function intercepted the authenticated bootstrap",
             )
 
+    def test_command_shell_function_cannot_intercept_clean_child(self) -> None:
+        function_body = _documented_bootstrap_function()
+        function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            venv = _make_reference_venv(tmp_path)
+            marker = tmp_path / "command-function-called"
+            marker_shell = shlex.quote(str(marker))
+            venv_shell = shlex.quote(str(venv))
+            script = (
+                function_definition
+                + "\nVIRTUAL_ENV="
+                + venv_shell
+                + "\n"
+                + "command() { printf 'intercepted\\n' > "
+                + marker_shell
+                + "; return 0; }\n"
+                + "export -f command\n"
+                + "QSOL_FIRST_OBSERVATION_BOOTSTRAP='import sys; sys.exit(31)'\n"
+                + "qsol_first_observation\n"
+            )
+            completed = subprocess.run(
+                ["/bin/bash", "-c", script],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 31, completed.stderr)
+            self.assertFalse(
+                marker.exists(),
+                "ambient command shell function intercepted the authenticated bootstrap",
+            )
+
     def test_interactive_aliases_cannot_rewrite_bootstrap_function_definition(self) -> None:
         function_body = _documented_bootstrap_function()
         function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            python_path = tmp_path / "python"
-            python_path.symlink_to(Path(sys.executable).resolve())
+            venv = _make_reference_venv(tmp_path)
             marker = tmp_path / "alias-intercepted"
             marker_shell = shlex.quote(str(marker))
-            path_shell = shlex.quote(str(tmp_path))
+            venv_shell = shlex.quote(str(venv))
             alias_payload = "printf intercepted > " + marker_shell + "; false"
             script = (
                 "shopt -s expand_aliases\n"
@@ -173,8 +206,8 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
                 + "alias exit="
                 + shlex.quote(alias_payload)
                 + "\n"
-                + "PATH="
-                + path_shell
+                + "VIRTUAL_ENV="
+                + venv_shell
                 + "\n"
                 + function_definition
                 + "QSOL_FIRST_OBSERVATION_BOOTSTRAP='import sys; sys.exit(29)'\n"
