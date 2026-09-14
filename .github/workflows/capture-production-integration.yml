@@ -34,4 +34,4 @@ jobs:
       - name: Verify dependency consistency
         run: python -m pip check
       - name: Real offline production capture and deterministic replay
-        run: python tools/run_capture_production_integration.py
+        run: python -B tools/run_capture_production_integration.py
