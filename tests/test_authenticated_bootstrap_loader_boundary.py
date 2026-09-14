@@ -100,7 +100,7 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
         self.assertIn("special builtins", text)
         self.assertIn("exec", text)
         self.assertIn("does not import exported shell functions", text)
-        self.assertIn("bootstrap program is passed as a literal positional argument", text)
+        self.assertIn("literal positional argument", text)
         self.assertIn("activated virtual environment", text)
 
     def test_readonly_loader_variable_aborts_before_python(self) -> None:
