@@ -71,7 +71,7 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
         self.assertIn("Before starting any Python process", text)
         self.assertIn("uses only Bash built-ins", text)
         self.assertIn("Every `unset` is checked", text)
-        self.assertIn("privileged Bash", text)
+        self.assertIn("Privileged Bash", text)
         self.assertIn("does not import shell functions", text)
         self.assertIn("activated virtual environment", text)
 
