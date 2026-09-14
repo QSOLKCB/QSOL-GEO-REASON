@@ -11,26 +11,26 @@ def hub_package_provenance() -> dict[str, object]:
     }
 
 
-def hub_transport_package_provenance() -> dict[str, dict[str, object]]:
+def _package_map(names: list[str], *, offset: int) -> dict[str, dict[str, object]]:
     return {
-        "requests": {"file_count": 24, "receipt_sha256": "8" * 64},
-        "urllib3": {"file_count": 41, "receipt_sha256": "9" * 64},
-        "certifi": {"file_count": 4, "receipt_sha256": "a" * 64},
-        "charset-normalizer": {"file_count": 18, "receipt_sha256": "b" * 64},
-        "idna": {"file_count": 12, "receipt_sha256": "c" * 64},
+        canonical: {
+            "file_count": offset + index + 1,
+            "receipt_sha256": f"{offset + index + 1:064x}",
+        }
+        for index, canonical in enumerate(names)
     }
+
+
+def hub_transport_package_provenance() -> dict[str, dict[str, object]]:
+    return _package_map(sorted(reference.HUB_TRANSPORT_PACKAGE_IMPORTS), offset=100)
+
+
+def capture_direct_package_provenance() -> dict[str, dict[str, object]]:
+    return _package_map(sorted(reference.CAPTURE_DIRECT_PACKAGE_IMPORTS), offset=200)
 
 
 def capture_transitive_package_provenance() -> dict[str, dict[str, object]]:
-    return {
-        canonical: {
-            "file_count": index + 1,
-            "receipt_sha256": f"{index + 1:064x}",
-        }
-        for index, canonical in enumerate(
-            sorted(reference.CAPTURE_TRANSITIVE_PACKAGE_IMPORTS)
-        )
-    }
+    return _package_map(sorted(reference.CAPTURE_TRANSITIVE_PACKAGE_IMPORTS), offset=300)
 
 
 def reference_environment_receipt() -> dict:
@@ -44,6 +44,7 @@ def reference_environment_receipt() -> dict:
         platform_machine="x86_64",
         hub_package_provenance=hub_package_provenance(),
         hub_transport_package_provenance=hub_transport_package_provenance(),
+        capture_direct_package_provenance=capture_direct_package_provenance(),
         capture_transitive_package_provenance=capture_transitive_package_provenance(),
         lock_sha256=reference._lock_sha256(),
     )
