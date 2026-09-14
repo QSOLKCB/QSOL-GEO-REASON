@@ -1,12 +1,12 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 
-rem Windows-native installed qsol-geo-capture trust boundary.  The adjacent
-rem interpreter starts isolated/no-site/no-bytecode before any QSOL module or
-rem editable-install path is imported.
+rem Windows-native installed qsol-geo-capture trust boundary.  Python starts
+rem isolated/no-site/no-bytecode before any QSOL module or editable path import.
 set "qsol_python=%~dp0python.exe"
+if not exist "%qsol_python%" set "qsol_python=%~dp0..\python.exe"
 if not exist "%qsol_python%" (
-  >&2 echo qsol-geo-capture: installed command requires an adjacent python.exe
+  echo qsol-geo-capture: installed command cannot locate its Python interpreter 1>&2
   exit /b 126
 )
 
