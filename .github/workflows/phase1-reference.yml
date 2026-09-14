@@ -22,7 +22,23 @@ jobs:
       - name: Install package
         run: python -m pip install -e .
       - name: Standalone capture bootstrap
-        run: qsol-geo-capture --help
+        shell: bash
+        run: |
+          set -euo pipefail
+          installed="$(command -v qsol-geo-capture)"
+          head -n 1 "$installed" | grep -E '^#!.* -ISB$'
+          hook="$RUNNER_TEMP/qsol-standalone-site-hook"
+          marker="$RUNNER_TEMP/qsol-standalone-sitecustomize-ran"
+          mkdir -p "$hook"
+          cat > "$hook/sitecustomize.py" <<'PY'
+          import os
+          from pathlib import Path
+          marker = os.environ.get("QSOL_STANDALONE_SITE_MARKER")
+          if marker:
+              Path(marker).write_text("sitecustomize executed\n", encoding="utf-8")
+          PY
+          PYTHONPATH="$hook" QSOL_STANDALONE_SITE_MARKER="$marker" qsol-geo-capture --help >/dev/null
+          test ! -e "$marker"
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Verify frozen reference fixture
