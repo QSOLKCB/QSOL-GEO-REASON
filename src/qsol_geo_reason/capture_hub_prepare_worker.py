@@ -8,7 +8,10 @@ from typing import Any
 
 from .capture_common import CaptureBackendUnavailable, CaptureContractError
 from .capture_package import _distribution_package_provenance
-from .capture_reference_environment import HUB_TRANSPORT_PACKAGE_IMPORTS
+from .capture_reference_environment import (
+    HUB_EXECUTION_PACKAGE_IMPORTS,
+    HUB_TRANSPORT_PACKAGE_IMPORTS,
+)
 
 
 def _preimport_package_provenance(
@@ -35,20 +38,21 @@ def _preimport_hub_package_provenance() -> dict[str, Any]:
     )
 
 
-def _preimport_transport_package_provenance() -> dict[str, dict[str, Any]]:
+def _preimport_execution_package_provenance() -> dict[str, dict[str, Any]]:
+    """Measure every external dependency Hub preparation may execute before import."""
     return {
         canonical: _preimport_package_provenance(
             canonical,
             import_name,
-            f"Hugging Face Hub transport dependency {canonical}",
+            f"Hugging Face Hub execution dependency {canonical}",
         )
-        for canonical, import_name in sorted(HUB_TRANSPORT_PACKAGE_IMPORTS.items())
+        for canonical, import_name in sorted(HUB_EXECUTION_PACKAGE_IMPORTS.items())
     }
 
 
-def _loaded_transport_package_provenance() -> dict[str, dict[str, Any]]:
+def _loaded_execution_package_provenance() -> dict[str, dict[str, Any]]:
     observed: dict[str, dict[str, Any]] = {}
-    for canonical, import_name in sorted(HUB_TRANSPORT_PACKAGE_IMPORTS.items()):
+    for canonical, import_name in sorted(HUB_EXECUTION_PACKAGE_IMPORTS.items()):
         try:
             module = importlib.import_module(import_name)
         except ImportError as exc:
@@ -58,10 +62,19 @@ def _loaded_transport_package_provenance() -> dict[str, dict[str, Any]]:
         observed[canonical] = _distribution_package_provenance(
             canonical,
             import_name,
-            f"Hugging Face Hub transport dependency {canonical}",
+            f"Hugging Face Hub execution dependency {canonical}",
             module=module,
         )
     return observed
+
+
+def _transport_subset(
+    provenance: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    return {
+        canonical: provenance[canonical]
+        for canonical in sorted(HUB_TRANSPORT_PACKAGE_IMPORTS)
+    }
 
 
 def main() -> int:
@@ -75,7 +88,8 @@ def main() -> int:
         )
 
     before = _preimport_hub_package_provenance()
-    transport_before = _preimport_transport_package_provenance()
+    execution_before = _preimport_execution_package_provenance()
+    transport_before = _transport_subset(execution_before)
     try:
         import huggingface_hub
     except ImportError as exc:
@@ -92,10 +106,10 @@ def main() -> int:
         raise CaptureContractError(
             "Hugging Face Hub distribution-owned runtime changed while establishing the no-site preparation boundary"
         )
-    transport_after_import = _loaded_transport_package_provenance()
-    if transport_after_import != transport_before:
+    execution_after_import = _loaded_execution_package_provenance()
+    if execution_after_import != execution_before:
         raise CaptureContractError(
-            "Hugging Face Hub transport distribution content changed while establishing the no-site preparation boundary"
+            "Hugging Face Hub execution dependency content changed while establishing the no-site preparation boundary"
         )
 
     from .capture_hub_tree import prepare_tree_receipts
@@ -118,10 +132,10 @@ def main() -> int:
         raise CaptureContractError(
             "Hugging Face Hub distribution-owned runtime changed during trusted online preparation"
         )
-    transport_after_work = _loaded_transport_package_provenance()
-    if transport_after_work != transport_before:
+    execution_after_work = _loaded_execution_package_provenance()
+    if execution_after_work != execution_before:
         raise CaptureContractError(
-            "Hugging Face Hub transport distribution content changed during trusted online preparation"
+            "Hugging Face Hub execution dependency content changed during trusted online preparation"
         )
 
     evidence = {
@@ -129,6 +143,7 @@ def main() -> int:
         "huggingface_hub_package_file_count": before["file_count"],
         "huggingface_hub_package_receipt_sha256": before["receipt_sha256"],
         "hub_transport_package_provenance": transport_before,
+        "hub_execution_package_provenance": execution_before,
     }
     print(json.dumps(evidence, sort_keys=True, separators=(",", ":")))
     return 0
