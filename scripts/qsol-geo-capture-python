@@ -1,14 +1,13 @@
 """Authenticated Python payload for the installed ``qsol-geo-capture`` wrapper.
 
-This file is not a user-facing entry point. The installed Bash wrapper starts an
-adjacent CPython as ``-I -S -B``, authenticates one Git commit, reads this payload
-from that commit with trusted Git, executes it under the private stage-0 module
-identity, and only then calls ``main()``. Direct execution of this tracked file fails
-closed so it cannot recreate the pre-site-startup bypass under another filename.
+This file is not a user-facing entry point. A platform-native wrapper first starts
+CPython as ``-I -S -B``, binds one Git commit and an editable checkout root, then
+reads this payload from that same commit and executes it under the private stage-0
+module identity. Direct execution of this tracked file fails closed.
 
 The payload imports no ``qsol_geo_reason`` module before authenticating the installed
-wrapper and every tracked package file against the same bound revision. Its child
-then re-hashes the complete package manifest and rejects importable shadows,
+platform wrapper and every tracked package file against the same bound revision. Its
+child then re-hashes the complete package manifest and rejects importable shadows,
 including package-local native extensions, before exposing ``src`` on ``sys.path``
 or importing ``qsol_geo_reason.capture_cli``.
 """
@@ -26,14 +25,46 @@ from typing import Any
 
 
 _PACKAGE_GIT_ROOT = "src/qsol_geo_reason"
-_BOOTSTRAP_GIT_PATH = "scripts/qsol-geo-capture"
 _STAGE0_MODULE_NAME = "qsol_standalone_authenticated_payload"
+_STAGE0_ROOT_NAME = "_QSOL_STANDALONE_AUTHENTICATED_ROOT"
+_STAGE0_BOOTSTRAP_PATH_NAME = "_QSOL_STANDALONE_BOOTSTRAP_GIT_PATH"
+_ALLOWED_BOOTSTRAP_GIT_PATHS = frozenset(
+    {"scripts/qsol-geo-capture", "scripts/qsol-geo-capture.cmd"}
+)
 _LOADER_ENV_PREFIXES = ("LD_", "DYLD_", "_RLD_", "LDR_")
 _LOADER_ENV_NAMES = frozenset({"GLIBC_TUNABLES", "LIBPATH", "SHLIB_PATH"})
 
 
 class StandaloneCaptureBootstrapError(RuntimeError):
     pass
+
+
+def _stage0_authenticated_root() -> Path:
+    value = globals().get(_STAGE0_ROOT_NAME)
+    if not isinstance(value, str) or not value.strip():
+        raise StandaloneCaptureBootstrapError(
+            "standalone capture requires a stage0-authenticated editable checkout root"
+        )
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        raise StandaloneCaptureBootstrapError(
+            "stage0-authenticated checkout root must be absolute"
+        )
+    try:
+        return candidate.resolve(strict=True)
+    except OSError as exc:
+        raise StandaloneCaptureBootstrapError(
+            "unable to resolve the stage0-authenticated editable checkout root"
+        ) from exc
+
+
+def _stage0_bootstrap_git_path() -> str:
+    value = globals().get(_STAGE0_BOOTSTRAP_PATH_NAME)
+    if not isinstance(value, str) or value not in _ALLOWED_BOOTSTRAP_GIT_PATHS:
+        raise StandaloneCaptureBootstrapError(
+            "standalone capture received an unsupported authenticated wrapper identity"
+        )
+    return value
 
 
 def _system_git_candidates() -> tuple[Path, ...]:
@@ -209,6 +240,7 @@ def _authenticate_installed_bootstrap(
     git_path: Path,
     git_digest: str,
 ) -> None:
+    bootstrap_git_path = _stage0_bootstrap_git_path()
     try:
         committed = _git(
             root,
@@ -216,7 +248,7 @@ def _authenticate_installed_bootstrap(
             git_digest,
             "cat-file",
             "blob",
-            f"{revision}:{_BOOTSTRAP_GIT_PATH}",
+            f"{revision}:{bootstrap_git_path}",
             text=False,
         ).stdout
     except (OSError, subprocess.CalledProcessError) as exc:
@@ -224,27 +256,31 @@ def _authenticate_installed_bootstrap(
             "unable to authenticate the installed qsol-geo-capture bootstrap"
         ) from exc
     installed = _read_stable_regular(Path(__file__), "installed bootstrap")
-    committed_parts = committed.split(b"\n", 1)
-    installed_parts = installed.split(b"\n", 1)
-    if (
-        len(committed_parts) != 2
-        or len(installed_parts) != 2
-        or not committed_parts[0].startswith(b"#!")
-        or not installed_parts[0].startswith(b"#!")
-        or committed_parts[1] != installed_parts[1]
-    ):
+    if bootstrap_git_path.endswith(".cmd"):
+        matches = installed == committed
+    else:
+        committed_parts = committed.split(b"\n", 1)
+        installed_parts = installed.split(b"\n", 1)
+        matches = (
+            len(committed_parts) == 2
+            and len(installed_parts) == 2
+            and committed_parts[0].startswith(b"#!")
+            and installed_parts[0].startswith(b"#!")
+            and committed_parts[1] == installed_parts[1]
+        )
+    if not matches:
         raise StandaloneCaptureBootstrapError(
-            "installed qsol-geo-capture bootstrap body does not match the bound Git revision"
+            "installed qsol-geo-capture bootstrap does not match the bound Git revision"
         )
 
 
 def _authenticate_checkout() -> tuple[Path, str, dict[str, str]]:
     git_path, git_digest = _trusted_git_identity()
+    root = _stage0_authenticated_root()
     try:
-        anchor = Path.cwd().resolve(strict=True)
-        root = Path(
+        observed_root = Path(
             _git(
-                anchor,
+                root,
                 git_path,
                 git_digest,
                 "rev-parse",
@@ -263,8 +299,12 @@ def _authenticate_checkout() -> tuple[Path, str, dict[str, str]]:
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError) as exc:
         raise StandaloneCaptureBootstrapError(
-            "standalone canonical capture must be invoked from inside the QSOL-GEO-REASON Git checkout"
+            "stage0-authenticated source root is not a usable QSOL-GEO-REASON Git checkout"
         ) from exc
+    if observed_root != root:
+        raise StandaloneCaptureBootstrapError(
+            "stage0-authenticated source root is not the Git checkout top level"
+        )
     _assert_checkout_roots(root)
     if len(revision) != 40 or any(ch not in "0123456789abcdef" for ch in revision):
         raise StandaloneCaptureBootstrapError(
