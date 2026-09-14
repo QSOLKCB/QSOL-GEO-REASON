@@ -258,9 +258,17 @@ class StandaloneCaptureBootstrapTests(unittest.TestCase):
                 revision,
             )
 
-    def test_protocol_keeps_installed_command_as_general_production_entry(self) -> None:
+    def test_protocol_keeps_installed_payload_behind_fixed_bash_on_posix(self) -> None:
         protocol = PROTOCOL.read_text(encoding="utf-8")
-        self.assertIn("qsol-geo-capture /tmp/GEO-CAP-001-request.json", protocol)
+        self.assertIn(
+            "/bin/bash -p /absolute/path/to/qsol-geo-capture",
+            protocol,
+        )
+        self.assertIn("complete installed wrapper bytes, including line 1", protocol)
+        self.assertNotIn(
+            "\nqsol-geo-capture /tmp/GEO-CAP-001-request.json",
+            protocol,
+        )
 
 
 if __name__ == "__main__":
