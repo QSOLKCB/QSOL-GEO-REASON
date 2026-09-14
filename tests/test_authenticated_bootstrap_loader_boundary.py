@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPERIMENT = ROOT / "experiments" / "GEO-CAP-001-EXP-001.md"
+REFERENCE_PYTHON = "/tmp/qsol-geo-reason-capture-py311/bin/python"
 
 
 def _documented_bootstrap_function() -> str:
@@ -19,22 +20,26 @@ def _documented_bootstrap_function() -> str:
 
 def _documented_bootstrap_literal() -> str:
     function = _documented_bootstrap_function()
-    marker = "' qsol_first_observation \"${VIRTUAL_ENV-}\" '"
+    marker = f"' qsol_first_observation {REFERENCE_PYTHON} '"
     return function.split(marker, 1)[1].split("' \"$@\"", 1)[0]
 
 
-def _documented_bootstrap_function_with(code: str) -> str:
+def _documented_bootstrap_function_with(code: str, python_path: Path) -> str:
     function = _documented_bootstrap_function()
     literal = _documented_bootstrap_literal()
+    function = function.replace(
+        f" qsol_first_observation {REFERENCE_PYTHON} ",
+        f" qsol_first_observation {shlex.quote(str(python_path))} ",
+        1,
+    )
     return function.replace(f"'{literal}'", shlex.quote(code), 1)
 
 
-def _make_reference_venv(tmp_path: Path) -> Path:
-    venv = tmp_path / "venv"
-    bin_dir = venv / "bin"
-    bin_dir.mkdir(parents=True)
-    (bin_dir / "python").symlink_to(Path(sys.executable).resolve())
-    return venv
+def _make_reference_python(tmp_path: Path) -> Path:
+    python_path = tmp_path / "venv" / "bin" / "python"
+    python_path.parent.mkdir(parents=True)
+    python_path.symlink_to(Path(sys.executable).resolve())
+    return python_path
 
 
 class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
@@ -60,13 +65,13 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
 
         clean_shell = "\\exec /bin/bash --noprofile --norc -p -c"
         self.assertIn(clean_shell, function)
-        self.assertIn("qsol_venv=$1", function)
+        self.assertIn("qsol_python=$1", function)
         self.assertIn("qsol_bootstrap=$2", function)
-        self.assertIn('qsol_python="$qsol_venv/bin/python"', function)
+        self.assertNotIn("qsol_venv=", function)
         self.assertIn('"$qsol_python" != /*', function)
         self.assertIn('! -f "$qsol_python"', function)
         self.assertIn('! -x "$qsol_python"', function)
-        self.assertIn("cannot resolve the activated virtualenv Python executable", function)
+        self.assertIn("cannot resolve the fixed reference Python executable", function)
         self.assertIn(
             '"$qsol_python" -I -S -B -c "$qsol_bootstrap" "$@"',
             function,
@@ -77,6 +82,8 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
         )
         self.assertIn("exec(compile(src", bootstrap)
         self.assertIn(f"'{bootstrap}'", function)
+        self.assertIn(REFERENCE_PYTHON, function)
+        self.assertNotIn("VIRTUAL_ENV", function)
         self.assertNotIn("QSOL_FIRST_OBSERVATION_BOOTSTRAP=", text)
         self.assertNotIn("$QSOL_FIRST_OBSERVATION_BOOTSTRAP", function)
         self.assertNotIn("command type -P python", function)
@@ -90,8 +97,10 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
             '"$qsol_python" -I -S -B -c "$qsol_bootstrap" "$@"'
         )
         bootstrap_arg = function.index(f"'{bootstrap}'")
+        fixed_python_arg = function.index(REFERENCE_PYTHON)
         self.assertLess(posix_start, loader_unset)
         self.assertLess(loader_unset, clean_shell_start)
+        self.assertLess(clean_shell_start, fixed_python_arg)
         self.assertLess(clean_shell_start, bootstrap_arg)
         self.assertLess(clean_shell_start, python_start)
 
@@ -101,26 +110,24 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
         self.assertIn("exec", text)
         self.assertIn("does not import exported shell functions", text)
         self.assertIn("literal positional argument", text)
-        self.assertIn("activated virtual environment", text)
+        self.assertIn("does not source `activate`", text)
+        self.assertIn("fixed external reference interpreter", text)
 
     def test_readonly_loader_variable_aborts_before_python(self) -> None:
-        function_body = _documented_bootstrap_function_with("import sys; sys.exit(19)")
-        function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
-
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            venv = _make_reference_venv(tmp_path)
+            python_path = _make_reference_python(tmp_path)
+            function_body = _documented_bootstrap_function_with(
+                "import sys; sys.exit(19)", python_path
+            )
+            function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
             marker = tmp_path / "python-called"
             marker_shell = shlex.quote(str(marker))
-            venv_shell = shlex.quote(str(venv))
             script = (
                 function_definition
                 + "\npython() { printf 'called\\n' > "
                 + marker_shell
                 + "; }\n"
-                + "VIRTUAL_ENV="
-                + venv_shell
-                + "\n"
                 + "export LD_PRELOAD=/tmp/qsol-readonly-loader-test.so\n"
                 + "readonly LD_PRELOAD\n"
                 + "qsol_first_observation\n"
@@ -136,14 +143,14 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
             self.assertFalse(marker.exists(), "Python tripwire was reached after scrub failure")
 
     def test_readonly_prebound_bootstrap_variable_cannot_replace_literal(self) -> None:
-        function_body = _documented_bootstrap_function_with("import sys; sys.exit(41)")
-        function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
-
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            venv = _make_reference_venv(tmp_path)
+            python_path = _make_reference_python(tmp_path)
+            function_body = _documented_bootstrap_function_with(
+                "import sys; sys.exit(41)", python_path
+            )
+            function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
             marker = tmp_path / "readonly-bootstrap-executed"
-            venv_shell = shlex.quote(str(venv))
             malicious = (
                 "import pathlib;"
                 f"pathlib.Path({str(marker)!r}).write_text('intercepted', encoding='utf-8');"
@@ -153,9 +160,6 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
                 "QSOL_FIRST_OBSERVATION_BOOTSTRAP="
                 + shlex.quote(malicious)
                 + "\nreadonly QSOL_FIRST_OBSERVATION_BOOTSTRAP\n"
-                + "VIRTUAL_ENV="
-                + venv_shell
-                + "\n"
                 + function_definition
                 + "qsol_first_observation\n"
             )
@@ -172,22 +176,60 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
                 "readonly ambient bootstrap variable replaced the documented literal",
             )
 
-    def test_python_shell_function_cannot_intercept_bootstrap(self) -> None:
-        function_body = _documented_bootstrap_function_with("import sys; sys.exit(23)")
-        function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
-
+    def test_readonly_prebound_virtual_env_cannot_select_bootstrap_interpreter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            venv = _make_reference_venv(tmp_path)
+            trusted_python = _make_reference_python(tmp_path / "trusted")
+            function_body = _documented_bootstrap_function_with(
+                "import sys; sys.exit(43)", trusted_python
+            )
+            function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
+
+            malicious_venv = tmp_path / "malicious-venv"
+            malicious_python = malicious_venv / "bin" / "python"
+            malicious_python.parent.mkdir(parents=True)
+            marker = tmp_path / "ambient-venv-python-called"
+            malicious_python.write_text(
+                "#!/bin/sh\nprintf intercepted > "
+                + shlex.quote(str(marker))
+                + "\nexit 0\n",
+                encoding="utf-8",
+            )
+            malicious_python.chmod(0o700)
+
+            script = (
+                "export VIRTUAL_ENV="
+                + shlex.quote(str(malicious_venv))
+                + "\nreadonly VIRTUAL_ENV\n"
+                + function_definition
+                + "qsol_first_observation\n"
+            )
+            completed = subprocess.run(
+                ["/bin/bash", "-c", script],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 43, completed.stderr)
+            self.assertFalse(
+                marker.exists(),
+                "readonly ambient VIRTUAL_ENV selected the bootstrap interpreter",
+            )
+
+    def test_python_shell_function_cannot_intercept_bootstrap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            python_path = _make_reference_python(tmp_path)
+            function_body = _documented_bootstrap_function_with(
+                "import sys; sys.exit(23)", python_path
+            )
+            function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
             marker = tmp_path / "python-function-called"
             marker_shell = shlex.quote(str(marker))
-            venv_shell = shlex.quote(str(venv))
             script = (
                 function_definition
-                + "\nVIRTUAL_ENV="
-                + venv_shell
-                + "\n"
-                + "python() { printf 'intercepted\\n' > "
+                + "\npython() { printf 'intercepted\\n' > "
                 + marker_shell
                 + "; return 0; }\n"
                 + "export -f python\n"
@@ -207,21 +249,18 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
             )
 
     def test_command_shell_function_cannot_intercept_clean_child(self) -> None:
-        function_body = _documented_bootstrap_function_with("import sys; sys.exit(31)")
-        function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
-
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            venv = _make_reference_venv(tmp_path)
+            python_path = _make_reference_python(tmp_path)
+            function_body = _documented_bootstrap_function_with(
+                "import sys; sys.exit(31)", python_path
+            )
+            function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
             marker = tmp_path / "command-function-called"
             marker_shell = shlex.quote(str(marker))
-            venv_shell = shlex.quote(str(venv))
             script = (
                 function_definition
-                + "\nVIRTUAL_ENV="
-                + venv_shell
-                + "\n"
-                + "command() { printf 'intercepted\\n' > "
+                + "\ncommand() { printf 'intercepted\\n' > "
                 + marker_shell
                 + "; return 0; }\n"
                 + "export -f command\n"
@@ -241,22 +280,19 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
             )
 
     def test_path_named_bash_and_special_builtin_functions_cannot_intercept_boundary(self) -> None:
-        function_body = _documented_bootstrap_function_with("import sys; sys.exit(37)")
-        function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
-
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            venv = _make_reference_venv(tmp_path)
+            python_path = _make_reference_python(tmp_path)
+            function_body = _documented_bootstrap_function_with(
+                "import sys; sys.exit(37)", python_path
+            )
+            function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
             marker = tmp_path / "ambient-function-called"
             marker_shell = shlex.quote(str(marker))
-            venv_shell = shlex.quote(str(venv))
             tripwire = "printf intercepted > " + marker_shell + "; return 0"
             script = (
                 function_definition
-                + "\nVIRTUAL_ENV="
-                + venv_shell
-                + "\n"
-                + "function /bin/bash { "
+                + "\nfunction /bin/bash { "
                 + tripwire
                 + "; }\n"
                 + "exec() { "
@@ -284,15 +320,15 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
             )
 
     def test_interactive_aliases_cannot_rewrite_bootstrap_function_definition(self) -> None:
-        function_body = _documented_bootstrap_function_with("import sys; sys.exit(29)")
-        function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
-
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            venv = _make_reference_venv(tmp_path)
+            python_path = _make_reference_python(tmp_path)
+            function_body = _documented_bootstrap_function_with(
+                "import sys; sys.exit(29)", python_path
+            )
+            function_definition = "qsol_first_observation() {" + function_body + "\n}\n"
             marker = tmp_path / "alias-intercepted"
             marker_shell = shlex.quote(str(marker))
-            venv_shell = shlex.quote(str(venv))
             alias_payload = "printf intercepted > " + marker_shell + "; false"
             script = (
                 "shopt -s expand_aliases\n"
@@ -304,9 +340,6 @@ class AuthenticatedBootstrapLoaderBoundaryTests(unittest.TestCase):
                 + "\n"
                 + "alias exec="
                 + shlex.quote(alias_payload)
-                + "\n"
-                + "VIRTUAL_ENV="
-                + venv_shell
                 + "\n"
                 + function_definition
                 + "qsol_first_observation\n"
