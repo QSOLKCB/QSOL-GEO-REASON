@@ -1,21 +1,19 @@
 """Real offline production-backend integration for the Phase 2A reference lane.
 
 The script builds a tiny GPT-2-style model and fast tokenizer locally, arranges them
-as Hugging Face cache snapshots with QSOL commit-tree receipts, then invokes the real
-qsol-geo-capture CLI twice through the same launcher-bound authenticated no-site child
-boundary used by production observation. No model weights are downloaded. Both bundles
-must pass Draft 2020-12 schema validation, the canonical semantic verifier, and
-byte-for-byte JSON equality across the replay.
+as Hugging Face cache snapshots with QSOL commit-tree receipts, then invokes the
+installed ``qsol-geo-capture`` command twice through its standalone source-authenticating
+bootstrap. No model weights are downloaded. Both bundles must pass Draft 2020-12 schema
+validation, the canonical semantic verifier, and byte-for-byte JSON equality across
+replay.
 """
 from __future__ import annotations
 
 import hashlib
 import importlib.metadata
-import importlib.util
 import json
 import os
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -215,45 +213,14 @@ def _request(model_tree: str, tokenizer_tree: str, constraints_sha256: str) -> d
     }
 
 
-def _load_launcher_helpers():
-    launcher_path = ROOT / "tools" / "run_first_production_observation.py"
-    spec = importlib.util.spec_from_file_location(
-        "qsol_capture_integration_authenticated_launcher",
-        launcher_path,
-    )
-    if spec is None or spec.loader is None:
-        raise RuntimeError("unable to load authenticated launcher helpers for integration")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def _authenticated_capture_command(argv: list[str]) -> list[str]:
-    """Build the integration CLI command from the same Git-bound source manifest."""
-    launcher = _load_launcher_helpers()
-    git_path, git_digest = launcher._trusted_git_identity()
-    revision, source_manifest = launcher._authenticate_tracked_package_source(
-        git_path=git_path,
-        git_digest=git_digest,
-    )
-    from qsol_geo_reason import no_site_subprocess
-
-    no_site_subprocess.install_authenticated_source_manifest(revision, source_manifest)
-    return no_site_subprocess.isolated_package_command(
-        "qsol_geo_reason.capture_cli",
-        argv,
-    )
-
-
 def _run_cli(request_path: Path, output_dir: Path, environment: dict[str, str]) -> str:
     completed = subprocess.run(
-        _authenticated_capture_command(
-            [
-                str(request_path),
-                "--output-dir",
-                str(output_dir),
-            ]
-        ),
+        [
+            "qsol-geo-capture",
+            str(request_path),
+            "--output-dir",
+            str(output_dir),
+        ],
         cwd=ROOT,
         env=environment,
         check=False,
