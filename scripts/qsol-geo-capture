@@ -1,10 +1,9 @@
 #!/bin/bash -p
 set -euo pipefail
 
-# This file is the installed qsol-geo-capture trust boundary. It deliberately
-# starts as privileged, non-interactive Bash rather than Python so PYTHONPATH,
-# sitecustomize, usercustomize, and executable .pth files cannot run before the
-# isolated/no-site Python boundary is established.
+# POSIX installed qsol-geo-capture trust boundary.  Python starts only after
+# ambient Python/native-loader controls have been cleared, and always under
+# isolated/no-site/no-bytecode flags.
 for qsol_name in ${!PYTHON@} ${!LD_@} ${!DYLD_@} ${!_RLD_@} ${!LDR_@}; do
     unset "$qsol_name" || {
         printf '%s\n' "qsol-geo-capture: unable to clear pre-interpreter environment control $qsol_name" >&2
@@ -39,19 +38,78 @@ exec "$qsol_python" -I -S -B - "$qsol_script" "$@" <<'QSOL_STANDALONE_STAGE0'
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
+import json
 import os
 import pathlib
+import re
 import stat
 import subprocess
 import sys
+import sysconfig
+import urllib.parse
+import urllib.request
 
 if not sys.flags.isolated or not sys.flags.no_site or not sys.flags.no_user_site or not sys.flags.ignore_environment or not sys.dont_write_bytecode:
     raise RuntimeError("qsol-geo-capture standalone stage0 requires CPython -I -S -B")
 
 wrapper = pathlib.Path(sys.argv[1])
-root = pathlib.Path.cwd().resolve(strict=True)
 loader_prefixes = ("LD_", "DYLD_", "_RLD_", "LDR_")
 loader_names = {"GLIBC_TUNABLES", "LIBPATH", "SHLIB_PATH"}
+
+
+def literal_site_package_paths() -> tuple[pathlib.Path, ...]:
+    executable = pathlib.Path(sys.executable).resolve(strict=True)
+    venv_root = executable.parent.parent
+    candidates: list[pathlib.Path] = []
+    if (venv_root / "pyvenv.cfg").is_file():
+        version = f"python{sys.version_info.major}.{sys.version_info.minor}"
+        candidates.extend(
+            (
+                venv_root / "lib" / version / "site-packages",
+                venv_root / "lib64" / version / "site-packages",
+            )
+        )
+    else:
+        for key in ("purelib", "platlib"):
+            value = sysconfig.get_paths().get(key)
+            if isinstance(value, str) and value.strip():
+                candidates.append(pathlib.Path(value))
+    observed: list[pathlib.Path] = []
+    for candidate in candidates:
+        resolved = candidate.resolve(strict=False)
+        if resolved.is_dir() and resolved not in observed:
+            observed.append(resolved)
+    if not observed:
+        raise RuntimeError("unable to locate installed distribution metadata without site startup")
+    return tuple(observed)
+
+
+def canonical_distribution_name(value: str) -> str:
+    return re.sub(r"[-_.]+", "-", value).lower()
+
+
+def editable_checkout_root() -> pathlib.Path:
+    roots: set[pathlib.Path] = set()
+    for site_path in literal_site_package_paths():
+        for distribution in importlib.metadata.distributions(path=[str(site_path)]):
+            name = distribution.metadata.get("Name", "")
+            if canonical_distribution_name(name) != "qsol-geo-reason":
+                continue
+            raw = distribution.read_text("direct_url.json")
+            if raw is None:
+                raise RuntimeError("qsol-geo-capture requires an editable qsol-geo-reason install to locate its authenticated checkout")
+            record = json.loads(raw)
+            if record.get("dir_info", {}).get("editable") is not True:
+                raise RuntimeError("qsol-geo-capture requires an editable qsol-geo-reason install to bind source provenance")
+            parsed = urllib.parse.urlsplit(record.get("url", ""))
+            if parsed.scheme.lower() != "file" or parsed.netloc not in {"", "localhost"}:
+                raise RuntimeError("editable qsol-geo-reason direct_url must be a local file URL")
+            decoded = urllib.request.url2pathname(urllib.parse.unquote(parsed.path))
+            roots.add(pathlib.Path(decoded).resolve(strict=True))
+    if len(roots) != 1:
+        raise RuntimeError("qsol-geo-capture could not identify exactly one editable QSOL-GEO-REASON checkout")
+    return next(iter(roots))
 
 
 def hash_executable(candidate: pathlib.Path) -> tuple[pathlib.Path, str]:
@@ -79,6 +137,7 @@ for candidate in (
 if git_identity is None:
     raise RuntimeError("qsol-geo-capture requires a trusted system Git executable") from last_error
 git, git_digest = git_identity
+root = editable_checkout_root()
 
 environment: dict[str, str] = {}
 for key, value in os.environ.items():
@@ -131,21 +190,9 @@ namespace = {
     "__name__": "qsol_standalone_authenticated_payload",
     "__file__": str(wrapper),
     "__package__": None,
+    "_QSOL_STANDALONE_AUTHENTICATED_ROOT": str(root),
+    "_QSOL_STANDALONE_BOOTSTRAP_GIT_PATH": "scripts/qsol-geo-capture",
 }
 exec(compile(payload, str(wrapper), "exec"), namespace, namespace)
-original_authenticate_checkout = namespace["_authenticate_checkout"]
-bootstrap_error = namespace["StandaloneCaptureBootstrapError"]
-
-
-def bound_authenticate_checkout():
-    authenticated_root, authenticated_revision, source_manifest = original_authenticate_checkout()
-    if authenticated_revision != commit:
-        raise bootstrap_error(
-            "standalone capture checkout revision changed after the authenticated stage0 payload was selected"
-        )
-    return authenticated_root, authenticated_revision, source_manifest
-
-
-namespace["_authenticate_checkout"] = bound_authenticate_checkout
 raise SystemExit(namespace["main"]())
 QSOL_STANDALONE_STAGE0
